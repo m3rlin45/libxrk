@@ -25,6 +25,14 @@ description = "Library for reading AIM XRK and XRZ files from AIM automotive dat
 authors = ["Christopher Dewan <chris.dewan@m3rlin.net>"]
 readme = "README.md"
 packages = [{include = "libxrk", from = "src"}]
+include = [
+    { path = "src/libxrk/**/*.so", format = "wheel" },
+    { path = "src/libxrk/**/*.pyx", format = "sdist" },
+]
+exclude = [
+    "**/*.c",
+    "**/*.cpp",
+]
 
 [tool.poetry.dependencies]
 python = "^3.12"
