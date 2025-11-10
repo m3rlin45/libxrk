@@ -7,17 +7,17 @@ def process_xrk_file(filename: str) -> None:
     """Process an XRK file and access its data."""
     # Test AIMXRK with type hints
     log = AIMXRK(filename, progress=None)
-    
+
     # These should all type-check correctly
     channels = log.channels
     laps = log.laps
     metadata = log.metadata
-    
+
     for channel_name, channel in channels.items():
         timecodes = channel.timecodes
         values = channel.values
         print(f"{channel_name}: {len(timecodes)} samples")
-    
+
     for lap in laps:
         lap_num = lap.num
         start = lap.start_time
@@ -28,7 +28,7 @@ def process_xrk_file(filename: str) -> None:
 def process_track_data(filename: str) -> None:
     """Process track data from XRK file."""
     track_data = aim_track(filename)
-    
+
     # Should be a dict
     for key, value in track_data.items():
         print(f"{key}: {value}")
