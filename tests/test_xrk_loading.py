@@ -73,9 +73,7 @@ class TestXRKFileLoading(unittest.TestCase):
             )
 
             # Verify non-zero length
-            self.assertGreater(
-                timecode_length, 0, f"Channel '{channel_name}' has zero timecodes"
-            )
+            self.assertGreater(timecode_length, 0, f"Channel '{channel_name}' has zero timecodes")
 
         # Print summary for debugging
         print("\nChannel timecode lengths:")
