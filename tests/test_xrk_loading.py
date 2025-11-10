@@ -135,6 +135,9 @@ class TestXRKFileLoading(unittest.TestCase):
         self.assertIn("start_time", log.laps.column_names, "Laps table missing 'start_time' column")
         self.assertIn("end_time", log.laps.column_names, "Laps table missing 'end_time' column")
 
+        # Should have exactly 13 laps
+        self.assertEqual(len(log.laps), 13, f"Expected 13 laps, got {len(log.laps)}")
+
         if len(log.laps) > 0:
             # Verify lap data
             num_col = log.laps.column("num").to_pylist()
