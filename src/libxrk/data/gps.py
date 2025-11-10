@@ -103,9 +103,9 @@ def ecef2lla_osen(x, y, z):
     k = ll * (ll - mpn)
     mpn = None
     # Compute t
-    t = np.sqrt(np.sqrt(beta * beta - k) - 0.5 * (beta + i)) + np.sqrt(
-        np.abs(0.5 * (beta - i))
-    ) * (2 * (m < n) - 1)
+    t = np.sqrt(np.sqrt(beta * beta - k) - 0.5 * (beta + i)) + np.sqrt(np.abs(0.5 * (beta - i))) * (
+        2 * (m < n) - 1
+    )
     beta = None
     # Use Newton-Raphson's method to compute t correction
     g = 2 * l * (m - n)
@@ -127,8 +127,7 @@ def ecef2lla_osen(x, y, z):
     return GPS(
         np.arctan2(zu, wv) * (180 / np.pi),
         np.arctan2(y, x) * (180 / np.pi),
-        np.sqrt(np.square(w - wv * invuv) + np.square(z - zu * p1mee * invuv))
-        * (1 - 2 * (u < 1)),
+        np.sqrt(np.square(w - wv * invuv) + np.square(z - zu * p1mee * invuv)) * (1 - 2 * (u < 1)),
     )
 
 
@@ -260,10 +259,7 @@ def find_crossing_idx(
     D = O[1:] - O[:-1]
     O = O[:-1] - SO
 
-    SN = (
-        np.sum(SD * SD, axis=2, keepdims=True) * D
-        - np.sum(SD * D, axis=2, keepdims=True) * SD
-    )
+    SN = np.sum(SD * SD, axis=2, keepdims=True) * D - np.sum(SD * D, axis=2, keepdims=True) * SD
     t = np.clip(
         -np.sum(SN * O, axis=2, keepdims=True) / np.sum(SN * D, axis=2, keepdims=True),
         0,
@@ -274,9 +270,7 @@ def find_crossing_idx(
     distsq = np.sum(np.square(O + t * D), axis=2)
     minidx = np.argmin(distsq, axis=1)
     colrange = np.arange(t.shape[0])
-    return np.column_stack(
-        [minidx + t[colrange, minidx, 0], np.sqrt(distsq[colrange, minidx])]
-    )
+    return np.column_stack([minidx + t[colrange, minidx, 0], np.sqrt(distsq[colrange, minidx])])
 
 
 def find_crossing_dist(
@@ -331,9 +325,7 @@ def find_laps(
     marker_size = 30  # meters, how far you can be from the marker to count as a lap
 
     # Precalculate in which time periods we were traveling at least 4 m/s (~10mph)
-    minspeed = np.sum(D * D, axis=1) > np.square(
-        (timecodes[1:] - timecodes[:-1]) * (4 / 1000)
-    )
+    minspeed = np.sum(D * D, axis=1) > np.square((timecodes[1:] - timecodes[:-1]) * (4 / 1000))
 
     SN = (
         np.sum(SD * SD, axis=1).reshape((len(SD), 1)) * D
@@ -362,9 +354,7 @@ def find_laps(
             continue
         if not minspeed[idx]:
             idx = np.argmax(minspeed[idx:]) + idx
-        lap_markers.append(
-            timecodes[idx] + t[idx] * (timecodes[idx + 1] - timecodes[idx])
-        )
+        lap_markers.append(timecodes[idx] + t[idx] * (timecodes[idx + 1] - timecodes[idx]))
     return lap_markers[1:]
 
 
