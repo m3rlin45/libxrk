@@ -66,16 +66,28 @@ This project uses [mypy](https://mypy.readthedocs.io/) for static type checking.
 poetry run mypy .
 ```
 
+### Running Tests
+
+This project uses [pytest](https://pytest.org/) for testing.
+
+```bash
+# Run all tests
+poetry run pytest
+
+# Run tests with verbose output
+poetry run pytest -v
+
+# Run specific test file
+poetry run pytest tests/test_xrk_loading.py
+
+# Run tests with coverage
+poetry run pytest --cov=libxrk
+```
+
 ### Building
 
 ```bash
 poetry build
-```
-
-### Running Tests
-
-```bash
-poetry run python test_install.py
 ```
 
 ### Clean Build
@@ -84,6 +96,12 @@ poetry run python test_install.py
 # Clean all build artifacts and rebuild
 rm -rf build/ dist/ src/libxrk/data/*.so && poetry install
 ```
+
+## Testing
+
+The project includes end-to-end tests that validate XRK file loading and parsing.
+
+Test files are located in `tests/test_data/` and include real XRK files for validation.
 
 ## Credits
 

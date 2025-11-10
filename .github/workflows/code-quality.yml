@@ -46,3 +46,35 @@ jobs:
     
     - name: Run mypy
       run: mypy .
+
+  pytest:
+    runs-on: ubuntu-latest
+    name: Run tests with pytest
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        lfs: true  # Pull test data files if using Git LFS
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential python3-dev g++
+    
+    - name: Install Poetry
+      run: |
+        curl -sSL https://install.python-poetry.org | python3 -
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+    
+    - name: Install dependencies
+      run: |
+        poetry install
+    
+    - name: Run pytest
+      run: |
+        poetry run pytest tests/ -v --tb=short
