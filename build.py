@@ -67,8 +67,9 @@ if __name__ == "__main__":
     # Build extensions in-place for development
     import sys
     from setuptools import setup
+    from typing import Any
 
-    setup_kwargs = {}
+    setup_kwargs: dict[str, Any] = {}
     build(setup_kwargs)
 
     # Configure to build in-place

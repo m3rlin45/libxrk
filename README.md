@@ -55,7 +55,15 @@ This project uses [Black](https://black.readthedocs.io/) for code formatting.
 ```bash
 # Format all Python files
 poetry run black .
+```
 
+### Type Checking
+
+This project uses [mypy](https://mypy.readthedocs.io/) for static type checking.
+
+```bash
+# Run type checker on all Python files
+poetry run mypy .
 ```
 
 ### Building

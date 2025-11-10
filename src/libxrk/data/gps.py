@@ -379,7 +379,7 @@ if __name__ == "__main__":
             ("fukushima2006", ecef2lla_fukushima2006),
             ("vermeille2003", ecef2lla_vermeille2003),
         ]
-        stats = {name: [] for name, algo in algos}
+        stats: dict[str, list[float]] = {name: [] for name, algo in algos}
         for _ in range(5):
             for name, algo in algos:
                 start = time.time()
