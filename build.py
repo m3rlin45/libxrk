@@ -24,7 +24,7 @@ class build_ext(_build_ext):
         super().copy_extensions_to_source()
 
         # Clean up .cpp files from source tree after build
-        src_path = Path("src/libxrk/data")
+        src_path = Path("src/libxrk")
         for cpp_file in src_path.glob("*.cpp"):
             print(f"Removing intermediate file: {cpp_file}")
             cpp_file.unlink()
@@ -36,8 +36,8 @@ def build(setup_kwargs):
     """
     extensions = [
         Extension(
-            "libxrk.data.aim_xrk",
-            sources=["src/libxrk/data/aim_xrk.pyx"],
+            "libxrk.aim_xrk",
+            sources=["src/libxrk/aim_xrk.pyx"],
             include_dirs=[np.get_include()],
             language="c++",
             extra_compile_args=["-std=c++11"],

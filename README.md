@@ -29,7 +29,7 @@ The Cython extension will be automatically compiled during installation.
 ## Usage
 
 ```python
-from libxrk.data import AIMXRK
+from libxrk import AIMXRK
 
 # Read an XRK file
 log = AIMXRK('path/to/file.xrk', progress=None)
@@ -100,7 +100,7 @@ poetry build
 
 ```bash
 # Clean all build artifacts and rebuild
-rm -rf build/ dist/ src/libxrk/data/*.so && poetry install
+rm -rf build/ dist/ src/libxrk/*.so && poetry install
 ```
 
 ## Testing

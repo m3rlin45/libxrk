@@ -2,7 +2,7 @@
 
 import unittest
 from pathlib import Path
-from libxrk.data import AIMXRK
+from libxrk import AIMXRK
 
 
 # Path to test data

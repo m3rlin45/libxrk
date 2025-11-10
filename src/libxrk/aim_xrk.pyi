@@ -2,7 +2,7 @@
 """Type stubs for aim_xrk Cython extension module."""
 
 from typing import Any, Callable, Optional
-from libxrk.data.base import LogFile
+from libxrk.base import LogFile
 
 def AIMXRK(fname: str, progress: Optional[Callable[[int, int], None]]) -> LogFile:
     """
