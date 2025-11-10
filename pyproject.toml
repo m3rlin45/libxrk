@@ -1,18 +1,44 @@
 [project]
 name = "libxrk"
 version = "0.1.0"
-description = ""
+description = "Library for reading AIM XRK and XRZ files from AIM automotive data loggers"
 authors = [
     {name = "Christopher Dewan",email = "chris.dewan@m3rlin.net"}
 ]
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "numpy>=1.26.0",
+    "cython>=3.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "setuptools>=68.0.0",
 ]
 
 [tool.poetry]
+name = "libxrk"
+version = "0.1.0"
+description = "Library for reading AIM XRK and XRZ files from AIM automotive data loggers"
+authors = ["Christopher Dewan <chris.dewan@m3rlin.net>"]
+readme = "README.md"
 packages = [{include = "libxrk", from = "src"}]
 
+[tool.poetry.dependencies]
+python = "^3.12"
+numpy = "^1.26.0"
+cython = "^3.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0.0"
+setuptools = "^68.0.0"
+
+[tool.poetry.build]
+script = "build.py"
+generate-setup-file = false
+
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
+requires = ["poetry-core>=2.0.0,<3.0.0", "setuptools>=68.0.0", "cython>=3.0.0", "numpy>=1.26.0"]
 build-backend = "poetry.core.masonry.api"
