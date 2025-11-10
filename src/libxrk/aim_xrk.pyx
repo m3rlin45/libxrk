@@ -20,6 +20,8 @@ import cython
 from cython.operator cimport dereference
 from libcpp.vector cimport vector
 
+import pyarrow as pa
+
 from . import gps
 from . import base
 
@@ -66,7 +68,7 @@ class Message:
 class DataStream:
     channels: Dict[str, Channel]
     messages: Dict[str, List[Message]]
-    laps: List[base.Lap]
+    laps: pa.Table
     time_offset: int
 
 @dataclass(**dc_slots)
@@ -684,6 +686,10 @@ def _decode_gps(gpsmsg, time_offset):
                     timecodes=timecodes, sampledata=memoryview(gpsconv.alt))]
 
 def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
+    lap_nums = []
+    start_times = []
+    end_times = []
+    
     if lat_ch and lon_ch:
         # If we have GPS, do gps lap insert.
 
@@ -696,33 +702,42 @@ def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
 
         lap_markers = [0] + lap_markers + [last_time - time_offset]
 
-        return [base.Lap(lap, start_time, end_time)
-                for lap, (start_time, end_time) in enumerate(
-                        zip(lap_markers[:-1], lap_markers[1:]))]
-
-    # otherwise, use the lap data provided.
-    ret = []
-    if _tokdec('LAP') in msg_by_type:
-        for m in msg_by_type[_tokdec('LAP')]:
-            # 2nd byte is segment #, see M4GT4
-            segment, lap, duration, end_time = struct.unpack('xBHIxxxxxxxxI', m.content)
-            end_time -= time_offset
-            if segment:
-                continue
-            elif not ret:
-                pass
-            elif ret[-1].num == lap:
-                continue
-            elif ret[-1].num + 1 == lap:
-                pass
-            elif ret[-1].num + 2 == lap:
-                # emit inferred lap
-                ret.append(base.Lap(lap - 1, ret[-1].end_time,
-                                    end_time - duration))
-            else:
-                assert False, 'Lap gap from %d to %d' % (ret[-1].num, lap)
-            ret.append(base.Lap(lap, end_time - duration, end_time))
-    return ret
+        for lap, (start_time, end_time) in enumerate(zip(lap_markers[:-1], lap_markers[1:])):
+            lap_nums.append(lap)
+            start_times.append(start_time)
+            end_times.append(end_time)
+    else:
+        # otherwise, use the lap data provided.
+        if _tokdec('LAP') in msg_by_type:
+            for m in msg_by_type[_tokdec('LAP')]:
+                # 2nd byte is segment #, see M4GT4
+                segment, lap, duration, end_time = struct.unpack('xBHIxxxxxxxxI', m.content)
+                end_time -= time_offset
+                if segment:
+                    continue
+                elif not lap_nums:
+                    pass
+                elif lap_nums[-1] == lap:
+                    continue
+                elif lap_nums[-1] + 1 == lap:
+                    pass
+                elif lap_nums[-1] + 2 == lap:
+                    # emit inferred lap
+                    lap_nums.append(lap - 1)
+                    start_times.append(end_times[-1])
+                    end_times.append(end_time - duration)
+                else:
+                    assert False, 'Lap gap from %d to %d' % (lap_nums[-1], lap)
+                lap_nums.append(lap)
+                start_times.append(end_time - duration)
+                end_times.append(end_time)
+    
+    # Create PyArrow table
+    return pa.table({
+        'num': pa.array(lap_nums, type=pa.int32()),
+        'start_time': pa.array(start_times, type=pa.int64()),
+        'end_time': pa.array(end_times, type=pa.int64())
+    })
 
 
 def AIMXRK(fname, progress=None):

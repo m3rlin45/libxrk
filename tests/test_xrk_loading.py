@@ -3,6 +3,7 @@
 import unittest
 from pathlib import Path
 from libxrk import AIMXRK
+import pyarrow as pa
 
 
 # Path to test data
@@ -126,19 +127,29 @@ class TestXRKFileLoading(unittest.TestCase):
         """Test that the SFJ XRK file contains lap data."""
         log = AIMXRK(str(SFJ_XRK_FILE), progress=None)
 
-        # Should have laps
-        self.assertIsInstance(log.laps, list, "Expected laps to be a list")
+        # Should have laps as a PyArrow table
+        self.assertIsInstance(log.laps, pa.Table, "Expected laps to be a PyArrow Table")
+
+        # Check that table has the expected columns
+        self.assertIn("num", log.laps.column_names, "Laps table missing 'num' column")
+        self.assertIn("start_time", log.laps.column_names, "Laps table missing 'start_time' column")
+        self.assertIn("end_time", log.laps.column_names, "Laps table missing 'end_time' column")
 
         if len(log.laps) > 0:
-            # Verify lap structure
-            for lap in log.laps:
-                self.assertTrue(hasattr(lap, "num"), "Lap missing num attribute")
-                self.assertTrue(hasattr(lap, "start_time"), "Lap missing start_time attribute")
-                self.assertTrue(hasattr(lap, "end_time"), "Lap missing end_time attribute")
+            # Verify lap data
+            num_col = log.laps.column("num").to_pylist()
+            start_time_col = log.laps.column("start_time").to_pylist()
+            end_time_col = log.laps.column("end_time").to_pylist()
+
+            for i in range(len(log.laps)):
+                lap_num = num_col[i]
+                start_time = start_time_col[i]
+                end_time = end_time_col[i]
+
                 self.assertGreaterEqual(
-                    lap.end_time,
-                    lap.start_time,
-                    f"Lap {lap.num} end_time ({lap.end_time}) should be >= start_time ({lap.start_time})",
+                    end_time,
+                    start_time,
+                    f"Lap {lap_num} end_time ({end_time}) should be >= start_time ({start_time})",
                 )
 
             print(f"\nFound {len(log.laps)} laps")

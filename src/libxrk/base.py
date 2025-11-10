@@ -4,6 +4,7 @@ from array import array
 from dataclasses import dataclass
 import sys
 import typing
+import pyarrow as pa
 
 # We use array and memoryview for efficient operations, but that
 # assumes the sizes we expect match the file format.  Lets assert a
@@ -28,16 +29,9 @@ class Channel:
 
 
 @dataclass(eq=False)
-class Lap:
-    num: int
-    start_time: int
-    end_time: int
-
-
-@dataclass(eq=False)
 class LogFile:
     channels: typing.Dict[str, Channel]
-    laps: typing.List[Lap]
+    laps: pa.Table  # PyArrow table with columns: num (int), start_time (int), end_time (int)
     metadata: typing.Dict[str, str]
     key_channel_map: typing.List[typing.Optional[str]]  # speed, lat, long, alt
     file_name: str  # move to metadata?

@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.26.0",
     "cython>=3.0.0",
+    "pyarrow>=14.0.0",
 ]
 
 [project.optional-dependencies]
@@ -40,6 +41,7 @@ exclude = [
 python = "^3.12"
 numpy = "^1.26.0"
 cython = "^3.0.0"
+pyarrow = "^14.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0.0"
@@ -95,6 +97,10 @@ module = "numpy.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+module = "pyarrow.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 module = "setuptools.*"
 ignore_missing_imports = true
 
@@ -111,5 +117,5 @@ script = "build.py"
 generate-setup-file = false
 
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0", "setuptools>=68.0.0", "cython>=3.0.0", "numpy>=1.26.0"]
+requires = ["poetry-core>=2.0.0,<3.0.0", "setuptools>=68.0.0", "cython>=3.0.0", "numpy>=1.26.0", "pyarrow>=14.0.0"]
 build-backend = "poetry.core.masonry.api"
