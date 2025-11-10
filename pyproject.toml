@@ -104,6 +104,7 @@ lint = "black --check ."
 typecheck = "mypy ."
 test = "pytest tests/ -v"
 check = ["lint", "typecheck", "test"]
+repl = "python -i -c \"from libxrk.data import AIMXRK; log = AIMXRK('tests/test_data/SFJ/CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrk'); print('XRK file loaded as: log'); print(f'Channels: {len(log.channels)}'); print(f'Laps: {len(log.laps)}'); print(f'Metadata keys: {list(log.metadata.keys())}')\""
 
 [tool.poetry.build]
 script = "build.py"

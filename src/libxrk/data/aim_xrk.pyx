@@ -725,7 +725,7 @@ def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
     return ret
 
 
-def AIMXRK(fname, progress):
+def AIMXRK(fname, progress=None):
     with open(fname, 'rb') as f:
         with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
             data = _decode_sequence(m, progress)
