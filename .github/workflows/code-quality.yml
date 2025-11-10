@@ -1,0 +1,28 @@
+name: Code Quality
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  black:
+    runs-on: ubuntu-latest
+    name: Check code formatting with Black
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    
+    - name: Install Black
+      run: |
+        python -m pip install --upgrade pip
+        pip install black==25.11.0
+    
+    - name: Check formatting with Black
+      run: black --check .

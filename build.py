@@ -1,4 +1,5 @@
 """Build script for compiling Cython extensions."""
+
 import os
 import shutil
 from pathlib import Path
@@ -10,18 +11,18 @@ import numpy as np
 
 class build_ext(_build_ext):
     """Custom build_ext to handle build directory and file placement."""
-    
+
     def run(self):
         # Set build directory to build/lib instead of in-place
         if not self.inplace:
             # Standard build - put intermediate files in build/
             pass
         super().run()
-    
+
     def copy_extensions_to_source(self):
         """Copy built extensions to the source tree for development."""
         super().copy_extensions_to_source()
-        
+
         # Clean up .cpp files from source tree after build
         src_path = Path("src/libxrk/data")
         for cpp_file in src_path.glob("*.cpp"):
@@ -42,7 +43,7 @@ def build(setup_kwargs):
             extra_compile_args=["-std=c++11"],
         )
     ]
-    
+
     ext_modules = cythonize(
         extensions,
         compiler_directives={
@@ -52,22 +53,24 @@ def build(setup_kwargs):
         annotate=False,
         build_dir="build/cython",  # Put Cython-generated C++ files in build/
     )
-    
-    setup_kwargs.update({
-        "ext_modules": ext_modules,
-        "cmdclass": {"build_ext": build_ext},
-        "zip_safe": False,
-    })
+
+    setup_kwargs.update(
+        {
+            "ext_modules": ext_modules,
+            "cmdclass": {"build_ext": build_ext},
+            "zip_safe": False,
+        }
+    )
 
 
 if __name__ == "__main__":
     # Build extensions in-place for development
     import sys
     from setuptools import setup
-    
+
     setup_kwargs = {}
     build(setup_kwargs)
-    
+
     # Configure to build in-place
     sys.argv = ["build.py", "build_ext", "--inplace"]
     setup(**setup_kwargs)

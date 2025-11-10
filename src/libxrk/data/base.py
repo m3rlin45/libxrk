@@ -9,12 +9,13 @@ import typing
 # assumes the sizes we expect match the file format.  Lets assert a
 # few of those assumptions here.  Our use of struct is safe since it
 # has tighter control over byte order and sizing.
-assert array('H').itemsize == 2
-assert array('I').itemsize == 4
-assert array('Q').itemsize == 8
-assert array('f').itemsize == 4
-assert array('d').itemsize == 8
-assert sys.byteorder == 'little'
+assert array("H").itemsize == 2
+assert array("I").itemsize == 4
+assert array("Q").itemsize == 8
+assert array("f").itemsize == 4
+assert array("d").itemsize == 8
+assert sys.byteorder == "little"
+
 
 @dataclass(eq=False)
 class Channel:
@@ -25,11 +26,13 @@ class Channel:
     dec_pts: int
     interpolate: bool  # if False, use the previous value until next timecode
 
+
 @dataclass(eq=False)
 class Lap:
     num: int
     start_time: int
     end_time: int
+
 
 @dataclass(eq=False)
 class LogFile:

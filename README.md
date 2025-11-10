@@ -48,6 +48,16 @@ print(log.metadata)
 
 ## Development
 
+### Code Formatting
+
+This project uses [Black](https://black.readthedocs.io/) for code formatting.
+
+```bash
+# Format all Python files
+poetry run black .
+
+```
+
 ### Building
 
 ```bash
