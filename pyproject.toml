@@ -46,6 +46,7 @@ pytest = "^7.0.0"
 setuptools = "^68.0.0"
 black = "^25.11.0"
 mypy = "^1.18.2"
+poethepoet = "^0.24.0"
 
 [tool.black]
 line-length = 100
@@ -96,6 +97,13 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = "setuptools.*"
 ignore_missing_imports = true
+
+[tool.poe.tasks]
+format = "black ."
+lint = "black --check ."
+typecheck = "mypy ."
+test = "pytest tests/ -v"
+check = ["lint", "typecheck", "test"]
 
 [tool.poetry.build]
 script = "build.py"

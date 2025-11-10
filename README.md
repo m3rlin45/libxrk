@@ -48,6 +48,12 @@ print(log.metadata)
 
 ## Development
 
+### Quick Check
+```bash
+# Run all quality checks (format check, type check, tests)
+poetry run poe check
+```
+
 ### Code Formatting
 
 This project uses [Black](https://black.readthedocs.io/) for code formatting.
