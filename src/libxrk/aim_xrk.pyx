@@ -742,9 +742,8 @@ def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
 
 def _channel_to_table(ch):
     """Convert a Channel object to a PyArrow table with metadata."""
-    # Create metadata dict for the values field
+    # Create metadata dict for the channel data field (without name, as it's the column name)
     metadata = {
-        b'name': ch.long_name.encode('utf-8'),
         b'units': (ch.units if ch.size != 1 else '').encode('utf-8'),
         b'dec_pts': str(ch.dec_pts).encode('utf-8'),
         b'interpolate': str(ch.interpolate).encode('utf-8')
@@ -756,17 +755,18 @@ def _channel_to_table(ch):
     else:
         values_array = ch.sampledata
     
-    # Create the schema with metadata on the values field
-    values_field = pa.field('values', pa.from_numpy_dtype(values_array.dtype), metadata=metadata)
+    # Create the schema with metadata on the channel data field
+    # Use the actual channel name as the column name
+    channel_field = pa.field(ch.long_name, pa.from_numpy_dtype(values_array.dtype), metadata=metadata)
     schema = pa.schema([
         pa.field('timecodes', pa.int64()),
-        values_field
+        channel_field
     ])
     
-    # Create the table
+    # Create the table with the channel name as the column name
     return pa.table({
         'timecodes': pa.array(ch.timecodes, type=pa.int64()),
-        'values': pa.array(values_array)
+        ch.long_name: pa.array(values_array)
     }, schema=schema)
 
 

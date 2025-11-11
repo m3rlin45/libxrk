@@ -16,9 +16,9 @@ assert sys.byteorder == "little"
 class LogFile:
     channels: typing.Dict[
         str, pa.Table
-    ]  # Each channel is a PyArrow table with columns: timecodes (int64), values (float/int)
-    # Metadata stored in schema.field('values').metadata:
-    # name, units, dec_pts, interpolate
+    ]  # Each channel is a PyArrow table with columns: timecodes (int64), <channel_name> (float/int)
+    # Metadata stored in schema.field(<channel_name>).metadata:
+    # units, dec_pts, interpolate
     laps: pa.Table  # PyArrow table with columns: num (int), start_time (int), end_time (int)
     metadata: typing.Dict[str, str]
     file_name: str  # move to metadata?

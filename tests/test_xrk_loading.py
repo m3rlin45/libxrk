@@ -50,9 +50,9 @@ class TestXRKFileLoading(unittest.TestCase):
                 f"Channel '{channel_name}' missing 'timecodes' column",
             )
             self.assertIn(
-                "values",
+                channel_name,
                 channel_table.column_names,
-                f"Channel '{channel_name}' missing 'values' column",
+                f"Channel '{channel_name}' missing data column with its name",
             )
 
             self.assertGreater(
@@ -69,7 +69,7 @@ class TestXRKFileLoading(unittest.TestCase):
         timecode_info = {}
         for channel_name, channel_table in log.channels.items():
             timecode_length = len(channel_table.column("timecodes"))
-            value_length = len(channel_table.column("values"))
+            value_length = len(channel_table.column(channel_name))
             timecode_info[channel_name] = {
                 "timecodes": timecode_length,
                 "values": value_length,
