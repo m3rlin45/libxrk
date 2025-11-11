@@ -780,7 +780,6 @@ def AIMXRK(fname, progress=None):
         {ch.long_name: _channel_to_table(ch) for ch in data.channels.values()},
         data.laps,
         _get_metadata(data.messages),
-        ['GPS Speed', 'GPS Latitude', 'GPS Longitude', 'GPS Altitude'],
         fname)
 
 def aim_track(fname):

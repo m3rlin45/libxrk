@@ -21,5 +21,4 @@ class LogFile:
     # name, units, dec_pts, interpolate
     laps: pa.Table  # PyArrow table with columns: num (int), start_time (int), end_time (int)
     metadata: typing.Dict[str, str]
-    key_channel_map: typing.List[typing.Optional[str]]  # speed, lat, long, alt
     file_name: str  # move to metadata?
