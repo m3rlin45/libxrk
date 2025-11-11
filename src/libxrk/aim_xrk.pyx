@@ -740,6 +740,36 @@ def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
     })
 
 
+def _channel_to_table(ch):
+    """Convert a Channel object to a PyArrow table with metadata."""
+    # Create metadata dict for the values field
+    metadata = {
+        b'name': ch.long_name.encode('utf-8'),
+        b'units': (ch.units if ch.size != 1 else '').encode('utf-8'),
+        b'dec_pts': str(ch.dec_pts).encode('utf-8'),
+        b'interpolate': str(ch.interpolate).encode('utf-8')
+    }
+    
+    # Determine the appropriate type for values based on the data
+    if isinstance(ch.sampledata, memoryview):
+        values_array = np.array(ch.sampledata)
+    else:
+        values_array = ch.sampledata
+    
+    # Create the schema with metadata on the values field
+    values_field = pa.field('values', pa.from_numpy_dtype(values_array.dtype), metadata=metadata)
+    schema = pa.schema([
+        pa.field('timecodes', pa.int64()),
+        values_field
+    ])
+    
+    # Create the table
+    return pa.table({
+        'timecodes': pa.array(ch.timecodes, type=pa.int64()),
+        'values': pa.array(values_array)
+    }, schema=schema)
+
+
 def AIMXRK(fname, progress=None):
     with open(fname, 'rb') as f:
         with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
@@ -747,13 +777,7 @@ def AIMXRK(fname, progress=None):
     #pprint({k: len(v) for k, v in self.msg_by_type.items()})
 
     return base.LogFile(
-        {ch.long_name: base.Channel(ch.timecodes,
-                                    ch.sampledata,
-                                    ch.long_name,
-                                    ch.units if ch.size != 1 else '',
-                                    ch.dec_pts,
-                                    interpolate = ch.interpolate)
-         for ch in data.channels.values()},
+        {ch.long_name: _channel_to_table(ch) for ch in data.channels.values()},
         data.laps,
         _get_metadata(data.messages),
         ['GPS Speed', 'GPS Latitude', 'GPS Longitude', 'GPS Altitude'],

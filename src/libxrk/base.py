@@ -1,6 +1,5 @@
 # Copyright 2024, Scott Smith.  MIT License (see LICENSE).
 
-from array import array
 from dataclasses import dataclass
 import sys
 import typing
@@ -10,27 +9,16 @@ import pyarrow as pa
 # assumes the sizes we expect match the file format.  Lets assert a
 # few of those assumptions here.  Our use of struct is safe since it
 # has tighter control over byte order and sizing.
-assert array("H").itemsize == 2
-assert array("I").itemsize == 4
-assert array("Q").itemsize == 8
-assert array("f").itemsize == 4
-assert array("d").itemsize == 8
 assert sys.byteorder == "little"
 
 
 @dataclass(eq=False)
-class Channel:
-    timecodes: array
-    values: array
-    name: str
-    units: str
-    dec_pts: int
-    interpolate: bool  # if False, use the previous value until next timecode
-
-
-@dataclass(eq=False)
 class LogFile:
-    channels: typing.Dict[str, Channel]
+    channels: typing.Dict[
+        str, pa.Table
+    ]  # Each channel is a PyArrow table with columns: timecodes (int64), values (float/int)
+    # Metadata stored in schema.field('values').metadata:
+    # name, units, dec_pts, interpolate
     laps: pa.Table  # PyArrow table with columns: num (int), start_time (int), end_time (int)
     metadata: typing.Dict[str, str]
     key_channel_map: typing.List[typing.Optional[str]]  # speed, lat, long, alt

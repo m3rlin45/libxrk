@@ -37,18 +37,28 @@ class TestXRKFileLoading(unittest.TestCase):
         self.assertGreater(len(log.channels), 0, "Expected channels in the XRK file")
 
         # Verify channels have data
-        for channel_name, channel in log.channels.items():
-            self.assertTrue(
-                hasattr(channel, "timecodes"),
-                f"Channel '{channel_name}' missing timecodes attribute",
+        for channel_name, channel_table in log.channels.items():
+            # Each channel should be a PyArrow table
+            self.assertIsInstance(
+                channel_table, pa.Table, f"Channel '{channel_name}' is not a PyArrow Table"
             )
-            self.assertTrue(
-                hasattr(channel, "values"), f"Channel '{channel_name}' missing values attribute"
+
+            # Check that table has the expected columns
+            self.assertIn(
+                "timecodes",
+                channel_table.column_names,
+                f"Channel '{channel_name}' missing 'timecodes' column",
             )
+            self.assertIn(
+                "values",
+                channel_table.column_names,
+                f"Channel '{channel_name}' missing 'values' column",
+            )
+
             self.assertGreater(
-                len(channel.timecodes),
+                len(channel_table),
                 0,
-                f"Channel '{channel_name}' has empty timecodes",
+                f"Channel '{channel_name}' has empty data",
             )
 
     def test_sfj_xrk_timecode_lengths(self):
@@ -57,9 +67,9 @@ class TestXRKFileLoading(unittest.TestCase):
 
         # Collect timecode lengths for all channels
         timecode_info = {}
-        for channel_name, channel in log.channels.items():
-            timecode_length = len(channel.timecodes)
-            value_length = len(channel.values)
+        for channel_name, channel_table in log.channels.items():
+            timecode_length = len(channel_table.column("timecodes"))
+            value_length = len(channel_table.column("values"))
             timecode_info[channel_name] = {
                 "timecodes": timecode_length,
                 "values": value_length,
@@ -103,9 +113,9 @@ class TestXRKFileLoading(unittest.TestCase):
             )
 
             # Verify GPS channels have data
-            channel = log.channels[gps_channel]
+            channel_table = log.channels[gps_channel]
             self.assertGreater(
-                len(channel.timecodes),
+                len(channel_table),
                 0,
                 f"GPS channel '{gps_channel}' has no data",
             )
