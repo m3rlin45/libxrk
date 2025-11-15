@@ -2,7 +2,7 @@
 
 import unittest
 from pathlib import Path
-from libxrk import AIMXRK
+from libxrk import aim_xrk
 import pyarrow as pa
 
 
@@ -21,17 +21,17 @@ class TestSFJXRK(unittest.TestCase):
     def test_load_sfj_xrk_file(self):
         """Test loading the SFJ XRK file."""
         # Load the file
-        log = AIMXRK(str(SFJ_XRK_FILE), progress=None)
+        log = aim_xrk(str(SFJ_XRK_FILE), progress=None)
 
         # Verify basic structure
-        self.assertIsNotNone(log, "AIMXRK returned None")
+        self.assertIsNotNone(log, "aim_xrk returned None")
         self.assertIsNotNone(log.channels, "LogFile.channels is None")
         self.assertIsNotNone(log.laps, "LogFile.laps is None")
         self.assertIsNotNone(log.metadata, "LogFile.metadata is None")
 
     def test_sfj_xrk_metadata(self):
         """Test that the SFJ XRK file contains metadata."""
-        log = AIMXRK(str(SFJ_XRK_FILE), progress=None)
+        log = aim_xrk(str(SFJ_XRK_FILE), progress=None)
 
         # Should have metadata
         self.assertIsInstance(log.metadata, dict, "Expected metadata to be a dict")
@@ -63,7 +63,7 @@ class TestSFJXRK(unittest.TestCase):
 
     def test_sfj_xrk_laps(self):
         """Test that the SFJ XRK file contains lap data."""
-        log = AIMXRK(str(SFJ_XRK_FILE), progress=None)
+        log = aim_xrk(str(SFJ_XRK_FILE), progress=None)
 
         # Should have laps as a PyArrow table
         self.assertIsInstance(log.laps, pa.Table, "Expected laps to be a PyArrow Table")
@@ -78,7 +78,7 @@ class TestSFJXRK(unittest.TestCase):
 
     def test_sfj_xrk_specific_lap_times(self):
         """Test that specific lap times match expected values."""
-        log = AIMXRK(str(SFJ_XRK_FILE), progress=None)
+        log = aim_xrk(str(SFJ_XRK_FILE), progress=None)
 
         # Expected lap data (lap_num, start_time, end_time)
         expected_laps = [
@@ -117,7 +117,7 @@ class TestSFJXRK(unittest.TestCase):
 
     def test_sfj_xrk_channel_count_and_names(self):
         """Test that all expected channels are present with correct names."""
-        log = AIMXRK(str(SFJ_XRK_FILE), progress=None)
+        log = aim_xrk(str(SFJ_XRK_FILE), progress=None)
 
         expected_channels = {
             "ACCEL",
@@ -157,7 +157,7 @@ class TestSFJXRK(unittest.TestCase):
 
     def test_sfj_xrk_channel_row_counts(self):
         """Test that channels have the expected number of rows."""
-        log = AIMXRK(str(SFJ_XRK_FILE), progress=None)
+        log = aim_xrk(str(SFJ_XRK_FILE), progress=None)
 
         # Expected row counts for each channel
         expected_row_counts = {
@@ -200,7 +200,7 @@ class TestSFJXRK(unittest.TestCase):
 
     def test_sfj_xrk_channel_first_last_values(self):
         """Test that channels have expected first and last values."""
-        log = AIMXRK(str(SFJ_XRK_FILE), progress=None)
+        log = aim_xrk(str(SFJ_XRK_FILE), progress=None)
 
         # Expected first and last values for select channels (name, first, last, tolerance)
         test_cases = [
@@ -240,7 +240,7 @@ class TestSFJXRK(unittest.TestCase):
 
     def test_sfj_xrk_channel_metadata(self):
         """Test that channels have correct metadata (units, dec_pts, interpolate)."""
-        log = AIMXRK(str(SFJ_XRK_FILE), progress=None)
+        log = aim_xrk(str(SFJ_XRK_FILE), progress=None)
 
         # Expected metadata for select channels (name, units, dec_pts, interpolate)
         test_cases = [

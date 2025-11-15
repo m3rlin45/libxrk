@@ -770,7 +770,7 @@ def _channel_to_table(ch):
     }, schema=schema)
 
 
-def AIMXRK(fname, progress=None):
+def aim_xrk(fname, progress=None):
     with open(fname, 'rb') as f:
         with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
             data = _decode_sequence(m, progress)
@@ -782,7 +782,7 @@ def AIMXRK(fname, progress=None):
         _get_metadata(data.messages),
         fname)
 
-def aim_track(fname):
+def aim_track_dbg(fname):
     with open(fname, 'rb') as f:
         with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
             data = _decode_sequence(m, None)

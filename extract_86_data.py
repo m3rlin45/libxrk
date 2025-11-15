@@ -1,13 +1,13 @@
 """Extract test data from 86 XRK file for test suite."""
 
 from pathlib import Path
-from libxrk import AIMXRK
+from libxrk import aim_xrk
 
 # Load the test file
 test_file = Path("tests/test_data/86/CMD_Inferno 86_Fuji GP Sh_Generic testing_a_2248.xrk")
 print(f"Loading: {test_file}")
 
-log = AIMXRK(str(test_file), progress=None)
+log = aim_xrk(str(test_file), progress=None)
 
 # Extract metadata
 print("\n=== FILE-LEVEL METADATA ===")

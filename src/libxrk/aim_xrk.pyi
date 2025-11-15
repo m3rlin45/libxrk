@@ -4,7 +4,7 @@
 from typing import Any, Callable, Optional
 from libxrk.base import LogFile
 
-def AIMXRK(fname: str, progress: Optional[Callable[[int, int], None]]) -> LogFile:
+def aim_xrk(fname: str, progress: Optional[Callable[[int, int], None]]) -> LogFile:
     """
     Read and parse an AIM XRK file.
 
@@ -17,9 +17,9 @@ def AIMXRK(fname: str, progress: Optional[Callable[[int, int], None]]) -> LogFil
     """
     ...
 
-def aim_track(fname: str) -> dict[str, Any]:
+def aim_track_dbg(fname: str) -> dict[str, Any]:
     """
-    Read track information from an AIM XRK file.
+    Read track information from an AIM XRK file for debugging purposes.
 
     Args:
         fname: Path to the XRK file to read

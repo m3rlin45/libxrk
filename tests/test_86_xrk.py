@@ -2,7 +2,7 @@
 
 import unittest
 from pathlib import Path
-from libxrk import AIMXRK
+from libxrk import aim_xrk
 import pyarrow as pa
 
 
@@ -21,17 +21,17 @@ class Test86XRK(unittest.TestCase):
     def test_load_86_xrk_file(self):
         """Test loading the 86 XRK file."""
         # Load the file
-        log = AIMXRK(str(XRK_86_FILE), progress=None)
+        log = aim_xrk(str(XRK_86_FILE), progress=None)
 
         # Verify basic structure
-        self.assertIsNotNone(log, "AIMXRK returned None")
+        self.assertIsNotNone(log, "aim_xrk returned None")
         self.assertIsNotNone(log.channels, "LogFile.channels is None")
         self.assertIsNotNone(log.laps, "LogFile.laps is None")
         self.assertIsNotNone(log.metadata, "LogFile.metadata is None")
 
     def test_86_xrk_metadata(self):
         """Test that the 86 XRK file contains metadata."""
-        log = AIMXRK(str(XRK_86_FILE), progress=None)
+        log = aim_xrk(str(XRK_86_FILE), progress=None)
 
         # Should have metadata
         self.assertIsInstance(log.metadata, dict, "Expected metadata to be a dict")
@@ -63,7 +63,7 @@ class Test86XRK(unittest.TestCase):
 
     def test_86_xrk_laps(self):
         """Test that the 86 XRK file contains lap data."""
-        log = AIMXRK(str(XRK_86_FILE), progress=None)
+        log = aim_xrk(str(XRK_86_FILE), progress=None)
 
         # Should have laps as a PyArrow table
         self.assertIsInstance(log.laps, pa.Table, "Expected laps to be a PyArrow Table")
@@ -78,7 +78,7 @@ class Test86XRK(unittest.TestCase):
 
     def test_86_xrk_specific_lap_times(self):
         """Test that specific lap times match expected values."""
-        log = AIMXRK(str(XRK_86_FILE), progress=None)
+        log = aim_xrk(str(XRK_86_FILE), progress=None)
 
         # Expected lap data (lap_num, start_time, end_time)
         expected_laps = [
@@ -120,7 +120,7 @@ class Test86XRK(unittest.TestCase):
 
     def test_86_xrk_channel_count_and_names(self):
         """Test that all expected channels are present with correct names."""
-        log = AIMXRK(str(XRK_86_FILE), progress=None)
+        log = aim_xrk(str(XRK_86_FILE), progress=None)
 
         expected_channels = {
             "AmbientTemp",
@@ -226,7 +226,7 @@ class Test86XRK(unittest.TestCase):
 
     def test_86_xrk_channel_row_counts(self):
         """Test that channels have the expected number of rows."""
-        log = AIMXRK(str(XRK_86_FILE), progress=None)
+        log = aim_xrk(str(XRK_86_FILE), progress=None)
 
         # Expected row counts for each channel
         expected_row_counts = {
@@ -335,7 +335,7 @@ class Test86XRK(unittest.TestCase):
 
     def test_86_xrk_channel_first_last_values(self):
         """Test that channels have expected first and last values (all channels)."""
-        log = AIMXRK(str(XRK_86_FILE), progress=None)
+        log = aim_xrk(str(XRK_86_FILE), progress=None)
 
         # Test all channels with first and last values from test_data.md
         test_cases = [
@@ -465,7 +465,7 @@ class Test86XRK(unittest.TestCase):
 
     def test_86_xrk_channel_metadata(self):
         """Test that channels have correct metadata (all channels)."""
-        log = AIMXRK(str(XRK_86_FILE), progress=None)
+        log = aim_xrk(str(XRK_86_FILE), progress=None)
 
         # Test all channels with metadata from test_data.md
         # Format: (channel_name, units, dec_pts, interpolate)

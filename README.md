@@ -29,10 +29,10 @@ The Cython extension will be automatically compiled during installation.
 ## Usage
 
 ```python
-from libxrk import AIMXRK
+from libxrk import aim_xrk
 
 # Read an XRK file
-log = AIMXRK('path/to/file.xrk', progress=None)
+log = aim_xrk('path/to/file.xrk', progress=None)
 
 # Access channels
 for channel_name, channel in log.channels.items():

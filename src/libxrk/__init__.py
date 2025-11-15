@@ -2,6 +2,6 @@
 
 """libxrk - Library for reading AIM XRK and XRZ files."""
 
-from .aim_xrk import AIMXRK, aim_track
+from .aim_xrk import aim_xrk, aim_track_dbg
 
-__all__ = ["AIMXRK", "aim_track"]
+__all__ = ["aim_xrk", "aim_track_dbg"]
