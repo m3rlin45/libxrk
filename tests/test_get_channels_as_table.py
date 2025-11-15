@@ -287,6 +287,73 @@ class TestChannelMerge(unittest.TestCase):
         # Columns should be sorted alphabetically (after timecodes)
         self.assertEqual(result.column_names, ["timecodes", "AChannel", "MChannel", "ZChannel"])
 
+    def test_column_metadata_preserved(self):
+        """Test that column metadata is preserved in the merged table."""
+        # Create channels with metadata
+        channel_a = pa.table(
+            {
+                "timecodes": pa.array([0, 100], type=pa.int64()),
+                "ChannelA": pa.array([1.0, 2.0], type=pa.float32()),
+            }
+        )
+        # Add metadata to ChannelA
+        channel_a_field = channel_a.schema.field("ChannelA")
+        channel_a_field_with_meta = channel_a_field.with_metadata(
+            {b"units": b"m/s", b"dec_pts": b"2", b"interpolate": b"linear"}
+        )
+        new_schema_a = pa.schema(
+            [
+                channel_a.schema.field("timecodes"),
+                channel_a_field_with_meta,
+            ]
+        )
+        channel_a = channel_a.cast(new_schema_a)
+
+        channel_b = pa.table(
+            {
+                "timecodes": pa.array([50, 150], type=pa.int64()),
+                "ChannelB": pa.array([10.0, 20.0], type=pa.float32()),
+            }
+        )
+        # Add different metadata to ChannelB
+        channel_b_field = channel_b.schema.field("ChannelB")
+        channel_b_field_with_meta = channel_b_field.with_metadata(
+            {b"units": b"rpm", b"dec_pts": b"0", b"interpolate": b"step"}
+        )
+        new_schema_b = pa.schema(
+            [
+                channel_b.schema.field("timecodes"),
+                channel_b_field_with_meta,
+            ]
+        )
+        channel_b = channel_b.cast(new_schema_b)
+
+        log = LogFile(
+            channels={"ChannelA": channel_a, "ChannelB": channel_b},
+            laps=pa.table({"num": [], "start_time": [], "end_time": []}),
+            metadata={},
+            file_name="test.xrk",
+        )
+
+        result = log.get_channels_as_table()
+
+        # Check that metadata is preserved for ChannelA
+        schema = result.schema
+        channel_a_field = schema.field("ChannelA")
+        channel_a_metadata = channel_a_field.metadata or {}
+
+        self.assertEqual(channel_a_metadata.get(b"units"), b"m/s")
+        self.assertEqual(channel_a_metadata.get(b"dec_pts"), b"2")
+        self.assertEqual(channel_a_metadata.get(b"interpolate"), b"linear")
+
+        # Check that metadata is preserved for ChannelB
+        channel_b_field = schema.field("ChannelB")
+        channel_b_metadata = channel_b_field.metadata or {}
+
+        self.assertEqual(channel_b_metadata.get(b"units"), b"rpm")
+        self.assertEqual(channel_b_metadata.get(b"dec_pts"), b"0")
+        self.assertEqual(channel_b_metadata.get(b"interpolate"), b"step")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -29,11 +29,19 @@ class LogFile:
 
         Returns:
             A PyArrow table with a 'timecodes' column and one column per channel.
-            Missing values are represented as null.
+            Missing values are represented as null. Column metadata is preserved.
         """
         if not self.channels:
             # Return an empty table with just timecodes column if no channels
             return pa.table({"timecodes": pa.array([], type=pa.int64())})
+
+        # Collect metadata from all channels before joining
+        # PyArrow join() doesn't preserve field metadata, so we need to save and restore it
+        channel_metadata = {}
+        for channel_name, channel_table in self.channels.items():
+            field = channel_table.schema.field(channel_name)
+            if field.metadata:
+                channel_metadata[channel_name] = field.metadata
 
         # Start with the first channel
         channel_names = sorted(self.channels.keys())
@@ -50,5 +58,17 @@ class LogFile:
 
         # Sort by timecodes to maintain temporal order
         result = result.sort_by([("timecodes", "ascending")])
+
+        # Restore column metadata that was lost during join operations
+        if channel_metadata:
+            new_fields = []
+            for field in result.schema:
+                if field.name in channel_metadata:
+                    # Restore the metadata for this channel
+                    new_fields.append(field.with_metadata(channel_metadata[field.name]))
+                else:
+                    new_fields.append(field)
+            new_schema = pa.schema(new_fields)
+            result = result.cast(new_schema)
 
         return result
