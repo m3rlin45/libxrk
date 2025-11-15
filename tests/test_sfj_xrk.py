@@ -1,4 +1,4 @@
-"""End-to-end tests for libxrk XRK file reading."""
+"""End-to-end tests for libxrk SFJ XRK file reading."""
 
 import unittest
 from pathlib import Path
@@ -11,8 +11,8 @@ TEST_DATA_DIR = Path(__file__).parent / "test_data"
 SFJ_XRK_FILE = TEST_DATA_DIR / "SFJ" / "CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrk"
 
 
-class TestXRKFileLoading(unittest.TestCase):
-    """Tests for loading and parsing XRK files."""
+class TestSFJXRK(unittest.TestCase):
+    """Tests for loading and parsing the SFJ test vector XRK file."""
 
     def test_sfj_file_exists(self):
         """Verify the test data file exists."""
