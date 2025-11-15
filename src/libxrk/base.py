@@ -22,3 +22,33 @@ class LogFile:
     laps: pa.Table  # PyArrow table with columns: num (int), start_time (int), end_time (int)
     metadata: typing.Dict[str, str]
     file_name: str  # move to metadata?
+
+    def get_channels_as_table(self) -> pa.Table:
+        """
+        Merge all channels into a single PyArrow table with full outer join on timestamps.
+
+        Returns:
+            A PyArrow table with a 'timecodes' column and one column per channel.
+            Missing values are represented as null.
+        """
+        if not self.channels:
+            # Return an empty table with just timecodes column if no channels
+            return pa.table({"timecodes": pa.array([], type=pa.int64())})
+
+        # Start with the first channel
+        channel_names = sorted(self.channels.keys())
+        result = self.channels[channel_names[0]]
+
+        # Perform full outer joins with remaining channels
+        for channel_name in channel_names[1:]:
+            channel_table = self.channels[channel_name]
+
+            # Perform full outer join on timecodes
+            result = result.join(
+                channel_table, keys="timecodes", right_keys="timecodes", join_type="full outer"
+            )
+
+        # Sort by timecodes to maintain temporal order
+        result = result.sort_by([("timecodes", "ascending")])
+
+        return result
