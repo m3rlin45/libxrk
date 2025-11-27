@@ -1,6 +1,6 @@
 # libxrk
 
-A Python library for reading AIM XRK and XRZ files from AIM automotive data loggers.
+A Python library for reading AIM XRK files from AIM automotive data loggers.
 
 ## Features
 
@@ -11,14 +11,22 @@ A Python library for reading AIM XRK and XRZ files from AIM automotive data logg
 
 ## Installation
 
-### Prerequisites
+### Install from PyPI
+
+```bash
+pip install libxrk
+```
+
+### Install from Source
+
+#### Prerequisites
 
 On Ubuntu/Debian:
 ```bash
 sudo apt install build-essential python3-dev
 ```
 
-### Install with Poetry
+#### Install with Poetry
 
 ```bash
 poetry install

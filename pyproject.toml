@@ -1,12 +1,17 @@
 [project]
 name = "libxrk"
-version = "0.2.0"
-description = "Library for reading AIM XRK and XRZ files from AIM automotive data loggers"
+version = "0.2.2"
+description = "Library for reading AIM XRK files from AIM automotive data loggers"
 authors = [
     {name = "Christopher Dewan",email = "chris.dewan@m3rlin.net"}
 ]
 readme = "README.md"
 requires-python = ">=3.12"
+
+[project.urls]
+Homepage = "https://github.com/m3rlin45/libxrk"
+Repository = "https://github.com/m3rlin45/libxrk"
+Issues = "https://github.com/m3rlin45/libxrk/issues"
 dependencies = [
     "numpy>=1.26.0",
     "cython>=3.0.0",
@@ -21,10 +26,12 @@ dev = [
 
 [tool.poetry]
 name = "libxrk"
-version = "0.2.0"
-description = "Library for reading AIM XRK and XRZ files from AIM automotive data loggers"
+version = "0.2.2"
+description = "Library for reading AIM XRK files from AIM automotive data loggers"
 authors = ["Christopher Dewan <chris.dewan@m3rlin.net>"]
 readme = "README.md"
+repository = "https://github.com/m3rlin45/libxrk"
+homepage = "https://github.com/m3rlin45/libxrk"
 packages = [{include = "libxrk", from = "src"}]
 include = [
     { path = "src/libxrk/**/*.so", format = "wheel" },
