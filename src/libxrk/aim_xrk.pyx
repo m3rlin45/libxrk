@@ -770,22 +770,78 @@ def _channel_to_table(ch):
     }, schema=schema)
 
 
+class _open_xrk:
+    """Context manager that opens an XRK file, using mmap if available, falling back to read().
+    
+    This handles environments like JupyterLite where mmap may not be supported.
+    Also accepts bytes or file-like objects directly.
+    """
+    def __init__(self, source):
+        self._source = source
+        self._file = None
+        self._mmap = None
+        self._data = None
+    
+    def __enter__(self):
+        # Handle bytes input directly
+        if isinstance(self._source, (bytes, bytearray)):
+            self._data = self._source
+            return self._data
+        
+        # Handle memoryview - convert to bytes for consistent handling
+        if isinstance(self._source, memoryview):
+            self._data = bytes(self._source)
+            return self._data
+        
+        # Handle file-like objects (BytesIO, etc.)
+        if hasattr(self._source, 'read'):
+            self._source.seek(0)
+            self._data = self._source.read()
+            return self._data
+        
+        # Handle file path - try mmap first, fall back to read()
+        self._file = open(self._source, 'rb')
+        try:
+            self._mmap = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
+            return self._mmap
+        except (OSError, ValueError):
+            # mmap failed (e.g., JupyterLite/IDBFS) - fall back to read()
+            self._file.seek(0)
+            self._data = self._file.read()
+            return self._data
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._mmap is not None:
+            self._mmap.close()
+        if self._file is not None:
+            self._file.close()
+        return False
+
+
 def aim_xrk(fname, progress=None):
-    with open(fname, 'rb') as f:
-        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
-            data = _decode_sequence(m, progress)
-    #pprint({k: len(v) for k, v in self.msg_by_type.items()})
+    """Load an AIM XRK file.
+    
+    Args:
+        fname: Path to the XRK file, or bytes/BytesIO containing file data
+        progress: Optional progress callback
+        
+    Returns:
+        LogFile object with channels, laps, and metadata
+    """
+    with _open_xrk(fname) as m:
+        data = _decode_sequence(m, progress)
 
     return base.LogFile(
         {ch.long_name: _channel_to_table(ch) for ch in data.channels.values()},
         data.laps,
         _get_metadata(data.messages),
-        fname)
+        fname if not isinstance(fname, (bytes, bytearray, memoryview)) and not hasattr(fname, 'read') else "<bytes>")
+
 
 def aim_track_dbg(fname):
-    with open(fname, 'rb') as f:
-        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
-            data = _decode_sequence(m, None)
+    """Debug function to extract track data from an AIM XRK file."""
+    with _open_xrk(fname) as m:
+        data = _decode_sequence(m, None)
     return {_tokenc(k): v for k, v in data.messages.items()}
 
 #def _help_decode_channels(self, chmap):

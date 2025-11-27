@@ -1,6 +1,6 @@
 [project]
 name = "libxrk"
-version = "0.1.0"
+version = "0.2.0"
 description = "Library for reading AIM XRK and XRZ files from AIM automotive data loggers"
 authors = [
     {name = "Christopher Dewan",email = "chris.dewan@m3rlin.net"}
@@ -21,7 +21,7 @@ dev = [
 
 [tool.poetry]
 name = "libxrk"
-version = "0.1.0"
+version = "0.2.0"
 description = "Library for reading AIM XRK and XRZ files from AIM automotive data loggers"
 authors = ["Christopher Dewan <chris.dewan@m3rlin.net>"]
 readme = "README.md"
@@ -125,7 +125,7 @@ interpreter = "bash"
 help = "Install Pyodide npm package for WebAssembly testing"
 
 [tool.poe.tasks.pyodide-test]
-shell = "rm -f src/libxrk/*.so dist/*.whl && source ./build/emsdk/emsdk_env.sh && pyodide build --exports whole_archive && node scripts/run_pyodide_tests.mjs --dist-dir=./dist"
+shell = "rm -f src/libxrk/*.so dist/*.whl && source ./build/emsdk/emsdk_env.sh && pyodide build --exports whole_archive && node scripts/run_pyodide_tests.mjs --dist-dir=./dist && node scripts/run_pyodide_tests_idbfs.mjs --dist-dir=./dist && poetry install --only-root"
 interpreter = "bash"
 help = "Build and run tests in Pyodide (WebAssembly)"
 deps = ["emsdk-setup", "pyodide-setup"]

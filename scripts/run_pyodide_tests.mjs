@@ -11,6 +11,7 @@ import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
+const pyodideTestsDir = path.join(__dirname, "pyodide_tests");
 
 /**
  * Recursively copy a directory to the Pyodide virtual filesystem.
@@ -106,44 +107,25 @@ async function main() {
   console.log(`Copying test files from ${testsDir}...`);
   copyDirToFs(pyodide, testsDir, "/tests");
 
+  // Create pyodide_tests directory and copy Python test runner
+  try {
+    pyodide.FS.mkdir("/pyodide_tests");
+  } catch (e) {
+    // Directory might already exist
+  }
+
   console.log("\nRunning tests...\n");
+  
+  // Read and execute Python test runner
+  const testRunnerPath = path.join(pyodideTestsDir, "run_unit_tests.py");
+  const testRunnerCode = fs.readFileSync(testRunnerPath, "utf-8");
+  pyodide.FS.writeFile("/pyodide_tests/run_unit_tests.py", testRunnerCode);
+  
   const testResult = await pyodide.runPythonAsync(`
 import sys
-import os
-
-# Change to tests directory so relative paths work
-os.chdir('/tests')
-sys.path.insert(0, '/tests')
-
-import unittest
-
-# Import the existing test modules
-from test_86_xrk import Test86XRK
-from test_sfj_xrk import TestSFJXRK
-from test_get_channels_as_table import TestChannelMerge
-
-# Run the tests
-loader = unittest.TestLoader()
-suite = unittest.TestSuite()
-
-# Add all test classes
-suite.addTests(loader.loadTestsFromTestCase(Test86XRK))
-suite.addTests(loader.loadTestsFromTestCase(TestSFJXRK))
-suite.addTests(loader.loadTestsFromTestCase(TestChannelMerge))
-
-runner = unittest.TextTestRunner(verbosity=2)
-result = runner.run(suite)
-
-# Print summary
-print(f"\\n{'='*60}")
-print(f"Tests run: {result.testsRun}")
-print(f"Failures: {len(result.failures)}")
-print(f"Errors: {len(result.errors)}")
-print(f"Skipped: {len(result.skipped)}")
-print(f"{'='*60}")
-
-# Return exit code
-0 if result.wasSuccessful() else 1
+sys.path.insert(0, '/pyodide_tests')
+from run_unit_tests import run_tests
+run_tests()
 `);
 
   console.log(`\nTest result: ${testResult === 0 ? "PASSED" : "FAILED"}`);
