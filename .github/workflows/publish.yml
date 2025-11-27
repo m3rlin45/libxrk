@@ -17,7 +17,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
 
     steps:
     - uses: actions/checkout@v4
@@ -38,7 +38,6 @@ jobs:
         CIBW_BUILD: "cp312-*"
         CIBW_SKIP: "*-musllinux_*"
         CIBW_ARCHS_LINUX: "x86_64 aarch64"
-        CIBW_ARCHS_MACOS: "x86_64 arm64"
         CIBW_BUILD_VERBOSITY: 1
         CIBW_BEFORE_BUILD: "pip install numpy cython"
 

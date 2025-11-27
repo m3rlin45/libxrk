@@ -138,15 +138,11 @@ deps = ["emsdk-setup"]
 
 [tool.cibuildwheel]
 build = "cp312-*"
-skip = "*-musllinux_* *-win*"
+skip = "*-musllinux_* *-win* *-macos*"
 build-verbosity = 1
 
 [tool.cibuildwheel.linux]
 archs = ["x86_64", "aarch64"]
-before-build = "pip install numpy cython"
-
-[tool.cibuildwheel.macos]
-archs = ["x86_64", "arm64"]
 before-build = "pip install numpy cython"
 
 [tool.poetry.build]
