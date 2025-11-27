@@ -7,16 +7,16 @@ authors = [
 ]
 readme = "README.md"
 requires-python = ">=3.12"
-
-[project.urls]
-Homepage = "https://github.com/m3rlin45/libxrk"
-Repository = "https://github.com/m3rlin45/libxrk"
-Issues = "https://github.com/m3rlin45/libxrk/issues"
 dependencies = [
     "numpy>=1.26.0",
     "cython>=3.0.0",
     "pyarrow>=14.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/m3rlin45/libxrk"
+Repository = "https://github.com/m3rlin45/libxrk"
+Issues = "https://github.com/m3rlin45/libxrk/issues"
 
 [project.optional-dependencies]
 dev = [
