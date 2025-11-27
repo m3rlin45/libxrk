@@ -90,6 +90,18 @@ poetry run pytest tests/test_xrk_loading.py
 poetry run pytest --cov=libxrk
 ```
 
+### Testing with Pyodide (WebAssembly)
+
+You can test the library in a WebAssembly environment using Pyodide.
+This requires Node.js to be installed.
+
+```bash
+# Build and run tests in Pyodide (installs Emscripten SDK to build/emsdk if needed)
+poetry run poe pyodide-test
+```
+
+Note: Pyodide tests run automatically in CI via GitHub Actions.
+
 ### Building
 
 ```bash
