@@ -42,40 +42,6 @@ jobs:
         name: wheel-linux-x86_64
         path: ./wheelhouse/*.whl
 
-  build-pyodide-wheel:
-    name: Build Pyodide (WebAssembly) wheel
-    runs-on: ubuntu-latest
-
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        lfs: true
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.12'
-
-    - name: Install Emscripten SDK
-      uses: mymindstorm/setup-emsdk@v14
-      with:
-        version: '3.1.58'
-
-    - name: Install pyodide-build
-      run: pip install pyodide-build==0.27.3
-
-    - name: Install Pyodide xbuildenv 0.27.3
-      run: pyodide xbuildenv install 0.27.3
-
-    - name: Build wheel for Pyodide
-      run: pyodide build --exports whole_archive
-
-    - name: Upload wheel
-      uses: actions/upload-artifact@v4
-      with:
-        name: pyodide-wheel
-        path: dist/*.whl
-
   build-sdist:
     name: Build source distribution
     runs-on: ubuntu-latest
@@ -103,36 +69,6 @@ jobs:
       with:
         name: sdist
         path: dist/*.tar.gz
-
-  test-pyodide-wheel:
-    name: Test Pyodide wheel
-    runs-on: ubuntu-latest
-    needs: build-pyodide-wheel
-
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        lfs: true
-
-    - name: Install Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-
-    - name: Download wheel artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: pyodide-wheel
-        path: dist/
-
-    - name: Install Pyodide
-      run: npm install pyodide@0.27.3
-
-    - name: Run unit tests in Pyodide
-      run: node scripts/run_pyodide_tests.mjs --dist-dir=./dist
-
-    - name: Run bytes input tests in Pyodide
-      run: node scripts/run_pyodide_tests_idbfs.mjs --dist-dir=./dist
 
   test-linux-x86_64-wheel:
     name: Test Linux x86_64 wheel
@@ -166,7 +102,7 @@ jobs:
   publish:
     name: Publish to PyPI
     runs-on: ubuntu-latest
-    needs: [build-linux-x86_64, build-pyodide-wheel, build-sdist, test-pyodide-wheel, test-linux-x86_64-wheel]
+    needs: [build-linux-x86_64, build-sdist, test-linux-x86_64-wheel]
     if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish_to_pypi == true)
     environment:
       name: pypi
