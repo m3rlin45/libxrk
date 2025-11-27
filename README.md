@@ -105,7 +105,11 @@ Note: Pyodide tests run automatically in CI via GitHub Actions.
 ### Building
 
 ```bash
+# Build CPython wheel and sdist
 poetry build
+
+# Build all wheels (CPython, Pyodide/WebAssembly, and sdist)
+poetry run poe build-all
 ```
 
 ### Clean Build

@@ -130,6 +130,26 @@ interpreter = "bash"
 help = "Build and run tests in Pyodide (WebAssembly)"
 deps = ["emsdk-setup", "pyodide-setup"]
 
+[tool.poe.tasks.build-all]
+shell = "rm -rf dist/ && poetry build && source ./build/emsdk/emsdk_env.sh && pyodide build --exports whole_archive && ls -la dist/"
+interpreter = "bash"
+help = "Build CPython wheel, sdist, and Pyodide wheel"
+deps = ["emsdk-setup"]
+
+[tool.cibuildwheel]
+build = "cp312-*"
+skip = "*-musllinux_*"
+build-verbosity = 1
+
+[tool.cibuildwheel.linux]
+before-build = "pip install numpy cython"
+
+[tool.cibuildwheel.macos]
+before-build = "pip install numpy cython"
+
+[tool.cibuildwheel.windows]
+before-build = "pip install numpy cython"
+
 [tool.poetry.build]
 script = "build.py"
 generate-setup-file = false

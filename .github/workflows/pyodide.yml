@@ -66,5 +66,8 @@ jobs:
     - name: Install Pyodide
       run: npm install pyodide@0.27.3
 
-    - name: Run tests in Pyodide
+    - name: Run unit tests in Pyodide
       run: node scripts/run_pyodide_tests.mjs --dist-dir=./dist
+
+    - name: Run bytes input tests in Pyodide
+      run: node scripts/run_pyodide_tests_idbfs.mjs --dist-dir=./dist
