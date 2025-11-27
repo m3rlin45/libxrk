@@ -40,15 +40,27 @@ The Cython extension will be automatically compiled during installation.
 from libxrk import aim_xrk
 
 # Read an XRK file
-log = aim_xrk('path/to/file.xrk', progress=None)
+log = aim_xrk('path/to/file.xrk')
 
-# Access channels
-for channel_name, channel in log.channels.items():
-    print(f"{channel_name}: {len(channel.timecodes)} samples")
+# Access channels (each channel is a PyArrow table with 'timecodes' and value columns)
+for channel_name, channel_table in log.channels.items():
+    print(f"{channel_name}: {channel_table.num_rows} samples")
 
-# Access laps
-for lap in log.laps:
-    print(f"Lap {lap.num}: {lap.start_time} - {lap.end_time}")
+# Get all channels merged into a single PyArrow table
+# (handles different sample rates with interpolation/forward-fill)
+merged_table = log.get_channels_as_table()
+print(merged_table.column_names)
+
+# Convert to pandas DataFrame
+df = merged_table.to_pandas()
+
+# Access laps (PyArrow table with 'num', 'start_time', 'end_time' columns)
+print(f"Laps: {log.laps.num_rows}")
+for i in range(log.laps.num_rows):
+    lap_num = log.laps.column("num")[i].as_py()
+    start = log.laps.column("start_time")[i].as_py()
+    end = log.laps.column("end_time")[i].as_py()
+    print(f"Lap {lap_num}: {start} - {end}")
 
 # Access metadata
 print(log.metadata)
