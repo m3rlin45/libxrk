@@ -8,6 +8,7 @@ A Python library for reading AIM XRK files from AIM automotive data loggers.
 - Parse track data and telemetry channels
 - GPS coordinate conversion and lap detection
 - High-performance Cython implementation
+- Supports Python 3.10 - 3.14
 
 ## Installation
 
