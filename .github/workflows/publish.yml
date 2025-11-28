@@ -99,8 +99,7 @@ jobs:
       run: |
         PYTHON_VERSION="${{ matrix.python-version }}"
         PYTHON_TAG="cp${PYTHON_VERSION/./}"
-        pip install dist/*${PYTHON_TAG}*.whl
-        pip install pytest
+        pip install "dist/*${PYTHON_TAG}*.whl[test]"
 
     - name: Run tests
       run: pytest tests/ -v --tb=short

@@ -22,6 +22,11 @@ Issues = "https://github.com/m3rlin45/libxrk/issues"
 dev = [
     "pytest>=7.0.0",
     "setuptools>=68.0.0",
+    "parameterized>=0.9.0",
+]
+test = [
+    "pytest>=7.0.0",
+    "parameterized>=0.9.0",
 ]
 
 [tool.poetry]
