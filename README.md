@@ -1,10 +1,11 @@
 # libxrk
 
-A Python library for reading AIM XRK files from AIM automotive data loggers.
+A Python library for reading AIM XRK and XRZ files from AIM automotive data loggers.
 
 ## Features
 
 - Read AIM XRK files (raw data logs)
+- Read AIM XRZ files (zlib-compressed XRK files)
 - Parse track data and telemetry channels
 - GPS coordinate conversion and lap detection
 - High-performance Cython implementation
@@ -42,6 +43,9 @@ from libxrk import aim_xrk
 
 # Read an XRK file
 log = aim_xrk('path/to/file.xrk')
+
+# Read an XRZ file (automatically decompressed)
+log = aim_xrk('path/to/file.xrz')
 
 # Access channels (each channel is a PyArrow table with 'timecodes' and value columns)
 for channel_name, channel_table in log.channels.items():
@@ -142,9 +146,9 @@ rm -rf build/ dist/ src/libxrk/*.so && poetry install
 
 ## Testing
 
-The project includes end-to-end tests that validate XRK file loading and parsing.
+The project includes end-to-end tests that validate XRK and XRZ file loading and parsing.
 
-Test files are located in `tests/test_data/` and include real XRK files for validation.
+Test files are located in `tests/test_data/` and include real XRK and XRZ files for validation.
 
 ## Credits
 

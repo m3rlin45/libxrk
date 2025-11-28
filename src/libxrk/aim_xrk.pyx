@@ -15,6 +15,7 @@ import sys
 import time
 import traceback # pylint: disable=unused-import
 from typing import Dict, List, Optional
+import zlib
 
 import cython
 from cython.operator cimport dereference
@@ -770,11 +771,31 @@ def _channel_to_table(ch):
     }, schema=schema)
 
 
+def _decompress_if_zlib(data):
+    """Decompress zlib-compressed data if detected, otherwise return as-is.
+    
+    XRZ files are XRK files compressed with zlib. They start with zlib magic
+    bytes (0x78 followed by 0x01, 0x9C, or 0xDA).
+    """
+    if len(data) < 2:
+        return data
+    
+    # Check for zlib magic bytes
+    first_byte = data[0] if isinstance(data[0], int) else ord(data[0])
+    second_byte = data[1] if isinstance(data[1], int) else ord(data[1])
+    
+    if first_byte == 0x78 and second_byte in (0x01, 0x9C, 0xDA):
+        return zlib.decompress(bytes(data))
+    
+    return data
+
+
 class _open_xrk:
-    """Context manager that opens an XRK file, using mmap if available, falling back to read().
+    """Context manager that opens an XRK/XRZ file, using mmap if available, falling back to read().
     
     This handles environments like JupyterLite where mmap may not be supported.
     Also accepts bytes or file-like objects directly.
+    XRZ files (zlib-compressed XRK) are automatically decompressed.
     """
     def __init__(self, source):
         self._source = source
@@ -785,29 +806,35 @@ class _open_xrk:
     def __enter__(self):
         # Handle bytes input directly
         if isinstance(self._source, (bytes, bytearray)):
-            self._data = self._source
+            self._data = _decompress_if_zlib(self._source)
             return self._data
         
         # Handle memoryview - convert to bytes for consistent handling
         if isinstance(self._source, memoryview):
-            self._data = bytes(self._source)
+            self._data = _decompress_if_zlib(bytes(self._source))
             return self._data
         
         # Handle file-like objects (BytesIO, etc.)
         if hasattr(self._source, 'read'):
             self._source.seek(0)
-            self._data = self._source.read()
+            self._data = _decompress_if_zlib(self._source.read())
             return self._data
         
         # Handle file path - try mmap first, fall back to read()
         self._file = open(self._source, 'rb')
         try:
             self._mmap = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
+            # Check if zlib compressed - if so, decompress and use bytes instead of mmap
+            if len(self._mmap) >= 2 and self._mmap[0] == 0x78 and self._mmap[1] in (0x01, 0x9C, 0xDA):
+                self._data = zlib.decompress(self._mmap[:])
+                self._mmap.close()
+                self._mmap = None
+                return self._data
             return self._mmap
         except (OSError, ValueError):
             # mmap failed (e.g., JupyterLite/IDBFS) - fall back to read()
             self._file.seek(0)
-            self._data = self._file.read()
+            self._data = _decompress_if_zlib(self._file.read())
             return self._data
     
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -819,10 +846,10 @@ class _open_xrk:
 
 
 def aim_xrk(fname, progress=None):
-    """Load an AIM XRK file.
+    """Load an AIM XRK or XRZ file.
     
     Args:
-        fname: Path to the XRK file, or bytes/BytesIO containing file data
+        fname: Path to the XRK/XRZ file, or bytes/BytesIO containing file data
         progress: Optional progress callback
         
     Returns:

@@ -1,27 +1,37 @@
-"""End-to-end tests for libxrk 86 XRK file reading."""
+"""End-to-end tests for libxrk 86 XRK/XRZ file reading."""
 
 import unittest
 from pathlib import Path
 from libxrk import aim_xrk
 import pyarrow as pa
+from parameterized import parameterized
 
 
 # Path to test data
 TEST_DATA_DIR = Path(__file__).parent / "test_data"
 XRK_86_FILE = TEST_DATA_DIR / "86" / "CMD_Inferno 86_Fuji GP Sh_Generic testing_a_2248.xrk"
+XRZ_86_FILE = TEST_DATA_DIR / "86" / "CMD_Inferno 86_Fuji GP Sh_Generic testing_a_2248.xrz"
+
+# Test file variants for parameterized tests
+FILE_VARIANTS = [
+    ("xrk", XRK_86_FILE),
+    ("xrz", XRZ_86_FILE),
+]
 
 
 class Test86XRK(unittest.TestCase):
-    """Tests for loading and parsing the 86 test vector XRK file."""
+    """Tests for loading and parsing the 86 test vector XRK/XRZ files."""
 
-    def test_86_file_exists(self):
+    @parameterized.expand(FILE_VARIANTS)
+    def test_86_file_exists(self, name, file_path):
         """Verify the test data file exists."""
-        self.assertTrue(XRK_86_FILE.exists(), f"Test file not found: {XRK_86_FILE}")
+        self.assertTrue(file_path.exists(), f"Test file not found: {file_path}")
 
-    def test_load_86_xrk_file(self):
-        """Test loading the 86 XRK file."""
+    @parameterized.expand(FILE_VARIANTS)
+    def test_load_86_xrk_file(self, name, file_path):
+        """Test loading the 86 XRK/XRZ file."""
         # Load the file
-        log = aim_xrk(str(XRK_86_FILE), progress=None)
+        log = aim_xrk(str(file_path), progress=None)
 
         # Verify basic structure
         self.assertIsNotNone(log, "aim_xrk returned None")
@@ -29,19 +39,21 @@ class Test86XRK(unittest.TestCase):
         self.assertIsNotNone(log.laps, "LogFile.laps is None")
         self.assertIsNotNone(log.metadata, "LogFile.metadata is None")
 
-    def test_86_xrk_metadata(self):
-        """Test that the 86 XRK file contains metadata."""
-        log = aim_xrk(str(XRK_86_FILE), progress=None)
+    @parameterized.expand(FILE_VARIANTS)
+    def test_86_xrk_metadata(self, name, file_path):
+        """Test that the 86 XRK/XRZ file contains metadata."""
+        log = aim_xrk(str(file_path), progress=None)
 
         # Should have metadata
         self.assertIsInstance(log.metadata, dict, "Expected metadata to be a dict")
 
-        # Expected metadata from the file
-        expected_metadata = {
+        # Expected metadata - core fields that should be present in both XRK and XRZ
+        core_metadata = {
             "Driver": "CMD",
             "Log Date": "11/01/2025",
             "Log Time": "10:39:06",
-            "Long Comment": "Front 15, 2/2\r\nRear 20 3/3\r\nA052 Used",
+            "Vehicle": "Inferno 86",
+            "Venue": "Fuji GP Sh",
             "Odo/System Distance (km)": 5313.42,
             "Odo/System Time": "79:29:53",
             "Odo/Usr 1 Distance (km)": 5313.42,
@@ -52,18 +64,23 @@ class Test86XRK(unittest.TestCase):
             "Odo/Usr 3 Time": "79:29:53",
             "Odo/Usr 4 Distance (km)": 5313.42,
             "Odo/Usr 4 Time": "79:29:53",
-            "Series": "Fuji Practice",
-            "Session": "Generic testing",
-            "Vehicle": "Inferno 86",
-            "Venue": "Fuji GP Sh",
         }
 
-        # Assert the entire metadata dict matches
-        self.assertEqual(log.metadata, expected_metadata)
+        # Check core fields present in both formats
+        for key, expected_value in core_metadata.items():
+            self.assertIn(key, log.metadata, f"Missing metadata key: {key}")
+            self.assertEqual(log.metadata[key], expected_value, f"Metadata mismatch for {key}")
 
-    def test_86_xrk_laps(self):
-        """Test that the 86 XRK file contains lap data."""
-        log = aim_xrk(str(XRK_86_FILE), progress=None)
+        # XRK-specific fields (may be missing or empty in XRZ)
+        if name == "xrk":
+            self.assertEqual(log.metadata.get("Long Comment"), "Front 15, 2/2\r\nRear 20 3/3\r\nA052 Used")
+            self.assertEqual(log.metadata.get("Series"), "Fuji Practice")
+            self.assertEqual(log.metadata.get("Session"), "Generic testing")
+
+    @parameterized.expand(FILE_VARIANTS)
+    def test_86_xrk_laps(self, name, file_path):
+        """Test that the 86 XRK/XRZ file contains lap data."""
+        log = aim_xrk(str(file_path), progress=None)
 
         # Should have laps as a PyArrow table
         self.assertIsInstance(log.laps, pa.Table, "Expected laps to be a PyArrow Table")
@@ -76,9 +93,10 @@ class Test86XRK(unittest.TestCase):
         # Should have exactly 16 laps
         self.assertEqual(len(log.laps), 16, f"Expected 16 laps, got {len(log.laps)}")
 
-    def test_86_xrk_specific_lap_times(self):
+    @parameterized.expand(FILE_VARIANTS)
+    def test_86_xrk_specific_lap_times(self, name, file_path):
         """Test that specific lap times match expected values."""
-        log = aim_xrk(str(XRK_86_FILE), progress=None)
+        log = aim_xrk(str(file_path), progress=None)
 
         # Expected lap data (lap_num, start_time, end_time)
         expected_laps = [
@@ -118,9 +136,10 @@ class Test86XRK(unittest.TestCase):
                 end_time, expected_end, delta=1.0, msg=f"Lap {expected_num} end time mismatch"
             )
 
-    def test_86_xrk_channel_count_and_names(self):
+    @parameterized.expand(FILE_VARIANTS)
+    def test_86_xrk_channel_count_and_names(self, name, file_path):
         """Test that all expected channels are present with correct names."""
-        log = aim_xrk(str(XRK_86_FILE), progress=None)
+        log = aim_xrk(str(file_path), progress=None)
 
         expected_channels = {
             "AmbientTemp",
@@ -224,9 +243,10 @@ class Test86XRK(unittest.TestCase):
             f"Channel names mismatch.\nMissing: {expected_channels - actual_channels}\nExtra: {actual_channels - expected_channels}",
         )
 
-    def test_86_xrk_channel_row_counts(self):
+    @parameterized.expand(FILE_VARIANTS)
+    def test_86_xrk_channel_row_counts(self, name, file_path):
         """Test that channels have the expected number of rows."""
-        log = aim_xrk(str(XRK_86_FILE), progress=None)
+        log = aim_xrk(str(file_path), progress=None)
 
         # Expected row counts for each channel
         expected_row_counts = {
@@ -333,9 +353,10 @@ class Test86XRK(unittest.TestCase):
                 f"Channel '{channel_name}' row count mismatch: expected {expected_count}, got {actual_count}",
             )
 
-    def test_86_xrk_channel_first_last_values(self):
+    @parameterized.expand(FILE_VARIANTS)
+    def test_86_xrk_channel_first_last_values(self, name, file_path):
         """Test that channels have expected first and last values (all channels)."""
-        log = aim_xrk(str(XRK_86_FILE), progress=None)
+        log = aim_xrk(str(file_path), progress=None)
 
         # Test all channels with first and last values from test_data.md
         test_cases = [
@@ -463,9 +484,10 @@ class Test86XRK(unittest.TestCase):
                 msg=f"Channel '{channel_name}' last value mismatch",
             )
 
-    def test_86_xrk_channel_metadata(self):
+    @parameterized.expand(FILE_VARIANTS)
+    def test_86_xrk_channel_metadata(self, name, file_path):
         """Test that channels have correct metadata (all channels)."""
-        log = aim_xrk(str(XRK_86_FILE), progress=None)
+        log = aim_xrk(str(file_path), progress=None)
 
         # Test all channels with metadata from test_data.md
         # Format: (channel_name, units, dec_pts, interpolate)
