@@ -73,7 +73,9 @@ class Test86XRK(unittest.TestCase):
 
         # XRK-specific fields (may be missing or empty in XRZ)
         if name == "xrk":
-            self.assertEqual(log.metadata.get("Long Comment"), "Front 15, 2/2\r\nRear 20 3/3\r\nA052 Used")
+            self.assertEqual(
+                log.metadata.get("Long Comment"), "Front 15, 2/2\r\nRear 20 3/3\r\nA052 Used"
+            )
             self.assertEqual(log.metadata.get("Series"), "Fuji Practice")
             self.assertEqual(log.metadata.get("Session"), "Generic testing")
 
