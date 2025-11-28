@@ -1,27 +1,37 @@
-"""End-to-end tests for libxrk SFJ XRK file reading."""
+"""End-to-end tests for libxrk SFJ XRK/XRZ file reading."""
 
 import unittest
 from pathlib import Path
 from libxrk import aim_xrk
 import pyarrow as pa
+from parameterized import parameterized
 
 
 # Path to test data
 TEST_DATA_DIR = Path(__file__).parent / "test_data"
 SFJ_XRK_FILE = TEST_DATA_DIR / "SFJ" / "CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrk"
+SFJ_XRZ_FILE = TEST_DATA_DIR / "SFJ" / "CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrz"
+
+# Test file variants for parameterized tests
+FILE_VARIANTS = [
+    ("xrk", SFJ_XRK_FILE),
+    ("xrz", SFJ_XRZ_FILE),
+]
 
 
 class TestSFJXRK(unittest.TestCase):
-    """Tests for loading and parsing the SFJ test vector XRK file."""
+    """Tests for loading and parsing the SFJ test vector XRK/XRZ files."""
 
-    def test_sfj_file_exists(self):
+    @parameterized.expand(FILE_VARIANTS)
+    def test_sfj_file_exists(self, name, file_path):
         """Verify the test data file exists."""
-        self.assertTrue(SFJ_XRK_FILE.exists(), f"Test file not found: {SFJ_XRK_FILE}")
+        self.assertTrue(file_path.exists(), f"Test file not found: {file_path}")
 
-    def test_load_sfj_xrk_file(self):
-        """Test loading the SFJ XRK file."""
+    @parameterized.expand(FILE_VARIANTS)
+    def test_load_sfj_xrk_file(self, name, file_path):
+        """Test loading the SFJ XRK/XRZ file."""
         # Load the file
-        log = aim_xrk(str(SFJ_XRK_FILE), progress=None)
+        log = aim_xrk(str(file_path), progress=None)
 
         # Verify basic structure
         self.assertIsNotNone(log, "aim_xrk returned None")
@@ -29,19 +39,19 @@ class TestSFJXRK(unittest.TestCase):
         self.assertIsNotNone(log.laps, "LogFile.laps is None")
         self.assertIsNotNone(log.metadata, "LogFile.metadata is None")
 
-    def test_sfj_xrk_metadata(self):
-        """Test that the SFJ XRK file contains metadata."""
-        log = aim_xrk(str(SFJ_XRK_FILE), progress=None)
+    @parameterized.expand(FILE_VARIANTS)
+    def test_sfj_xrk_metadata(self, name, file_path):
+        """Test that the SFJ XRK/XRZ file contains metadata."""
+        log = aim_xrk(str(file_path), progress=None)
 
         # Should have metadata
         self.assertIsInstance(log.metadata, dict, "Expected metadata to be a dict")
 
-        # Expected metadata from the file
-        expected_metadata = {
-            "Driver": "CMD",
+        # Expected metadata - core fields that should be present in both XRK and XRZ
+        core_metadata = {
             "Log Date": "11/04/2025",
             "Log Time": "15:50:07",
-            "Long Comment": "",
+            "Venue": "Fuji GP Sh",
             "Odo/System Distance (km)": 165.858,
             "Odo/System Time": "1:25:05",
             "Odo/Usr 1 Distance (km)": 165.858,
@@ -52,18 +62,25 @@ class TestSFJXRK(unittest.TestCase):
             "Odo/Usr 3 Time": "1:25:05",
             "Odo/Usr 4 Distance (km)": 165.858,
             "Odo/Usr 4 Time": "1:25:05",
-            "Series": "Fuji Practice",
-            "Session": "Generic testing",
-            "Vehicle": "SFJ",
-            "Venue": "Fuji GP Sh",
         }
 
-        # Assert the entire metadata dict matches
-        self.assertEqual(log.metadata, expected_metadata)
+        # Check core fields present in both formats
+        for key, expected_value in core_metadata.items():
+            self.assertIn(key, log.metadata, f"Missing metadata key: {key}")
+            self.assertEqual(log.metadata[key], expected_value, f"Metadata mismatch for {key}")
 
-    def test_sfj_xrk_laps(self):
-        """Test that the SFJ XRK file contains lap data."""
-        log = aim_xrk(str(SFJ_XRK_FILE), progress=None)
+        # XRK-specific fields (may be missing or empty in XRZ)
+        if name == "xrk":
+            self.assertEqual(log.metadata.get("Driver"), "CMD")
+            self.assertEqual(log.metadata.get("Vehicle"), "SFJ")
+            self.assertEqual(log.metadata.get("Long Comment"), "")
+            self.assertEqual(log.metadata.get("Series"), "Fuji Practice")
+            self.assertEqual(log.metadata.get("Session"), "Generic testing")
+
+    @parameterized.expand(FILE_VARIANTS)
+    def test_sfj_xrk_laps(self, name, file_path):
+        """Test that the SFJ XRK/XRZ file contains lap data."""
+        log = aim_xrk(str(file_path), progress=None)
 
         # Should have laps as a PyArrow table
         self.assertIsInstance(log.laps, pa.Table, "Expected laps to be a PyArrow Table")
@@ -76,9 +93,10 @@ class TestSFJXRK(unittest.TestCase):
         # Should have exactly 13 laps
         self.assertEqual(len(log.laps), 13, f"Expected 13 laps, got {len(log.laps)}")
 
-    def test_sfj_xrk_specific_lap_times(self):
+    @parameterized.expand(FILE_VARIANTS)
+    def test_sfj_xrk_specific_lap_times(self, name, file_path):
         """Test that specific lap times match expected values."""
-        log = aim_xrk(str(SFJ_XRK_FILE), progress=None)
+        log = aim_xrk(str(file_path), progress=None)
 
         # Expected lap data (lap_num, start_time, end_time)
         expected_laps = [
@@ -115,9 +133,10 @@ class TestSFJXRK(unittest.TestCase):
                 end_time, expected_end, delta=1.0, msg=f"Lap {expected_num} end time mismatch"
             )
 
-    def test_sfj_xrk_channel_count_and_names(self):
+    @parameterized.expand(FILE_VARIANTS)
+    def test_sfj_xrk_channel_count_and_names(self, name, file_path):
         """Test that all expected channels are present with correct names."""
-        log = aim_xrk(str(SFJ_XRK_FILE), progress=None)
+        log = aim_xrk(str(file_path), progress=None)
 
         expected_channels = {
             "ACCEL",
@@ -155,9 +174,10 @@ class TestSFJXRK(unittest.TestCase):
             f"Channel names mismatch.\nMissing: {expected_channels - actual_channels}\nExtra: {actual_channels - expected_channels}",
         )
 
-    def test_sfj_xrk_channel_row_counts(self):
+    @parameterized.expand(FILE_VARIANTS)
+    def test_sfj_xrk_channel_row_counts(self, name, file_path):
         """Test that channels have the expected number of rows."""
-        log = aim_xrk(str(SFJ_XRK_FILE), progress=None)
+        log = aim_xrk(str(file_path), progress=None)
 
         # Expected row counts for each channel
         expected_row_counts = {
@@ -198,9 +218,10 @@ class TestSFJXRK(unittest.TestCase):
                 f"Channel '{channel_name}' row count mismatch: expected {expected_count}, got {actual_count}",
             )
 
-    def test_sfj_xrk_channel_first_last_values(self):
+    @parameterized.expand(FILE_VARIANTS)
+    def test_sfj_xrk_channel_first_last_values(self, name, file_path):
         """Test that channels have expected first and last values."""
-        log = aim_xrk(str(SFJ_XRK_FILE), progress=None)
+        log = aim_xrk(str(file_path), progress=None)
 
         # Expected first and last values for select channels (name, first, last, tolerance)
         test_cases = [
@@ -238,9 +259,10 @@ class TestSFJXRK(unittest.TestCase):
                 msg=f"Channel '{channel_name}' last value mismatch",
             )
 
-    def test_sfj_xrk_channel_metadata(self):
+    @parameterized.expand(FILE_VARIANTS)
+    def test_sfj_xrk_channel_metadata(self, name, file_path):
         """Test that channels have correct metadata (units, dec_pts, interpolate)."""
-        log = aim_xrk(str(SFJ_XRK_FILE), progress=None)
+        log = aim_xrk(str(file_path), progress=None)
 
         # Expected metadata for select channels (name, units, dec_pts, interpolate)
         test_cases = [

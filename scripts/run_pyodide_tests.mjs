@@ -102,6 +102,10 @@ async function main() {
   const micropip = pyodide.pyimport("micropip");
   await micropip.install(`file://${path.resolve(wheelPath)}`);
 
+  // Install parameterized for test parameterization
+  console.log("Installing parameterized...");
+  await micropip.install("parameterized");
+
   // Copy test directory to Pyodide filesystem
   const testsDir = path.join(projectRoot, "tests");
   console.log(`Copying test files from ${testsDir}...`);

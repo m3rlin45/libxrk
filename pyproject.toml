@@ -1,6 +1,6 @@
 [project]
 name = "libxrk"
-version = "0.2.2"
+version = "0.3.0"
 description = "Library for reading AIM XRK files from AIM automotive data loggers"
 authors = [
     {name = "Christopher Dewan",email = "chris.dewan@m3rlin.net"}
@@ -26,7 +26,7 @@ dev = [
 
 [tool.poetry]
 name = "libxrk"
-version = "0.2.2"
+version = "0.3.0"
 description = "Library for reading AIM XRK files from AIM automotive data loggers"
 authors = ["Christopher Dewan <chris.dewan@m3rlin.net>"]
 readme = "README.md"
@@ -57,6 +57,7 @@ black = "^25.11.0"
 mypy = "^1.18.2"
 poethepoet = "^0.24.0"
 pyodide-build = {version = "^0.27.3", python = ">=3.12"}
+parameterized = "^0.9.0"
 
 [tool.black]
 line-length = 100
