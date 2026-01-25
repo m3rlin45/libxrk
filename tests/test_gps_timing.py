@@ -1,24 +1,13 @@
 """Tests for GPS timing gap detection and correction in libxrk."""
 
 import unittest
-from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 import pyarrow as pa
 
-from libxrk import GPS_CHANNEL_NAMES
+from libxrk import GPS_CHANNEL_NAMES, LogFile
 from libxrk.gps import fix_gps_timing_gaps
-
-
-@dataclass(eq=False)
-class MockLogFile:
-    """Mock LogFile for testing GPS timing fixes."""
-
-    channels: Dict[str, pa.Table]
-    laps: pa.Table
-    metadata: Dict[str, str]
-    file_name: str
 
 
 def create_mock_log_with_gps_gap(
@@ -26,7 +15,7 @@ def create_mock_log_with_gps_gap(
     gap_size_ms: int = 65533,
     expected_dt_ms: float = 40.0,
     n_samples: int = 200,
-) -> MockLogFile:
+) -> LogFile:
     """Create a mock LogFile with a GPS timing gap.
 
     Parameters
@@ -42,8 +31,8 @@ def create_mock_log_with_gps_gap(
 
     Returns
     -------
-    MockLogFile
-        A mock log file with GPS channels containing the timing gap
+    LogFile
+        A log file with GPS channels containing the timing gap
     """
     # Create normal timecodes
     timecodes = np.arange(0, n_samples * expected_dt_ms, expected_dt_ms, dtype=np.int64)
@@ -127,9 +116,7 @@ def create_mock_log_with_gps_gap(
         }
     )
 
-    return MockLogFile(
-        channels=channels, laps=laps, metadata={"test": "data"}, file_name="test.xrk"
-    )
+    return LogFile(channels=channels, laps=laps, metadata={"test": "data"}, file_name="test.xrk")
 
 
 class TestGpsTimingGapFix(unittest.TestCase):
@@ -254,7 +241,7 @@ class TestGpsTimingGapFix(unittest.TestCase):
             }
         )
 
-        log = MockLogFile(channels=channels, laps=laps, metadata={}, file_name="test.xrk")
+        log = LogFile(channels=channels, laps=laps, metadata={}, file_name="test.xrk")
 
         original_time = log.channels["GPS Speed"].column("timecodes").to_numpy().copy()
 
@@ -281,7 +268,7 @@ class TestGpsTimingGapFix(unittest.TestCase):
             }
         )
 
-        log = MockLogFile(channels=channels, laps=laps, metadata={}, file_name="test.xrk")
+        log = LogFile(channels=channels, laps=laps, metadata={}, file_name="test.xrk")
 
         # Should not raise, should return the log unchanged
         result = fix_gps_timing_gaps(log)
@@ -311,7 +298,7 @@ class TestGpsTimingGapFix(unittest.TestCase):
         }
         laps = None  # Test with no laps
 
-        log = MockLogFile(channels=channels, laps=laps, metadata={}, file_name="test.xrk")
+        log = LogFile(channels=channels, laps=laps, metadata={}, file_name="test.xrk")
 
         fix_gps_timing_gaps(log)
 
@@ -332,7 +319,7 @@ class TestGpsTimingGapFix(unittest.TestCase):
         }
         laps = None
 
-        log = MockLogFile(channels=channels, laps=laps, metadata={}, file_name="test.xrk")
+        log = LogFile(channels=channels, laps=laps, metadata={}, file_name="test.xrk")
 
         # Should not raise
         result = fix_gps_timing_gaps(log)
