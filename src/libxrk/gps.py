@@ -1,10 +1,13 @@
 # Copyright 2024, Scott Smith.  MIT License (see LICENSE).
 
 from collections import namedtuple
-import typing
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pyarrow as pa
+
+if TYPE_CHECKING:
+    from .base import LogFile
 
 # GPS channel names that share a common timebase and may need timing correction
 GPS_CHANNEL_NAMES = ("GPS Speed", "GPS Latitude", "GPS Longitude", "GPS Altitude")
@@ -411,7 +414,7 @@ if __name__ == "__main__":
     perf_test()
 
 
-def fix_gps_timing_gaps(log: "typing.Any", expected_dt_ms: float = 40.0) -> "typing.Any":
+def fix_gps_timing_gaps(log: "LogFile", expected_dt_ms: float = 40.0) -> "LogFile":
     """Detect and correct large timing gaps in GPS channels and lap boundaries.
 
     Some AIM data loggers produce GPS data with spurious timestamp jumps
