@@ -1,7 +1,13 @@
 # Copyright 2024, Scott Smith.  MIT License (see LICENSE).
 
 from collections import namedtuple
+import typing
+
 import numpy as np
+import pyarrow as pa
+
+# GPS channel names that share a common timebase and may need timing correction
+GPS_CHANNEL_NAMES = ("GPS Speed", "GPS Latitude", "GPS Longitude", "GPS Altitude")
 
 # None of the algorithms are slow
 # fastest: Fukushima 2006, but worse accuracy
@@ -403,3 +409,115 @@ if __name__ == "__main__":
             print(name, ", ".join(["%.3f" % s for s in stat]))
 
     perf_test()
+
+
+def fix_gps_timing_gaps(log: "typing.Any", expected_dt_ms: float = 40.0) -> "typing.Any":
+    """Detect and correct large timing gaps in GPS channels and lap boundaries.
+
+    Some AIM data loggers produce GPS data with spurious timestamp jumps
+    (e.g., 65533ms gaps that should be ~40ms). This is likely caused by a
+    16-bit overflow bug in the logger firmware. This function detects such
+    gaps and corrects the timecodes by removing the excess time.
+
+    The fix is applied in-place to the LogFile's channels dict and laps table.
+
+    Parameters
+    ----------
+    log : LogFile
+        The loaded log file with channels dict.
+    expected_dt_ms : float, default=40.0
+        Expected time delta between GPS samples in milliseconds.
+        Default is 40ms (25 Hz GPS).
+
+    Returns
+    -------
+    LogFile
+        The same LogFile object with corrected GPS timecodes and lap boundaries.
+    """
+    # Find the first GPS channel that exists
+    gps_channel_name = None
+    for name in GPS_CHANNEL_NAMES:
+        if name in log.channels:
+            gps_channel_name = name
+            break
+
+    if gps_channel_name is None:
+        return log
+
+    # Get the GPS timecodes
+    gps_table = log.channels[gps_channel_name]
+    gps_time = gps_table.column("timecodes").to_numpy()
+
+    if len(gps_time) < 2:
+        return log
+
+    # Detect gaps
+    dt = np.diff(gps_time)
+    gap_threshold = expected_dt_ms * 10  # 400ms default
+
+    # Find indices where gaps are too large
+    gap_indices = np.where(dt > gap_threshold)[0]
+
+    if len(gap_indices) == 0:
+        return log
+
+    # Build list of (gap_time, correction) pairs
+    gap_corrections = []
+    for gap_idx in gap_indices:
+        gap_time = gps_time[gap_idx]
+        gap_size = dt[gap_idx]
+        correction = gap_size - expected_dt_ms
+        gap_corrections.append((gap_time, correction))
+
+    # Fix GPS channel timecodes
+    gps_time_fixed = gps_time.astype(np.float64)
+    for gap_time, correction in gap_corrections:
+        gps_time_fixed[gps_time > gap_time] -= correction
+
+    gps_time_fixed = gps_time_fixed.astype(np.int64)
+
+    # Update all GPS channels with corrected timecodes
+    for name in GPS_CHANNEL_NAMES:
+        if name not in log.channels:
+            continue
+
+        table = log.channels[name]
+        value_column = table.column(name)
+        field = table.schema.field(name)
+        metadata = field.metadata
+
+        new_table = pa.table(
+            {
+                "timecodes": pa.array(gps_time_fixed, type=pa.int64()),
+                name: value_column,
+            }
+        )
+
+        if metadata:
+            new_field = new_table.schema.field(name).with_metadata(metadata)
+            new_schema = pa.schema([new_table.schema.field("timecodes"), new_field])
+            new_table = new_table.cast(new_schema)
+
+        log.channels[name] = new_table
+
+    # Fix lap boundaries (start_time, end_time)
+    if log.laps is not None and len(log.laps) > 0:
+        start_times = log.laps.column("start_time").to_numpy().astype(np.float64)
+        end_times = log.laps.column("end_time").to_numpy().astype(np.float64)
+
+        for gap_time, correction in gap_corrections:
+            start_times[start_times > gap_time] -= correction
+            end_times[end_times > gap_time] -= correction
+
+        new_laps_data = {}
+        for col_name in log.laps.column_names:
+            if col_name == "start_time":
+                new_laps_data[col_name] = pa.array(start_times.astype(np.int64), type=pa.int64())
+            elif col_name == "end_time":
+                new_laps_data[col_name] = pa.array(end_times.astype(np.int64), type=pa.int64())
+            else:
+                new_laps_data[col_name] = log.laps.column(col_name)
+
+        log.laps = pa.table(new_laps_data)
+
+    return log

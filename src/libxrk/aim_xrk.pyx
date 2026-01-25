@@ -24,6 +24,7 @@ from libcpp.vector cimport vector
 import pyarrow as pa
 
 from . import gps
+from .gps import fix_gps_timing_gaps
 from . import base
 
 # 1,2,5,10,20,25,50 Hz
@@ -858,11 +859,16 @@ def aim_xrk(fname, progress=None):
     with _open_xrk(fname) as m:
         data = _decode_sequence(m, progress)
 
-    return base.LogFile(
+    log = base.LogFile(
         {ch.long_name: _channel_to_table(ch) for ch in data.channels.values()},
         data.laps,
         _get_metadata(data.messages),
         fname if not isinstance(fname, (bytes, bytearray, memoryview)) and not hasattr(fname, 'read') else "<bytes>")
+
+    # Fix GPS timing gaps (spurious timestamp jumps in some AIM loggers)
+    fix_gps_timing_gaps(log)
+
+    return log
 
 
 def aim_track_dbg(fname):
