@@ -36,6 +36,7 @@ include = [
     { path = "src/libxrk/**/*.pyx", format = "sdist" },
     { path = "src/libxrk/**/*.pyi", format = ["wheel", "sdist"] },
     { path = "src/libxrk/py.typed", format = ["wheel", "sdist"] },
+    { path = "src/libxrk/CLAUDE.md", format = ["wheel", "sdist"] },
 ]
 exclude = [
     "**/*.c",

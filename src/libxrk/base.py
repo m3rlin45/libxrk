@@ -16,14 +16,28 @@ assert sys.byteorder == "little"
 
 @dataclass(eq=False)
 class LogFile:
-    channels: typing.Dict[
-        str, pa.Table
-    ]  # Each channel is a PyArrow table with columns: timecodes (int64), <channel_name> (float/int)
-    # Metadata stored in schema.field(<channel_name>).metadata:
-    # units, dec_pts, interpolate
-    laps: pa.Table  # PyArrow table with columns: num (int), start_time (int), end_time (int)
+    """
+    Container for parsed XRK/XRZ telemetry data.
+
+    Attributes:
+        channels: Dict mapping channel names to PyArrow tables. Each table has
+            'timecodes' (int64, ms) and '<channel_name>' columns. Channel metadata
+            (units, dec_pts, interpolate) stored in schema.field.metadata with bytes keys.
+        laps: PyArrow table with columns: num (int), start_time (int), end_time (int).
+            Times are in milliseconds.
+        metadata: Dict of session metadata (racer, vehicle, venue, etc.)
+        file_name: Original filename or "<bytes>" if loaded from bytes.
+
+    Example:
+        >>> log = aim_xrk('file.xrk')
+        >>> log.channels['Engine RPM'].to_pandas()  # Single channel
+        >>> log.get_channels_as_table().to_pandas()  # All merged
+    """
+
+    channels: typing.Dict[str, pa.Table]
+    laps: pa.Table
     metadata: typing.Dict[str, str]
-    file_name: str  # move to metadata?
+    file_name: str
 
     def get_channels_as_table(self) -> pa.Table:
         """
