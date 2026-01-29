@@ -71,6 +71,44 @@ for i in range(log.laps.num_rows):
 print(log.metadata)
 ```
 
+### Filtering and Resampling
+
+```python
+from libxrk import aim_xrk
+
+log = aim_xrk('session.xrk')
+
+# Select specific channels
+gps_log = log.select_channels(['GPS Latitude', 'GPS Longitude', 'GPS Speed'])
+
+# Filter to a time range (milliseconds, inclusive start, exclusive end)
+segment = log.filter_by_time_range(60000, 120000)
+
+# Filter to a specific lap
+lap5 = log.filter_by_lap(5)
+
+# Combine filtering and channel selection
+lap5_gps = log.filter_by_lap(5, channel_names=['GPS Latitude', 'GPS Longitude'])
+
+# Resample all channels to match a reference channel's timebase
+aligned = log.resample_to_channel('GPS Speed')
+
+# Resample to a custom timebase
+import pyarrow as pa
+target = pa.array(range(0, 100000, 100), type=pa.int64())  # 10 Hz
+resampled = log.resample_to_timecodes(target)
+
+# Chain operations for analysis workflows
+df = (log
+    .filter_by_lap(5)
+    .select_channels(['Engine RPM', 'GPS Speed'])
+    .resample_to_channel('GPS Speed')
+    .get_channels_as_table()
+    .to_pandas())
+```
+
+All filtering and resampling methods return new `LogFile` instances (immutable pattern), enabling method chaining for complex analysis workflows.
+
 ## Development
 
 ### Quick Check

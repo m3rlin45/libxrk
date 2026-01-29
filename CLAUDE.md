@@ -61,3 +61,22 @@ Pyodide test scripts are in `scripts/run_pyodide_tests*.mjs`.
 - `get_channels_as_table()` merges via full outer join with interpolation/forward-fill
 - Channel metadata stored in PyArrow field.metadata (bytes keys: `b"units"`, `b"dec_pts"`, `b"interpolate"`)
 - GPS timing fix auto-corrects 65533ms gaps (AIM firmware bug)
+- All filtering/resampling methods return new `LogFile` instances (immutable pattern)
+- `resample_to_timecodes()` is the core resampling logic, other methods delegate to it
+
+## LogFile Methods
+
+- `select_channels(names)` - Return LogFile with only specified channels
+- `filter_by_time_range(start, end, channels?)` - Filter to time range [start, end)
+- `filter_by_lap(lap_num, channels?)` - Filter to specific lap's time range
+- `resample_to_timecodes(timecodes, channels?)` - Resample all channels to target timebase
+- `resample_to_channel(ref_channel, channels?)` - Resample to reference channel's timebase
+- `get_channels_as_table()` - Merge all channels into single table
+
+## Documentation Requirements
+
+When changing the public API:
+1. Update docstrings with Google-style format (Args, Returns, Raises, Example)
+2. Update `README.md` usage examples
+3. Update `src/libxrk/CLAUDE.md` API reference
+4. Update type stubs if needed (`.pyi` files)
