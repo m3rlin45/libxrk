@@ -211,7 +211,7 @@ ctypedef vector[accum] vaccum
 cdef extern from '<numeric>' namespace 'std' nogil:
     T accumulate[InputIt, T](InputIt first, InputIt last, T init)
 
-cdef _resize_vaccum(vaccum & v, int idx):
+cdef _resize_vaccum(vaccum & v, size_t idx):
     if idx >= v.size():
         old_len = v.size()
         v.resize(idx + 1)
@@ -238,12 +238,12 @@ def _decode_sequence(s, progress=None):
     messages = {}
     tok_GPS: cython.uint = _tokdec('GPS')
     tok_GPS1: cython.uint = _tokdec('GPS1')
-    progress_interval: cython.uint = 8_000_000
-    next_progress: cython.uint = progress_interval
-    pos: cython.uint = 0
-    oldpos: cython.uint = pos
-    badbytes: cython.uint = 0
-    badpos: cython.uint = 0
+    progress_interval: cython.Py_ssize_t = 8_000_000
+    next_progress: cython.Py_ssize_t = progress_interval
+    pos: cython.Py_ssize_t = 0
+    oldpos: cython.Py_ssize_t = pos
+    badbytes: cython.Py_ssize_t = 0
+    badpos: cython.Py_ssize_t = 0
     ord_op: cython.int = ord('(')
     ord_cp: cython.int = ord(')')
     ord_op_G : cython.int = ord_op + 256 * ord('G')
@@ -253,7 +253,7 @@ def _decode_sequence(s, progress=None):
     ord_lt: cython.int = ord('<')
     ord_lt_h : cython.int = ord_lt + 256 * ord('h')
     ord_gt: cython.int = ord('>')
-    len_s = len(s)
+    len_s: cython.Py_ssize_t = len(s)
     cdef vaccum[4] gc_data # [0]: G messages (groups) [1]: S messages (samples?) [2]: c messages (channels from expansion) [3]: M messages
     time_offset = None
     last_time = None
@@ -279,9 +279,9 @@ def _decode_sequence(s, progress=None):
                     pos += data_p.add_helper
                     last = &sv[pos-1]
                     if last[0] != ord_cp:
-                        raise ValueError("%c at %x" % (s[pos-1], pos-1))
+                        raise ValueError("%s at %x" % (chr(s[pos-1]), pos-1))
                     if show_all:
-                        print('tc=%d %c idx=%d' % (msg.s.timecode, msg.s.op >> 8, msg.s.index))
+                        print('tc=%d %s idx=%d' % (msg.s.timecode, chr(msg.s.op >> 8), msg.s.index))
                     if msg.s.timecode > data_p.last_timecode:
                         data_p.last_timecode = msg.s.timecode
                         data_p.data.insert(data_p.data.end(),
@@ -295,7 +295,7 @@ def _decode_sequence(s, progress=None):
                                          channels[msg.s.index].long_name)
                     pos += data_p.add_helper * msg.s.count + 10
                     if sv[pos] != ord_cp:
-                        raise ValueError("%c at %x" % (s[pos], pos))
+                        raise ValueError("%s at %x" % (chr(s[pos]), pos))
                     if show_all:
                         print('tc=%d M idx=%d cnt=%d ms=%d' %
                               (msg.s.timecode, msg.s.index, msg.s.count, data_p.Mms))
@@ -319,7 +319,7 @@ def _decode_sequence(s, progress=None):
                     pos += data_p.add_helper
                     last = &sv[pos-1]
                     if last[0] != ord_cp:
-                        raise ValueError("%c at %x" % (s[pos-1], pos-1))
+                        raise ValueError("%s at %x" % (chr(s[pos-1]), pos-1))
                     if show_all:
                         print('tc=%d c idx=%d' % (msg.c.timecode, msg.c.channel >> 3))
                     if msg.c.timecode > data_p.last_timecode:
@@ -332,11 +332,11 @@ def _decode_sequence(s, progress=None):
                         if progress:
                             progress(pos, len(s))
                     tok: cython.uint = msg.h.tok
-                    hlen: cython.uint = msg.h.hlen
+                    hlen: cython.Py_ssize_t = msg.h.hlen
                     if hlen >= len_s:
                         raise IndexError
                     ver = msg.h.ver
-                    assert msg.h.cl == ord_gt, "%c at %x" % (msg.h.cl, pos+11)
+                    assert msg.h.cl == ord_gt, "%s at %x" % (chr(msg.h.cl), pos+11)
                     pos += 12
 
                     # get some "free" range checking here before we go walking data[]
@@ -350,7 +350,7 @@ def _decode_sequence(s, progress=None):
 
                     assert msgf.tok == tok, "%x vs %x at %x" % (msgf.tok, tok, pos+1)
                     assert msgf.bytesum == bytesum, '%x vs %x at %x' % (msgf.bytesum, bytesum, pos+5)
-                    assert msgf.cl == ord_gt, "%c at %x" % (msgf.cl, pos+7)
+                    assert msgf.cl == ord_gt, "%s at %x" % (chr(msgf.cl), pos+7)
                     pos += 8
 
                     if (tok >> 24) == 32:

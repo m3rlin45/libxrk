@@ -47,7 +47,7 @@ exclude = [
 python = "^3.10"
 numpy = "^1.26.0"
 cython = "^3.0.0"
-pyarrow = "^14.0.0"
+pyarrow = ">=14.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0.0"
@@ -123,7 +123,11 @@ typecheck = "mypy ."
 test = "pytest tests/ -v"
 check = ["lint", "typecheck", "test"]
 repl = "python -i -c \"from libxrk import aim_xrk; log = aim_xrk('tests/test_data/SFJ/CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrk'); print('XRK file loaded as: log'); print(f'Channels: {len(log.channels)}'); print(f'Laps: {len(log.laps)}'); print(f'Metadata keys: {list(log.metadata.keys())}')\"" 
-pyodide-build = "pyodide build --exports whole_archive"
+[tool.poe.tasks.pyodide-build]
+shell = "source ./build/emsdk/emsdk_env.sh && pyodide build --exports whole_archive"
+interpreter = "bash"
+help = "Build Pyodide wheel"
+deps = ["emsdk-setup"]
 
 [tool.poe.tasks.emsdk-setup]
 shell = "EMSDK_VERSION=$(pyodide config get emscripten_version) && mkdir -p build && ([ -d build/emsdk ] || (git clone https://github.com/emscripten-core/emsdk.git build/emsdk && cd build/emsdk && git config core.autocrlf false && git checkout -- .)) && ./build/emsdk/emsdk install $EMSDK_VERSION && ./build/emsdk/emsdk activate $EMSDK_VERSION"
