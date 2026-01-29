@@ -73,5 +73,5 @@ if __name__ == "__main__":
     build(setup_kwargs)
 
     # Configure to build in-place
-    sys.argv = ["build.py", "build_ext", "--inplace"]
+    sys.argv = ["cython_build.py", "build_ext", "--inplace"]
     setup(**setup_kwargs)
