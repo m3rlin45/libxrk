@@ -23,7 +23,8 @@ classifiers = [
 dependencies = [
     "numpy>=1.26.0",
     "cython>=3.0.0",
-    "pyarrow>=22.0.0",
+    "pyarrow>=18.1.0; python_version < '3.14'",
+    "pyarrow>=22.0.0; python_version >= '3.14'",
 ]
 
 [project.urls]
@@ -60,7 +61,10 @@ exclude = [
 python = "^3.10"
 numpy = "^1.26.0"
 cython = "^3.0.0"
-pyarrow = ">=22.0.0"
+pyarrow = [
+    {version = ">=18.1.0", python = "<3.14"},
+    {version = ">=22.0.0", python = ">=3.14"},
+]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0.0"
