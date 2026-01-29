@@ -174,7 +174,7 @@ archs = ["x86_64", "aarch64"]
 before-build = "pip install numpy cython"
 
 [tool.poetry.build]
-script = "build.py"
+script = "cython_build.py"
 generate-setup-file = false
 
 [build-system]
