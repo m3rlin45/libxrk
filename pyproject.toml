@@ -21,7 +21,8 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
-    "numpy>=1.26.0",
+    "numpy>=1.26.0; python_version < '3.14'",
+    "numpy>=2.4.0; python_version >= '3.14'",
     "cython>=3.0.0",
     "pyarrow>=18.1.0; python_version < '3.14'",
     "pyarrow>=22.0.0; python_version >= '3.14'",
@@ -59,7 +60,10 @@ exclude = [
 
 [tool.poetry.dependencies]
 python = "^3.10"
-numpy = "^1.26.0"
+numpy = [
+    {version = ">=1.26.0", python = "<3.14"},
+    {version = ">=2.4.0", python = ">=3.14"},
+]
 cython = "^3.0.0"
 pyarrow = [
     {version = ">=18.1.0", python = "<3.14"},
@@ -182,5 +186,11 @@ script = "cython_build.py"
 generate-setup-file = false
 
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0", "setuptools>=68.0.0", "cython>=3.0.0", "numpy>=1.26.0"]
+requires = [
+    "poetry-core>=2.0.0,<3.0.0",
+    "setuptools>=68.0.0",
+    "cython>=3.0.0",
+    "numpy>=1.26.0; python_version < '3.14'",
+    "numpy>=2.4.0; python_version >= '3.14'",
+]
 build-backend = "poetry.core.masonry.api"
