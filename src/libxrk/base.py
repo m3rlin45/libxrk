@@ -1,8 +1,10 @@
 # Copyright 2024, Scott Smith.  MIT License (see LICENSE).
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+import heapq
+from itertools import groupby
 import sys
-import typing
 import pyarrow as pa
 import pyarrow.compute as pc
 import numpy as np
@@ -34,9 +36,9 @@ class LogFile:
         >>> log.get_channels_as_table().to_pandas()  # All merged
     """
 
-    channels: typing.Dict[str, pa.Table]
+    channels: dict[str, pa.Table]
     laps: pa.Table
-    metadata: typing.Dict[str, str]
+    metadata: dict[str, str]
     file_name: str
 
     def get_channels_as_table(self) -> pa.Table:
@@ -57,114 +59,37 @@ class LogFile:
             # Return an empty table with just timecodes column if no channels
             return pa.table({"timecodes": pa.array([], type=pa.int64())})
 
-        # Collect metadata from all channels before joining
-        # PyArrow join() doesn't preserve field metadata, so we need to save and restore it
+        # Compute union of all channel timecodes using k-way merge (O(N) vs O(N log N) for sort)
+        # Each channel's timecodes are already sorted, so we merge and deduplicate in one pass
+        timecode_iterators = [
+            channel_table.column("timecodes").to_pylist()
+            for channel_table in self.channels.values()
+        ]
+        merged = heapq.merge(*timecode_iterators)
+        unique_timecodes = [k for k, _ in groupby(merged)]
+        union_timecodes = pa.array(unique_timecodes, type=pa.int64())
+
+        # Resample all channels to the union timecodes
+        resampled = self.resample_to_timecodes(union_timecodes)
+
+        # Build merged table from resampled channels (simple horizontal concatenation)
+        channel_names = sorted(resampled.channels.keys())
+
+        # Collect metadata for restoration
         channel_metadata = {}
-        for channel_name, channel_table in self.channels.items():
-            field = channel_table.schema.field(channel_name)
+        for name in channel_names:
+            field = resampled.channels[name].schema.field(name)
             if field.metadata:
-                channel_metadata[channel_name] = field.metadata
+                channel_metadata[name] = field.metadata
 
-        # Start with the first channel
-        channel_names = sorted(self.channels.keys())
-        result = self.channels[channel_names[0]]
+        # Build the result table
+        columns_dict = {"timecodes": union_timecodes}
+        for name in channel_names:
+            columns_dict[name] = resampled.channels[name].column(name)
 
-        # Perform full outer joins with remaining channels
-        for channel_name in channel_names[1:]:
-            channel_table = self.channels[channel_name]
-
-            # Perform full outer join on timecodes
-            result = result.join(
-                channel_table, keys="timecodes", right_keys="timecodes", join_type="full outer"
-            )
-
-        # Sort by timecodes to maintain temporal order
-        result = result.sort_by([("timecodes", "ascending")])
-
-        # Restore column metadata that was lost during join operations
-        if channel_metadata:
-            new_fields = []
-            for field in result.schema:
-                if field.name in channel_metadata:
-                    # Restore the metadata for this channel
-                    new_fields.append(field.with_metadata(channel_metadata[field.name]))
-                else:
-                    new_fields.append(field)
-            new_schema = pa.schema(new_fields)
-            result = result.cast(new_schema)
-
-        # Fill nulls based on interpolate metadata
-        # Process each channel column (skip timecodes)
-        columns_dict = {}
-        columns_dict["timecodes"] = result.column("timecodes")
-
-        timecodes_np = result.column("timecodes").to_numpy()
-
-        for field in result.schema:
-            if field.name == "timecodes":
-                continue
-
-            column = result.column(field.name)
-
-            # Check if we should interpolate
-            should_interpolate = False
-            if field.metadata:
-                interpolate_value = field.metadata.get(b"interpolate", b"").decode("utf-8")
-                should_interpolate = interpolate_value == "True"
-
-            if should_interpolate:
-                # Linear interpolation using numpy for efficiency
-                column_np = column.to_numpy(zero_copy_only=False)
-
-                # Find non-null indices
-                valid_mask = (
-                    ~np.isnan(column_np)
-                    if np.issubdtype(column_np.dtype, np.floating)
-                    else column is not None
-                )
-
-                if isinstance(valid_mask, bool):
-                    # All values are null or non-null
-                    columns_dict[field.name] = column
-                else:
-                    valid_indices = np.where(valid_mask)[0]
-
-                    if len(valid_indices) > 0:
-                        # Perform linear interpolation
-                        # Use numpy.interp which handles extrapolation by extending edge values
-                        interpolated = np.interp(
-                            timecodes_np,
-                            timecodes_np[valid_indices],
-                            column_np[valid_indices],
-                        )
-                        columns_dict[field.name] = pa.array(interpolated, type=field.type)
-                    else:
-                        # All nulls, keep as is
-                        columns_dict[field.name] = column
-            else:
-                # Forward fill (use previous non-null value)
-                # PyArrow's fill_null with forward fill
-                filled = pc.fill_null_forward(column)
-                columns_dict[field.name] = filled
-
-        # Reconstruct table with filled values
         result = pa.table(columns_dict)
 
-        # Backward fill any remaining leading nulls (nulls before first value in each column)
-        columns_dict_final = {}
-        columns_dict_final["timecodes"] = result.column("timecodes")
-        for field in result.schema:
-            if field.name == "timecodes":
-                continue
-            column = result.column(field.name)
-            # Backward fill to handle leading nulls
-            filled = pc.fill_null_backward(column)
-            columns_dict_final[field.name] = filled
-
-        # Reconstruct table after backward fill
-        result = pa.table(columns_dict_final)
-
-        # Restore schema with metadata (fill operations lose metadata)
+        # Restore schema with metadata
         if channel_metadata:
             new_fields = []
             for field in result.schema:
@@ -176,3 +101,237 @@ class LogFile:
             result = result.cast(new_schema)
 
         return result
+
+    def select_channels(self, channel_names: Sequence[str]) -> "LogFile":
+        """
+        Create a new LogFile with only the specified channels.
+
+        Args:
+            channel_names: Sequence of channel names to include.
+
+        Returns:
+            New LogFile containing only the specified channels.
+
+        Raises:
+            KeyError: If any channel name is not found.
+
+        Example:
+            >>> log = aim_xrk('session.xrk')
+            >>> gps_log = log.select_channels(['GPS Latitude', 'GPS Longitude', 'GPS Speed'])
+            >>> print(gps_log.channels.keys())
+        """
+        missing = set(channel_names) - set(self.channels.keys())
+        if missing:
+            raise KeyError(f"Channels not found: {sorted(missing)}")
+
+        new_channels = {name: self.channels[name] for name in channel_names}
+        return LogFile(
+            channels=new_channels,
+            laps=self.laps,
+            metadata=self.metadata,
+            file_name=self.file_name,
+        )
+
+    def filter_by_time_range(
+        self,
+        start_time: int,
+        end_time: int,
+        channel_names: Sequence[str] | None = None,
+    ) -> "LogFile":
+        """
+        Filter channels to a time range [start_time, end_time) at native sample rates.
+
+        Args:
+            start_time: Start time in milliseconds (inclusive).
+            end_time: End time in milliseconds (exclusive).
+            channel_names: Optional sequence of channel names to include. If None, all channels.
+
+        Returns:
+            New LogFile with channels filtered to the time range.
+
+        Example:
+            >>> log = aim_xrk('session.xrk')
+            >>> segment = log.filter_by_time_range(60000, 120000)
+            >>> print(segment.channels['Engine RPM'].num_rows)
+        """
+        source = self.select_channels(channel_names) if channel_names is not None else self
+
+        new_channels = {}
+        for name, channel_table in source.channels.items():
+            timecodes = channel_table.column("timecodes")
+
+            # Filter to [start_time, end_time)
+            mask = pc.and_(
+                pc.greater_equal(timecodes, start_time),
+                pc.less(timecodes, end_time),
+            )
+            new_channels[name] = channel_table.filter(mask)
+
+        # Filter laps to only those overlapping with the time range
+        laps_start = self.laps.column("start_time")
+        laps_end = self.laps.column("end_time")
+
+        # A lap overlaps if: lap_start < end_time AND lap_end > start_time
+        laps_mask = pc.and_(
+            pc.less(laps_start, end_time),
+            pc.greater(laps_end, start_time),
+        )
+        new_laps = self.laps.filter(laps_mask)
+
+        return LogFile(
+            channels=new_channels,
+            laps=new_laps,
+            metadata=self.metadata,
+            file_name=self.file_name,
+        )
+
+    def filter_by_lap(
+        self,
+        lap_num: int,
+        channel_names: Sequence[str] | None = None,
+    ) -> "LogFile":
+        """
+        Filter channels to a specific lap's time range.
+
+        Args:
+            lap_num: The lap number to filter to.
+            channel_names: Optional sequence of channel names to include. If None, all channels.
+
+        Returns:
+            New LogFile with channels filtered to the lap's time range.
+
+        Raises:
+            ValueError: If lap_num is not found in the laps table.
+
+        Example:
+            >>> log = aim_xrk('session.xrk')
+            >>> lap5 = log.filter_by_lap(5, ['GPS Speed', 'Engine RPM'])
+            >>> df = lap5.get_channels_as_table().to_pandas()
+        """
+        lap_nums = self.laps.column("num").to_pylist()
+        if lap_num not in lap_nums:
+            raise ValueError(f"Lap {lap_num} not found. Available laps: {lap_nums}")
+
+        lap_idx = lap_nums.index(lap_num)
+        start_time = self.laps.column("start_time")[lap_idx].as_py()
+        end_time = self.laps.column("end_time")[lap_idx].as_py()
+
+        return self.filter_by_time_range(int(start_time), int(end_time), channel_names)
+
+    def resample_to_timecodes(
+        self,
+        timecodes: pa.Array,
+        channel_names: Sequence[str] | None = None,
+    ) -> "LogFile":
+        """
+        Resample all channels to a target timebase.
+
+        For channels with interpolate="True" metadata, performs linear interpolation.
+        For other channels, uses forward-fill then backward-fill for leading nulls.
+
+        Args:
+            timecodes: Target timecodes array (int64, milliseconds) to resample to.
+            channel_names: Optional sequence of channel names to include. If None, all channels.
+
+        Returns:
+            New LogFile with all channels resampled to the target timecodes.
+
+        Example:
+            >>> log = aim_xrk('session.xrk')
+            >>> target = pa.array(range(0, 100000, 100), type=pa.int64())
+            >>> resampled = log.resample_to_timecodes(target)
+        """
+        source = self.select_channels(channel_names) if channel_names is not None else self
+
+        target_timecodes_np = timecodes.to_numpy()
+        new_channels = {}
+
+        for name, channel_table in source.channels.items():
+            field = channel_table.schema.field(name)
+            channel_timecodes = channel_table.column("timecodes").to_numpy()
+            channel_values = channel_table.column(name).to_numpy(zero_copy_only=False)
+
+            # Check if we should interpolate
+            should_interpolate = False
+            if field.metadata:
+                interpolate_value = field.metadata.get(b"interpolate", b"").decode("utf-8")
+                should_interpolate = interpolate_value == "True"
+
+            if should_interpolate:
+                # Linear interpolation using numpy
+                # np.interp handles extrapolation by extending edge values
+                resampled_values = np.interp(
+                    target_timecodes_np,
+                    channel_timecodes,
+                    channel_values,
+                )
+            else:
+                # Forward-fill approach using searchsorted
+                # Find the index of the largest timecode <= each target timecode
+                indices = np.searchsorted(channel_timecodes, target_timecodes_np, side="right") - 1
+
+                # Handle leading nulls: where target is before first source timecode
+                leading_mask = indices < 0
+
+                # Clamp indices to valid range
+                indices = np.clip(indices, 0, len(channel_values) - 1)
+
+                resampled_values = channel_values[indices]
+
+                # For leading values (before first source timecode), backward fill
+                if np.any(leading_mask):
+                    resampled_values = resampled_values.copy()
+                    resampled_values[leading_mask] = channel_values[0]
+
+            # Build new channel table preserving metadata
+            new_table = pa.table(
+                {
+                    "timecodes": timecodes,
+                    name: pa.array(resampled_values, type=field.type),
+                }
+            )
+
+            # Restore metadata
+            if field.metadata:
+                new_field = new_table.schema.field(name).with_metadata(field.metadata)
+                new_schema = pa.schema([new_table.schema.field("timecodes"), new_field])
+                new_table = new_table.cast(new_schema)
+
+            new_channels[name] = new_table
+
+        return LogFile(
+            channels=new_channels,
+            laps=self.laps,
+            metadata=self.metadata,
+            file_name=self.file_name,
+        )
+
+    def resample_to_channel(
+        self,
+        reference_channel: str,
+        channel_names: Sequence[str] | None = None,
+    ) -> "LogFile":
+        """
+        Resample all channels to match a reference channel's timebase.
+
+        Args:
+            reference_channel: Name of the channel whose timecodes will be used.
+            channel_names: Optional sequence of channel names to include. If None, all channels.
+
+        Returns:
+            New LogFile with all channels resampled to the reference channel's timecodes.
+
+        Raises:
+            KeyError: If reference_channel is not found.
+
+        Example:
+            >>> log = aim_xrk('session.xrk')
+            >>> aligned = log.resample_to_channel('GPS Speed')
+            >>> df = aligned.get_channels_as_table().to_pandas()
+        """
+        if reference_channel not in self.channels:
+            raise KeyError(f"Reference channel not found: {reference_channel}")
+
+        ref_timecodes = self.channels[reference_channel].column("timecodes").combine_chunks()
+
+        return self.resample_to_timecodes(ref_timecodes, channel_names)

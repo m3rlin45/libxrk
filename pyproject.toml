@@ -1,6 +1,6 @@
 [project]
 name = "libxrk"
-version = "0.4.0"
+version = "0.5.0"
 description = "Library for reading AIM XRK files from AIM automotive data loggers"
 authors = [
     {name = "Christopher Dewan",email = "chris.dewan@m3rlin.net"}

@@ -305,6 +305,72 @@ class TestSFJXRK(unittest.TestCase):
                 f"Channel '{channel_name}' interpolate mismatch",
             )
 
+    @parameterized.expand(FILE_VARIANTS)
+    def test_filter_by_lap_with_real_data(self, name, file_path):
+        """Test filter_by_lap with known lap boundaries from SFJ test data."""
+        log = aim_xrk(str(file_path), progress=None)
+
+        # Filter to lap 1 (known boundaries: 193611.0 to 320961.0)
+        lap1 = log.filter_by_lap(1)
+
+        # Verify the filtered laps table only contains lap 1
+        self.assertEqual(lap1.laps.num_rows, 1)
+        self.assertEqual(lap1.laps.column("num")[0].as_py(), 1)
+
+        # Verify channel data is within lap 1 time range
+        rpm_channel = lap1.channels["RPM"]
+        timecodes = rpm_channel.column("timecodes").to_pylist()
+
+        # All timecodes should be within lap 1 boundaries [193611, 320961)
+        for tc in timecodes:
+            self.assertGreaterEqual(tc, 193611, "Timecode before lap start")
+            self.assertLess(tc, 320961, "Timecode at or after lap end")
+
+        # Verify we got some data (lap 1 should have RPM samples)
+        self.assertGreater(len(timecodes), 0, "No RPM data in lap 1")
+
+    @parameterized.expand(FILE_VARIANTS)
+    def test_filter_by_lap_with_channel_selection(self, name, file_path):
+        """Test filter_by_lap with specific channel selection."""
+        log = aim_xrk(str(file_path), progress=None)
+
+        # Filter to lap 5 with only GPS channels
+        lap5 = log.filter_by_lap(5, channel_names=["GPS Speed", "GPS Latitude", "GPS Longitude"])
+
+        # Verify only specified channels are present
+        self.assertEqual(
+            set(lap5.channels.keys()),
+            {"GPS Speed", "GPS Latitude", "GPS Longitude"},
+        )
+
+        # Verify timecodes are within lap 5 boundaries [688126, 819303)
+        gps_timecodes = lap5.channels["GPS Speed"].column("timecodes").to_pylist()
+        for tc in gps_timecodes:
+            self.assertGreaterEqual(tc, 688126)
+            self.assertLess(tc, 819303)
+
+    @parameterized.expand(FILE_VARIANTS)
+    def test_resample_to_channel_with_real_data(self, name, file_path):
+        """Test resample_to_channel with real data."""
+        log = aim_xrk(str(file_path), progress=None)
+
+        # Filter to a short segment to keep test fast
+        segment = log.filter_by_time_range(200000, 250000, channel_names=["RPM", "GPS Speed"])
+
+        # Resample RPM to GPS Speed's timebase
+        resampled = segment.resample_to_channel("GPS Speed")
+
+        # Both channels should now have the same timecodes
+        rpm_timecodes = resampled.channels["RPM"].column("timecodes").to_pylist()
+        gps_timecodes = resampled.channels["GPS Speed"].column("timecodes").to_pylist()
+        self.assertEqual(rpm_timecodes, gps_timecodes)
+
+        # RPM values should still be reasonable (not corrupted by resampling)
+        rpm_values = resampled.channels["RPM"].column("RPM").to_pylist()
+        for val in rpm_values:
+            self.assertGreaterEqual(val, 0, "RPM should not be negative")
+            self.assertLess(val, 20000, "RPM seems unreasonably high")
+
 
 if __name__ == "__main__":
     unittest.main()
