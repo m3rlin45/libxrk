@@ -72,6 +72,7 @@ class DataStream:
     messages: Dict[str, List[Message]]
     laps: pa.Table
     time_offset: int
+    gnfi_timecodes: Optional[object] = None
 
 @dataclass(**dc_slots)
 class Decoder:
@@ -245,6 +246,7 @@ def _decode_sequence(s, progress=None):
     messages = {}
     tok_GPS: cython.uint = _tokdec('GPS')
     tok_GPS1: cython.uint = _tokdec('GPS1')
+    tok_GNFI: cython.uint = _tokdec('GNFI')
     progress_interval: cython.Py_ssize_t = 8_000_000
     next_progress: cython.Py_ssize_t = progress_interval
     pos: cython.Py_ssize_t = 0
@@ -268,6 +270,7 @@ def _decode_sequence(s, progress=None):
     cdef vaccum * data_cat
     cdef accum * data_p
     gpsmsg: vector[cython.uchar]
+    gnfimsg: vector[cython.uchar]
     show_all: cython.int = 0
     show_bad: cython.int = 0
     while pos < len_s:
@@ -366,6 +369,9 @@ def _decode_sequence(s, progress=None):
                     if tok == tok_GPS or tok == tok_GPS1:
                         # fast path common case
                         gpsmsg.insert(gpsmsg.end(), &sv[oldpos+12], &sv[pos-8])
+                    elif tok == tok_GNFI:
+                        # fast path for GNFI messages (logger internal clock)
+                        gnfimsg.insert(gnfimsg.end(), &sv[oldpos+12], &sv[pos-8])
                     else:
                         data = s[oldpos + 12 : pos - 8]
                         if tok == _tokdec('CNF'):
@@ -597,17 +603,19 @@ def _decode_sequence(s, progress=None):
             c.sampledata = np.divide(c.sampledata, 1000).data
 
     laps = None
+    gnfi_timecodes = None
     if not channels:
         t4 = time.perf_counter()
         pass # nothing to do
     elif progress:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(2, os.cpu_count())) as worker:
             bg_work = worker.submit(_bg_gps_laps, <cython.uchar[:gpsmsg.size()]> &gpsmsg[0],
+                                    <cython.uchar[:gnfimsg.size()]> &gnfimsg[0] if gnfimsg.size() else None,
                                     messages, time_offset, last_time)
             group_work = worker.map(process_group, [x for x in groups if x])
             channel_work = worker.map(process_channel,
                                       [x for x in channels if x and not x.group])
-            gps_ch, laps = bg_work.result()
+            gps_ch, laps, gnfi_timecodes = bg_work.result()
             t4 = time.perf_counter()
             for i in group_work:
                 pass
@@ -620,8 +628,10 @@ def _decode_sequence(s, progress=None):
         for c in channels:
             if c and not c.group: process_channel(c)
         t4 = time.perf_counter()
-        gps_ch, laps = _bg_gps_laps(<cython.uchar[:gpsmsg.size()]> &gpsmsg[0],
-                                    messages, time_offset, last_time)
+        gps_ch, laps, gnfi_timecodes = _bg_gps_laps(
+            <cython.uchar[:gpsmsg.size()]> &gpsmsg[0],
+            <cython.uchar[:gnfimsg.size()]> &gnfimsg[0] if gnfimsg.size() else None,
+            messages, time_offset, last_time)
         channels.extend(gps_ch)
 
     t3 = time.perf_counter()
@@ -634,7 +644,8 @@ def _decode_sequence(s, progress=None):
                   and ch.long_name not in ('StrtRec', 'Master Clk')},
         messages=messages,
         laps=laps,
-        time_offset=time_offset)
+        time_offset=time_offset,
+        gnfi_timecodes=gnfi_timecodes)
 
 def _get_metadata(msg_by_type):
     ret = {}
@@ -669,15 +680,16 @@ def _get_metadata(msg_by_type):
         ret['Device Name'] = msg_by_type[_tokdec('NDV')][-1].content
     return ret
 
-def _bg_gps_laps(gpsmsg, msg_by_type, time_offset, last_time):
+def _bg_gps_laps(gpsmsg, gnfimsg, msg_by_type, time_offset, last_time):
     channels = _decode_gps(gpsmsg, time_offset)
+    gnfi_timecodes = _decode_gnfi(gnfimsg, time_offset)
     lat_ch = None
     lon_ch = None
     for ch in channels:
         if ch.long_name == 'GPS Latitude': lat_ch = ch
         if ch.long_name == 'GPS Longitude': lon_ch = ch
     laps = _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time)
-    return channels, laps
+    return channels, laps, gnfi_timecodes
 
 def _decode_gps(gpsmsg, time_offset):
     if not gpsmsg: return []
@@ -724,6 +736,32 @@ def _decode_gps(gpsmsg, time_offset):
                     timecodes=timecodes, sampledata=memoryview(gpsconv.long)),
             Channel(long_name='GPS Altitude', units='m', dec_pts=1, interpolate=True,
                     timecodes=timecodes, sampledata=memoryview(gpsconv.alt))]
+
+def _decode_gnfi(gnfimsg, time_offset):
+    """Parse GNFI messages and return timecodes array.
+
+    GNFI messages run on the logger's internal clock, not the GPS timecode stream.
+    This provides a ground truth reference for detecting GPS timing bugs.
+
+    GNFI message structure (32 bytes each):
+    - Bytes 0-3: Logger timecode (int32)
+    - Bytes 4-31: Other data (not used for timing)
+
+    Args:
+        gnfimsg: Raw GNFI message bytes
+        time_offset: Time offset to subtract from timecodes
+
+    Returns:
+        numpy array of GNFI timecodes, or None if no GNFI data
+    """
+    if not gnfimsg:
+        return None
+    alldata = memoryview(gnfimsg)
+    if len(alldata) % 32 != 0:
+        return None
+    timecodes = np.asarray(alldata[0:].cast('i')[::32//4]) - time_offset
+    return timecodes
+
 
 def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
     lap_nums = []
@@ -904,7 +942,8 @@ def aim_xrk(fname, progress=None):
         fname if not isinstance(fname, (bytes, bytearray, memoryview)) and not hasattr(fname, 'read') else "<bytes>")
 
     # Fix GPS timing gaps (spurious timestamp jumps in some AIM loggers)
-    fix_gps_timing_gaps(log)
+    # Pass GNFI timecodes for more robust detection (if available)
+    fix_gps_timing_gaps(log, gnfi_timecodes=data.gnfi_timecodes)
 
     return log
 
