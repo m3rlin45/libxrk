@@ -48,6 +48,7 @@ test = [
 packages = [{include = "libxrk", from = "src"}]
 include = [
     { path = "src/libxrk/**/*.so", format = "wheel" },
+    { path = "src/libxrk/**/*.pyd", format = "wheel" },
     { path = "src/libxrk/**/*.pyx", format = "sdist" },
     { path = "src/libxrk/**/*.pyi", format = ["wheel", "sdist"] },
     { path = "src/libxrk/py.typed", format = ["wheel", "sdist"] },
@@ -174,7 +175,7 @@ deps = ["emsdk-setup"]
 
 [tool.cibuildwheel]
 build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
-skip = "*-musllinux_* *-win*"
+skip = "*-musllinux_*"
 build-verbosity = 1
 
 [tool.cibuildwheel.linux]
@@ -183,6 +184,10 @@ before-build = "pip install numpy cython"
 
 [tool.cibuildwheel.macos]
 archs = ["x86_64", "arm64"]
+before-build = "pip install numpy cython"
+
+[tool.cibuildwheel.windows]
+archs = ["AMD64", "ARM64"]
 before-build = "pip install numpy cython"
 
 [tool.poetry.build]
