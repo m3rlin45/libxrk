@@ -358,13 +358,8 @@ class TestGpsTimingGapFixIntegration(unittest.TestCase):
         # Load the XRK file (fix is automatically applied)
         cls.log_xrk = aim_xrk(str(cls.SFJ_0101_XRK))
 
-        # Try to load XRZ file, but it may be corrupted/truncated
-        cls.log_xrz = None
-        if cls.SFJ_0101_XRZ.exists():
-            try:
-                cls.log_xrz = aim_xrk(str(cls.SFJ_0101_XRZ))
-            except Exception:
-                pass  # XRZ file may be corrupted
+        # Load XRZ file (truncated files are now handled gracefully)
+        cls.log_xrz = aim_xrk(str(cls.SFJ_0101_XRZ))
 
     def test_0101_file_exists(self):
         """Verify the test data file exists."""
@@ -422,9 +417,6 @@ class TestGpsTimingGapFixIntegration(unittest.TestCase):
 
     def test_xrk_and_xrz_produce_same_gps_timecodes(self):
         """Verify XRK and XRZ files produce the same GPS timecodes after fix."""
-        if self.log_xrz is None:
-            self.skipTest("XRZ file not available or corrupted")
-
         xrk_time = self.log_xrk.channels["GPS Speed"].column("timecodes").to_numpy()
         xrz_time = self.log_xrz.channels["GPS Speed"].column("timecodes").to_numpy()
 
@@ -434,9 +426,6 @@ class TestGpsTimingGapFixIntegration(unittest.TestCase):
 
     def test_gps_values_preserved(self):
         """Verify GPS values are not modified by the timing fix."""
-        if self.log_xrz is None:
-            self.skipTest("XRZ file not available or corrupted")
-
         # The values should be the same between XRK and XRZ (only timecodes were fixed)
         xrk_speed = self.log_xrk.channels["GPS Speed"].column("GPS Speed").to_numpy()
         xrz_speed = self.log_xrz.channels["GPS Speed"].column("GPS Speed").to_numpy()
