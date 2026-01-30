@@ -24,7 +24,7 @@ TEST_DATA_DIR = Path(__file__).parent / "test_data"
 SFJ_0033_XRK = TEST_DATA_DIR / "SFJ" / "CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrk"
 SFJ_0101_XRK = TEST_DATA_DIR / "SFJ" / "CMD_SFJ_Fuji GP Sh_Generic testing_a_0101.xrk"
 T86_2248_XRK = TEST_DATA_DIR / "86" / "CMD_Inferno 86_Fuji GP Sh_Generic testing_a_2248.xrk"
-SUZUKA_XRK = TEST_DATA_DIR / "suzuka" / "CMD_SFJ_Suzuka Car_Generic testing_a_0090.xrk"
+SUZUKA_XRK = TEST_DATA_DIR / "SFJ" / "CMD_SFJ_Suzuka Car_Generic testing_a_0090.xrk"
 
 
 def compute_gps_longitudinal_acceleration(log: LogFile) -> Tuple[np.ndarray, np.ndarray]:
