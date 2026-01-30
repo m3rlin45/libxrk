@@ -304,7 +304,7 @@ class TestChannelSynchronization(unittest.TestCase):
         if self.log_0033 is None:
             self.skipTest("0033.xrk not available")
 
-        correlation = self._test_inline_acc_gps_correlation(self.log_0033, min_correlation=0.5)
+        correlation = self._test_inline_acc_gps_correlation(self.log_0033, min_correlation=0.80)
         print(f"\n0033.xrk InlineAcc vs GPS correlation: {correlation:.3f}")
 
     def test_0033_lateral_acc_gps_correlation(self):
@@ -312,7 +312,7 @@ class TestChannelSynchronization(unittest.TestCase):
         if self.log_0033 is None:
             self.skipTest("0033.xrk not available")
 
-        correlation = self._test_lateral_acc_gps_correlation(self.log_0033, min_correlation=0.3)
+        correlation = self._test_lateral_acc_gps_correlation(self.log_0033, min_correlation=0.85)
         print(f"\n0033.xrk LateralAcc vs GPS lateral correlation: {correlation:.3f}")
 
     def test_0101_inline_acc_gps_correlation(self):
@@ -323,7 +323,7 @@ class TestChannelSynchronization(unittest.TestCase):
         if self.log_0101 is None:
             self.skipTest("0101.xrk not available")
 
-        correlation = self._test_inline_acc_gps_correlation(self.log_0101, min_correlation=0.5)
+        correlation = self._test_inline_acc_gps_correlation(self.log_0101, min_correlation=0.90)
         print(f"\n0101.xrk InlineAcc vs GPS correlation: {correlation:.3f}")
 
     def test_0101_lateral_acc_gps_correlation(self):
@@ -331,7 +331,7 @@ class TestChannelSynchronization(unittest.TestCase):
         if self.log_0101 is None:
             self.skipTest("0101.xrk not available")
 
-        correlation = self._test_lateral_acc_gps_correlation(self.log_0101, min_correlation=0.3)
+        correlation = self._test_lateral_acc_gps_correlation(self.log_0101, min_correlation=0.95)
         print(f"\n0101.xrk LateralAcc vs GPS lateral correlation: {correlation:.3f}")
 
     def test_2248_inline_acc_gps_correlation(self):
@@ -339,7 +339,7 @@ class TestChannelSynchronization(unittest.TestCase):
         if self.log_2248 is None:
             self.skipTest("2248.xrk not available")
 
-        correlation = self._test_inline_acc_gps_correlation(self.log_2248, min_correlation=0.5)
+        correlation = self._test_inline_acc_gps_correlation(self.log_2248, min_correlation=0.95)
         print(f"\n2248.xrk InlineAcc vs GPS correlation: {correlation:.3f}")
 
     def test_2248_lateral_acc_gps_correlation(self):
@@ -347,7 +347,7 @@ class TestChannelSynchronization(unittest.TestCase):
         if self.log_2248 is None:
             self.skipTest("2248.xrk not available")
 
-        correlation = self._test_lateral_acc_gps_correlation(self.log_2248, min_correlation=0.3)
+        correlation = self._test_lateral_acc_gps_correlation(self.log_2248, min_correlation=0.95)
         print(f"\n2248.xrk LateralAcc vs GPS lateral correlation: {correlation:.3f}")
 
     # =========================================================================
@@ -363,7 +363,7 @@ class TestChannelSynchronization(unittest.TestCase):
         if self.log_suzuka is None:
             self.skipTest("Suzuka file not available")
 
-        correlation = self._test_inline_acc_gps_correlation(self.log_suzuka, min_correlation=0.5)
+        correlation = self._test_inline_acc_gps_correlation(self.log_suzuka, min_correlation=0.85)
         print(f"\nSuzuka InlineAcc vs GPS correlation: {correlation:.3f}")
 
     def test_suzuka_lateral_acc_gps_correlation(self):
@@ -371,7 +371,7 @@ class TestChannelSynchronization(unittest.TestCase):
         if self.log_suzuka is None:
             self.skipTest("Suzuka file not available")
 
-        correlation = self._test_lateral_acc_gps_correlation(self.log_suzuka, min_correlation=0.3)
+        correlation = self._test_lateral_acc_gps_correlation(self.log_suzuka, min_correlation=0.80)
         print(f"\nSuzuka LateralAcc vs GPS lateral correlation: {correlation:.3f}")
 
 
