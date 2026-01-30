@@ -502,7 +502,12 @@ class TestGnfiBasedDetection(unittest.TestCase):
 
         self.assertEqual(len(result), 1, "Should detect exactly one offset")
         gap_time, correction = result[0]
-        self.assertEqual(correction, 65533, "Correction should be 65533ms")
+        # For direct gaps where gap_size is ~65533ms, correction is gap_size - expected_dt
+        self.assertEqual(
+            correction,
+            65533 - int(expected_dt_ms),
+            "Correction should be excess time for direct gap",
+        )
         self.assertEqual(gap_time, gps_timecodes[gap_index], "Gap time should match")
 
     def test_gnfi_no_offset_detected_when_clean(self) -> None:
