@@ -2,8 +2,6 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-import heapq
-from itertools import groupby
 import sys
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -59,15 +57,12 @@ class LogFile:
             # Return an empty table with just timecodes column if no channels
             return pa.table({"timecodes": pa.array([], type=pa.int64())})
 
-        # Compute union of all channel timecodes using k-way merge (O(N) vs O(N log N) for sort)
-        # Each channel's timecodes are already sorted, so we merge and deduplicate in one pass
-        timecode_iterators = [
-            channel_table.column("timecodes").to_pylist()
-            for channel_table in self.channels.values()
+        # Compute union of all channel timecodes using numpy concatenate + unique
+        # This is faster than k-way merge with heapq due to optimized C implementation
+        timecode_arrays = [
+            channel_table.column("timecodes").to_numpy() for channel_table in self.channels.values()
         ]
-        merged = heapq.merge(*timecode_iterators)
-        unique_timecodes = [k for k, _ in groupby(merged)]
-        union_timecodes = pa.array(unique_timecodes, type=pa.int64())
+        union_timecodes = pa.array(np.unique(np.concatenate(timecode_arrays)), type=pa.int64())
 
         # Resample all channels to the union timecodes
         resampled = self.resample_to_timecodes(union_timecodes)
