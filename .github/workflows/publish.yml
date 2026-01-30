@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-latest, windows-latest]
         python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
 
     steps:
@@ -47,6 +47,8 @@ jobs:
         # Build only native arch per runner (no cross-compilation or emulation)
         CIBW_ARCHS_LINUX: "native"
         CIBW_ARCHS_MACOS: "native"
+        # Windows: build AMD64 natively, cross-compile ARM64 from x64 runner
+        CIBW_ARCHS_WINDOWS: "AMD64 ARM64"
 
     - name: Upload wheel
       uses: actions/upload-artifact@v4
@@ -89,7 +91,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-latest, windows-latest]
         python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
 
     steps:
@@ -108,10 +110,18 @@ jobs:
         name: wheel-${{ matrix.os }}-${{ matrix.python-version }}
         path: dist/
 
-    - name: Install wheel and test dependencies
+    - name: Install wheel and test dependencies (Unix)
+      if: runner.os != 'Windows'
       run: |
         WHEEL=$(ls dist/*.whl | head -1)
         pip install "${WHEEL}[test]"
+
+    - name: Install wheel and test dependencies (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $wheel = (Get-ChildItem dist/*.whl | Select-Object -First 1).FullName
+        pip install "${wheel}[test]"
 
     - name: Run tests
       run: pytest tests/ -v --tb=short

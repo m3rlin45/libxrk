@@ -1,6 +1,7 @@
 """Build script for compiling Cython extensions."""
 
 import os
+import platform
 import shutil
 from pathlib import Path
 from setuptools import Extension
@@ -34,13 +35,19 @@ def build(setup_kwargs):
     """
     This function is mandatory in order to build the extensions.
     """
+    # MSVC (Windows) defaults to C++14, GCC/Clang need explicit flag
+    if platform.system() == "Windows":
+        extra_compile_args = []
+    else:
+        extra_compile_args = ["-std=c++11"]
+
     extensions = [
         Extension(
             "libxrk.aim_xrk",
             sources=["src/libxrk/aim_xrk.pyx"],
             include_dirs=[np.get_include()],
             language="c++",
-            extra_compile_args=["-std=c++11"],
+            extra_compile_args=extra_compile_args,
         )
     ]
 
