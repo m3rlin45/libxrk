@@ -463,9 +463,18 @@ def detect_gps_timing_offset_from_gnfi(
     # Find the largest gap
     largest_gap_idx = gap_indices[np.argmax(dt[gap_indices])]
     gap_time = int(gps_timecodes[largest_gap_idx])
+    gap_size = dt[largest_gap_idx]
 
-    # The correction is the overflow bug amount
-    return [(gap_time, OVERFLOW_BUG_MS)]
+    # For direct gaps (60000-70000ms), use gap_size - expected_dt as correction
+    # For hidden bugs (detected via GNFI), use OVERFLOW_BUG_MS as correction
+    # because the gap_size might be smaller due to signal loss masking the bug
+    if OVERFLOW_BUG_MS - TOLERANCE <= gap_size <= OVERFLOW_BUG_MS + TOLERANCE:
+        # Direct gap - correction is the excess time
+        correction = gap_size - expected_dt_ms
+    else:
+        # Hidden bug - correction is the full overflow amount
+        correction = OVERFLOW_BUG_MS
+    return [(gap_time, int(correction))]
 
 
 def fix_gps_timing_gaps(
