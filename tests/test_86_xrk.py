@@ -64,6 +64,10 @@ class Test86XRK(unittest.TestCase):
             "Odo/Usr 3 Time": "79:29:53",
             "Odo/Usr 4 Distance (km)": 5313.42,
             "Odo/Usr 4 Time": "79:29:53",
+            "Logger ID": 6701209,
+            "Logger Model ID": 649,
+            "Logger Model": "MXP 1.3",
+            "Device Name": "Inferno 86 v2",
         }
 
         # Check core fields present in both formats

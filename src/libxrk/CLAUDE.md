@@ -16,8 +16,28 @@ df = log.get_channels_as_table().to_pandas()
 ```python
 log.channels   # Dict[str, pa.Table] - channel name -> PyArrow table
 log.laps       # pa.Table - columns: num, start_time, end_time (ms)
-log.metadata   # Dict[str, str] - session info
+log.metadata   # Dict[str, Any] - session info
 ```
+
+## Metadata Fields
+
+Standard metadata fields extracted from XRK files:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| Driver | str | Driver name |
+| Vehicle | str | Vehicle name |
+| Venue | str | Track/venue name |
+| Log Date | str | Date of log (DD/MM/YYYY) |
+| Log Time | str | Time of log (HH:MM:SS) |
+| Series | str | Series/competition name |
+| Session | str | Session type |
+| Long Comment | str | User notes |
+| Logger ID | int | Unique logger serial number |
+| Logger Model ID | int | Numeric model code |
+| Logger Model | str or None | Human-readable model name (e.g., "MXP 1.3", "MXm") |
+| Device Name | str | User-configured device name |
+| Odo/* | various | Odometer readings |
 
 ## Channel Tables
 

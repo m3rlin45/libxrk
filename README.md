@@ -69,6 +69,7 @@ for i in range(log.laps.num_rows):
 
 # Access metadata
 print(log.metadata)
+# Includes: Driver, Vehicle, Venue, Log Date/Time, Logger ID, Logger Model, Device Name, etc.
 ```
 
 ### Filtering and Resampling

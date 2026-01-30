@@ -118,6 +118,13 @@ _decoders = {
     24: Decoder('i'), # Best Run Diff?
 }
 
+# Logger model ID to name mapping
+# These values are from the idn message in XRK files
+_logger_models = {
+    649: "MXP 1.3",
+    793: "MXm",
+}
+
 _unit_map = {
     1:  ('%', 2),
     3:  ('G', 2),
@@ -438,6 +445,27 @@ def _decode_sequence(s, progress=None):
                                      _tokdec('DBUN'), _tokdec('DBUT'), _tokdec('DVER'), _tokdec('MANL'), _tokdec('MODL'), _tokdec('MANI'),
                                      _tokdec('MODI'), _tokdec('HWNF'), _tokdec('PDLT'), _tokdec('NTE')):
                             data = _nullterm_string(data)
+                        elif tok == _tokdec('idn'):
+                            # idn message: 56-byte payload with logger info
+                            # Offset +0: model ID (16-bit LE)
+                            # Offset +6: logger ID (32-bit LE)
+                            if len(data) >= 10:
+                                model_id = struct.unpack('<H', data[0:2])[0]
+                                logger_id = struct.unpack('<I', data[6:10])[0]
+                                data = {'model_id': model_id, 'logger_id': logger_id}
+                        elif tok == _tokdec('SRC'):
+                            # SRC message contains embedded idn data
+                            # Format: 3-byte token + 1-byte version + 2-byte length + payload
+                            if len(data) >= 62 and data[:3] == b'idn':
+                                # Parse the embedded idn payload (skip 6-byte header)
+                                idn_payload = data[6:62]
+                                model_id = struct.unpack('<H', idn_payload[0:2])[0]
+                                logger_id = struct.unpack('<I', idn_payload[6:10])[0]
+                                # Store as idn message type for metadata extraction
+                                idn_msg = Message(_tokdec('idn'), 1, {'model_id': model_id, 'logger_id': logger_id})
+                                if _tokdec('idn') not in messages:
+                                    messages[_tokdec('idn')] = []
+                                messages[_tokdec('idn')].append(idn_msg)
                         elif tok == _tokdec('ENF'):
                             data = _decode_sequence(data).messages
                         elif tok == _tokdec('TRK'):
@@ -629,6 +657,16 @@ def _get_metadata(msg_by_type):
             ret['Odo/%s Time' % name] = '%d:%02d:%02d' % (stats['time'] // 3600,
                                                           stats['time'] // 60 % 60,
                                                           stats['time'] % 60)
+    # Logger info from idn message
+    if _tokdec('idn') in msg_by_type:
+        idn_data = msg_by_type[_tokdec('idn')][-1].content
+        if isinstance(idn_data, dict):
+            ret['Logger ID'] = idn_data['logger_id']
+            ret['Logger Model ID'] = idn_data['model_id']
+            ret['Logger Model'] = _logger_models.get(idn_data['model_id'])
+    # Device name from NDV message
+    if _tokdec('NDV') in msg_by_type:
+        ret['Device Name'] = msg_by_type[_tokdec('NDV')][-1].content
     return ret
 
 def _bg_gps_laps(gpsmsg, msg_by_type, time_offset, last_time):
