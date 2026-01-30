@@ -28,6 +28,11 @@ jobs:
           # NumPy doesn't have Windows ARM64 wheels for Python 3.10
           - os: windows-11-arm
             python-version: '3.10'
+          # PyArrow doesn't have Windows ARM64 wheels for Python 3.13+
+          - os: windows-11-arm
+            python-version: '3.13'
+          - os: windows-11-arm
+            python-version: '3.14'
 
     steps:
     - uses: actions/checkout@v4
@@ -101,6 +106,11 @@ jobs:
           # NumPy doesn't have Windows ARM64 wheels for Python 3.10
           - os: windows-11-arm
             python-version: '3.10'
+          # PyArrow doesn't have Windows ARM64 wheels for Python 3.13+
+          - os: windows-11-arm
+            python-version: '3.13'
+          - os: windows-11-arm
+            python-version: '3.14'
 
     steps:
     - uses: actions/checkout@v4
