@@ -415,12 +415,18 @@ if __name__ == "__main__":
 
 
 def fix_gps_timing_gaps(log: "LogFile", expected_dt_ms: float = 40.0) -> "LogFile":
-    """Detect and correct large timing gaps in GPS channels and lap boundaries.
+    """Detect and correct 16-bit overflow timing gaps in GPS channels and lap boundaries.
 
     Some AIM data loggers produce GPS data with spurious timestamp jumps
-    (e.g., 65533ms gaps that should be ~40ms). This is likely caused by a
-    16-bit overflow bug in the logger firmware. This function detects such
-    gaps and corrects the timecodes by removing the excess time.
+    (e.g., 65533ms gaps that should be ~40ms). This is caused by a 16-bit
+    overflow bug in the logger firmware where the upper 16 bits of the
+    timecode are corrupted, resulting in a gap of approximately 65533ms
+    (0xFFED, or 2^16 - 3).
+
+    This function detects the firmware bug in two ways:
+    1. Direct detection: gaps between 60000ms and 70000ms
+    2. Indirect detection: GPS ends ~65533ms after other channels, indicating
+       the bug occurred during a GPS signal loss (hidden within a smaller gap)
 
     The fix is applied in-place to the LogFile's channels dict and laps table.
 
@@ -437,6 +443,11 @@ def fix_gps_timing_gaps(log: "LogFile", expected_dt_ms: float = 40.0) -> "LogFil
     LogFile
         The same LogFile object with corrected GPS timecodes and lap boundaries.
     """
+    # The firmware bug causes a gap of approximately 65533ms (0xFFED).
+    OVERFLOW_BUG_MS = 65533
+    OVERFLOW_GAP_MIN = 60000  # 60 seconds minimum
+    OVERFLOW_GAP_MAX = 70000  # 70 seconds maximum
+
     # Find the first GPS channel that exists
     gps_channel_name = None
     for name in GPS_CHANNEL_NAMES:
@@ -464,13 +475,44 @@ def fix_gps_timing_gaps(log: "LogFile", expected_dt_ms: float = 40.0) -> "LogFil
     if len(gap_indices) == 0:
         return log
 
-    # Build list of (gap_time, correction) pairs
+    # Build list of (gap_time, correction) pairs - only for firmware bug gaps
     gap_corrections = []
     for gap_idx in gap_indices:
         gap_time = gps_time[gap_idx]
         gap_size = dt[gap_idx]
+
+        # Only fix gaps that match the firmware bug signature (around 65533ms)
+        if not (OVERFLOW_GAP_MIN <= gap_size <= OVERFLOW_GAP_MAX):
+            continue  # Skip - this is a legitimate gap, not the firmware bug
+
         correction = gap_size - expected_dt_ms
         gap_corrections.append((gap_time, correction))
+
+    # Check for hidden firmware bug: GPS extends ~65533ms beyond other channels
+    # This happens when the bug occurs during GPS signal loss
+    if len(gap_corrections) == 0 and len(gap_indices) > 0:
+        # Find end time of non-GPS channels
+        non_gps_end_times = []
+        for ch_name, ch_table in log.channels.items():
+            if ch_name not in GPS_CHANNEL_NAMES:
+                ch_time = ch_table.column("timecodes").to_numpy()
+                if len(ch_time) > 0:
+                    non_gps_end_times.append(ch_time[-1])
+
+        if non_gps_end_times:
+            max_non_gps_end = max(non_gps_end_times)
+            gps_end = gps_time[-1]
+            end_offset = gps_end - max_non_gps_end
+
+            # If GPS extends ~65533ms beyond other channels, the bug is hidden
+            if OVERFLOW_GAP_MIN <= end_offset <= OVERFLOW_GAP_MAX:
+                # Find the gap where the bug likely occurred (largest gap)
+                largest_gap_idx = gap_indices[np.argmax(dt[gap_indices])]
+                gap_time = gps_time[largest_gap_idx]
+
+                # Apply correction of ~65533ms (the overflow amount)
+                correction = OVERFLOW_BUG_MS
+                gap_corrections.append((gap_time, correction))
 
     # Fix GPS channel timecodes
     gps_time_fixed = gps_time.astype(np.float64)

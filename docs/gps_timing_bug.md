@@ -70,9 +70,12 @@ After applying the fix:
 
 ### Gap Detection Parameters
 
-- **Gap threshold**: 10× expected sample interval (400ms for 25Hz GPS)
+- **Gap threshold**: 10× expected sample interval (400ms for 25Hz GPS) to detect potential gaps
+- **Firmware bug signature**: Gap must be between 60000ms and 70000ms to be corrected
 - **Expected interval**: 40ms (configurable via `expected_dt_ms` parameter)
 - **Correction**: `gap_size - expected_dt_ms` subtracted from all subsequent timestamps
+
+**Important**: Only gaps that match the firmware bug signature (~65533ms, the 16-bit overflow pattern) are corrected. Legitimate gaps outside this range (such as GPS signal loss during tunnel passage) are preserved to maintain proper channel synchronization.
 
 ### API
 
@@ -90,5 +93,5 @@ log = aim_xrk("file.xrk")  # GPS timing fix is applied automatically
 
 ## Files Without This Bug
 
-- `CMD_SFJ_Suzuka Car_Generic testing_a_0090.xrk` - Has a 52-second gap near end of session, but this is legitimate (end of recording/GPS signal loss)
+- `CMD_SFJ_Suzuka Car_Generic testing_a_0090.xrk` - Has a 52-second gap (~52376ms) mid-session due to GPS signal loss (possibly tunnel/overpass). This is a legitimate gap and is correctly preserved (not "fixed").
 - `CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrk` - No timing issues detected
