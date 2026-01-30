@@ -865,8 +865,13 @@ def _decompress_if_zlib(data):
     second_byte = data[1] if isinstance(data[1], int) else ord(data[1])
     
     if first_byte == 0x78 and second_byte in (0x01, 0x9C, 0xDA):
-        return zlib.decompress(bytes(data))
-    
+        deco = zlib.decompressobj()
+        try:
+            return deco.decompress(bytes(data))
+        except zlib.error:
+            # Truncated stream - recover partial data
+            return deco.flush()
+
     return data
 
 
@@ -906,7 +911,12 @@ class _open_xrk:
             self._mmap = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
             # Check if zlib compressed - if so, decompress and use bytes instead of mmap
             if len(self._mmap) >= 2 and self._mmap[0] == 0x78 and self._mmap[1] in (0x01, 0x9C, 0xDA):
-                self._data = zlib.decompress(self._mmap[:])
+                deco = zlib.decompressobj()
+                try:
+                    self._data = deco.decompress(self._mmap[:])
+                except zlib.error:
+                    # Truncated stream - recover partial data
+                    self._data = deco.flush()
                 self._mmap.close()
                 self._mmap = None
                 return self._data
