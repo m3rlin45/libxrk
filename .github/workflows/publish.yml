@@ -22,17 +22,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-latest, windows-latest, windows-11-arm]
+        # Note: windows-11-arm excluded until pyarrow publishes Windows ARM64 wheels
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-latest, windows-latest]
         python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
-        exclude:
-          # NumPy doesn't have Windows ARM64 wheels for Python 3.10
-          - os: windows-11-arm
-            python-version: '3.10'
-          # PyArrow doesn't have Windows ARM64 wheels for Python 3.13+
-          - os: windows-11-arm
-            python-version: '3.13'
-          - os: windows-11-arm
-            python-version: '3.14'
 
     steps:
     - uses: actions/checkout@v4
@@ -100,17 +92,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-latest, windows-latest, windows-11-arm]
+        # Note: windows-11-arm excluded until pyarrow publishes Windows ARM64 wheels
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-latest, windows-latest]
         python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
-        exclude:
-          # NumPy doesn't have Windows ARM64 wheels for Python 3.10
-          - os: windows-11-arm
-            python-version: '3.10'
-          # PyArrow doesn't have Windows ARM64 wheels for Python 3.13+
-          - os: windows-11-arm
-            python-version: '3.13'
-          - os: windows-11-arm
-            python-version: '3.14'
 
     steps:
     - uses: actions/checkout@v4

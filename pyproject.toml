@@ -187,7 +187,8 @@ archs = ["x86_64", "arm64"]
 before-build = "pip install numpy cython"
 
 [tool.cibuildwheel.windows]
-archs = ["AMD64", "ARM64"]
+# ARM64 excluded until pyarrow publishes Windows ARM64 wheels
+archs = ["AMD64"]
 before-build = "pip install numpy cython"
 
 [tool.poetry.build]
