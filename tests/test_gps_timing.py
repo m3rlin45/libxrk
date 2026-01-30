@@ -478,5 +478,169 @@ class TestGpsTimingGapFixIntegration(unittest.TestCase):
         )
 
 
+class TestGnfiBasedDetection(unittest.TestCase):
+    """Tests for GNFI-based GPS timing offset detection."""
+
+    def test_gnfi_detects_offset(self) -> None:
+        """Test that GNFI detection correctly identifies the 65533ms offset."""
+        from libxrk.gps import detect_gps_timing_offset_from_gnfi
+
+        # Simulate GPS timecodes with hidden bug: GPS ends ~65533ms after GNFI
+        # GNFI ends at 100000ms (100 seconds), GPS ends at 165533ms
+        n_samples = 2500
+        expected_dt_ms = 40.0
+
+        gnfi_timecodes = np.arange(0, n_samples * expected_dt_ms, expected_dt_ms, dtype=np.int64)
+
+        # GPS has the same number of samples but includes a bug at sample 1000
+        # The bug adds 65533ms to all subsequent samples
+        gps_timecodes = np.arange(0, n_samples * expected_dt_ms, expected_dt_ms, dtype=np.int64)
+        gap_index = 1000
+        gps_timecodes[gap_index + 1 :] += 65533 - int(expected_dt_ms)
+
+        result = detect_gps_timing_offset_from_gnfi(gps_timecodes, gnfi_timecodes, expected_dt_ms)
+
+        self.assertEqual(len(result), 1, "Should detect exactly one offset")
+        gap_time, correction = result[0]
+        self.assertEqual(correction, 65533, "Correction should be 65533ms")
+        self.assertEqual(gap_time, gps_timecodes[gap_index], "Gap time should match")
+
+    def test_gnfi_no_offset_detected_when_clean(self) -> None:
+        """Test that GNFI detection returns empty list when no offset exists."""
+        from libxrk.gps import detect_gps_timing_offset_from_gnfi
+
+        n_samples = 2500
+        expected_dt_ms = 40.0
+
+        # Both GNFI and GPS are clean (no bug)
+        gnfi_timecodes = np.arange(0, n_samples * expected_dt_ms, expected_dt_ms, dtype=np.int64)
+        gps_timecodes = np.arange(0, n_samples * expected_dt_ms, expected_dt_ms, dtype=np.int64)
+
+        result = detect_gps_timing_offset_from_gnfi(gps_timecodes, gnfi_timecodes, expected_dt_ms)
+
+        self.assertEqual(len(result), 0, "Should not detect any offset when data is clean")
+
+    def test_gnfi_missing_returns_empty(self) -> None:
+        """Test that GNFI detection returns empty when GNFI timecodes are None."""
+        from libxrk.gps import detect_gps_timing_offset_from_gnfi
+
+        gps_timecodes = np.arange(0, 10000, 40, dtype=np.int64)
+
+        # Pass empty array instead of None to satisfy type checker
+        result = detect_gps_timing_offset_from_gnfi(
+            gps_timecodes, np.array([], dtype=np.int64), 40.0
+        )
+        self.assertEqual(len(result), 0)
+
+    def test_gnfi_too_short_returns_empty(self) -> None:
+        """Test that GNFI detection returns empty when GNFI has too few samples."""
+        from libxrk.gps import detect_gps_timing_offset_from_gnfi
+
+        gps_timecodes = np.arange(0, 10000, 40, dtype=np.int64)
+        gnfi_timecodes = np.array([0], dtype=np.int64)  # Only 1 sample
+
+        result = detect_gps_timing_offset_from_gnfi(gps_timecodes, gnfi_timecodes, 40.0)
+        self.assertEqual(len(result), 0)
+
+    def test_gnfi_fallback_to_heuristics_when_gnfi_missing(self) -> None:
+        """Test that fix_gps_timing_gaps falls back to heuristics when GNFI is None."""
+        log = create_mock_log_with_gps_gap(gap_index=87, gap_size_ms=65533)
+
+        # Verify the gap exists before fix
+        gps_time_before = log.channels["GPS Speed"].column("timecodes").to_numpy()
+        dt_before = np.diff(gps_time_before)
+        self.assertTrue(np.any(dt_before > 400), "Test setup: gap should exist before fix")
+
+        # Apply the fix WITHOUT GNFI (should fall back to heuristics)
+        fix_gps_timing_gaps(log, gnfi_timecodes=None)
+
+        # Verify the gap is fixed
+        gps_time_after = log.channels["GPS Speed"].column("timecodes").to_numpy()
+        dt_after = np.diff(gps_time_after)
+
+        self.assertTrue(np.all(dt_after < 100), f"Gap not fixed: max delta = {np.max(dt_after)}ms")
+
+    def test_gnfi_used_when_provided(self) -> None:
+        """Test that GNFI-based detection is used when GNFI timecodes are provided."""
+        n_samples = 200
+        expected_dt_ms = 40.0
+        gap_index = 87
+        gap_size_ms = 65533
+
+        # Create GPS timecodes with the bug
+        gps_timecodes = np.arange(0, n_samples * expected_dt_ms, expected_dt_ms, dtype=np.int64)
+        gps_timecodes[gap_index + 1 :] += gap_size_ms - int(expected_dt_ms)
+
+        # Create GNFI timecodes (clean, no bug)
+        gnfi_timecodes = np.arange(0, n_samples * expected_dt_ms, expected_dt_ms, dtype=np.int64)
+
+        channels = {
+            "GPS Speed": pa.table(
+                {
+                    "timecodes": pa.array(gps_timecodes, type=pa.int64()),
+                    "GPS Speed": pa.array(np.linspace(0, 50, n_samples)),
+                }
+            )
+        }
+
+        log = LogFile(channels=channels, laps=None, metadata={}, file_name="test.xrk")
+
+        # Apply fix with GNFI
+        fix_gps_timing_gaps(log, gnfi_timecodes=gnfi_timecodes)
+
+        # Verify the gap is fixed
+        gps_time_fixed = log.channels["GPS Speed"].column("timecodes").to_numpy()
+        dt = np.diff(gps_time_fixed)
+
+        self.assertTrue(np.all(dt < 100), f"Gap not fixed: max delta = {np.max(dt)}ms")
+
+
+class TestSuzukaGnfiIntegration(unittest.TestCase):
+    """Integration tests for GNFI-based detection on Suzuka file."""
+
+    TEST_DATA_DIR: "Path"  # type: ignore[name-defined]
+    SUZUKA_XRK: "Path"  # type: ignore[name-defined]
+    log: "Any"  # type: ignore[name-defined]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Load the Suzuka test file."""
+        from pathlib import Path
+        from libxrk import aim_xrk
+
+        cls.TEST_DATA_DIR = Path(__file__).parent / "test_data"
+        cls.SUZUKA_XRK = cls.TEST_DATA_DIR / "SFJ" / "CMD_SFJ_Suzuka Car_Generic testing_a_0090.xrk"
+
+        cls.log = None
+        if cls.SUZUKA_XRK.exists():
+            cls.log = aim_xrk(str(cls.SUZUKA_XRK))
+
+    def test_suzuka_file_exists(self) -> None:
+        """Verify the Suzuka test file exists."""
+        self.assertTrue(self.SUZUKA_XRK.exists(), f"Test file not found: {self.SUZUKA_XRK}")
+
+    def test_suzuka_gps_timing_corrected(self) -> None:
+        """Verify GPS timing is corrected in Suzuka file (uses GNFI-based detection)."""
+        if self.log is None:
+            self.skipTest("Suzuka file not available")
+
+        gps_time = self.log.channels["GPS Speed"].column("timecodes").to_numpy()
+
+        # Check against InlineAcc
+        if "InlineAcc" not in self.log.channels:
+            self.skipTest("InlineAcc channel not available")
+
+        inline_time = self.log.channels["InlineAcc"].column("timecodes").to_numpy()
+
+        # After fix, GPS should end within 10 seconds of InlineAcc
+        # (before fix it would be ~65 seconds beyond)
+        time_diff_s = abs(gps_time[-1] - inline_time[-1]) / 1000
+        self.assertLess(
+            time_diff_s,
+            10,
+            f"GPS end time differs from InlineAcc by {time_diff_s:.1f}s (should be <10s after fix)",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

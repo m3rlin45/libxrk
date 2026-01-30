@@ -414,7 +414,65 @@ if __name__ == "__main__":
     perf_test()
 
 
-def fix_gps_timing_gaps(log: "LogFile", expected_dt_ms: float = 40.0) -> "LogFile":
+def detect_gps_timing_offset_from_gnfi(
+    gps_timecodes: np.ndarray,
+    gnfi_timecodes: np.ndarray,
+    expected_dt_ms: float = 40.0,
+) -> list[tuple[int, int]]:
+    """Detect GPS timing offset using GNFI as reference clock.
+
+    GNFI messages run on the logger's internal clock (NOT the buggy GPS timecode
+    stream). They are continuous with no gaps and end at the true session end time.
+    By comparing the GPS end time to GNFI end time, we can detect if the GPS
+    firmware bug added ~65533ms to GPS timecodes.
+
+    Args:
+        gps_timecodes: GPS channel timecodes array
+        gnfi_timecodes: GNFI timecodes array (logger internal clock)
+        expected_dt_ms: Expected time delta between GPS samples (default 40ms = 25Hz)
+
+    Returns:
+        List of (gap_time, correction) tuples, or empty list if no bug detected
+    """
+    if gnfi_timecodes is None or len(gnfi_timecodes) < 2:
+        return []
+
+    if len(gps_timecodes) < 2:
+        return []
+
+    OVERFLOW_BUG_MS = 65533
+    TOLERANCE = 5000  # Allow 5 second tolerance for end-time comparison
+
+    gps_end = int(gps_timecodes[-1])
+    gnfi_end = int(gnfi_timecodes[-1])
+    offset = gps_end - gnfi_end
+
+    # Check if GPS extends ~65533ms beyond GNFI (the bug signature)
+    if not (OVERFLOW_BUG_MS - TOLERANCE <= offset <= OVERFLOW_BUG_MS + TOLERANCE):
+        return []
+
+    # Bug detected! Find the gap where it likely occurred
+    # Look for the largest gap in GPS timecodes
+    dt = np.diff(gps_timecodes)
+    gap_threshold = expected_dt_ms * 10  # 400ms default
+
+    gap_indices = np.where(dt > gap_threshold)[0]
+    if len(gap_indices) == 0:
+        return []
+
+    # Find the largest gap
+    largest_gap_idx = gap_indices[np.argmax(dt[gap_indices])]
+    gap_time = int(gps_timecodes[largest_gap_idx])
+
+    # The correction is the overflow bug amount
+    return [(gap_time, OVERFLOW_BUG_MS)]
+
+
+def fix_gps_timing_gaps(
+    log: "LogFile",
+    expected_dt_ms: float = 40.0,
+    gnfi_timecodes: np.ndarray | None = None,
+) -> "LogFile":
     """Detect and correct 16-bit overflow timing gaps in GPS channels and lap boundaries.
 
     Some AIM data loggers produce GPS data with spurious timestamp jumps
@@ -423,9 +481,11 @@ def fix_gps_timing_gaps(log: "LogFile", expected_dt_ms: float = 40.0) -> "LogFil
     timecode are corrupted, resulting in a gap of approximately 65533ms
     (0xFFED, or 2^16 - 3).
 
-    This function detects the firmware bug in two ways:
-    1. Direct detection: gaps between 60000ms and 70000ms
-    2. Indirect detection: GPS ends ~65533ms after other channels, indicating
+    This function detects the firmware bug in three ways (in order of preference):
+    1. GNFI-based detection: If GNFI timecodes are available, compare GPS end time
+       to GNFI end time (GNFI runs on logger's internal clock, provides ground truth)
+    2. Direct detection: gaps between 60000ms and 70000ms
+    3. Indirect detection: GPS ends ~65533ms after other channels, indicating
        the bug occurred during a GPS signal loss (hidden within a smaller gap)
 
     The fix is applied in-place to the LogFile's channels dict and laps table.
@@ -437,6 +497,9 @@ def fix_gps_timing_gaps(log: "LogFile", expected_dt_ms: float = 40.0) -> "LogFil
     expected_dt_ms : float, default=40.0
         Expected time delta between GPS samples in milliseconds.
         Default is 40ms (25 Hz GPS).
+    gnfi_timecodes : np.ndarray or None, default=None
+        Optional GNFI timecodes from logger's internal clock. If provided,
+        used for more robust detection of the GPS timing bug.
 
     Returns
     -------
@@ -477,18 +540,27 @@ def fix_gps_timing_gaps(log: "LogFile", expected_dt_ms: float = 40.0) -> "LogFil
 
     # Build list of (gap_time, correction) pairs - only for firmware bug gaps
     gap_corrections = []
-    for gap_idx in gap_indices:
-        gap_time = gps_time[gap_idx]
-        gap_size = dt[gap_idx]
 
-        # Only fix gaps that match the firmware bug signature (around 65533ms)
-        if not (OVERFLOW_GAP_MIN <= gap_size <= OVERFLOW_GAP_MAX):
-            continue  # Skip - this is a legitimate gap, not the firmware bug
+    # Method 1: GNFI-based detection (most reliable, if available)
+    if gnfi_timecodes is not None:
+        gap_corrections = detect_gps_timing_offset_from_gnfi(
+            gps_time, gnfi_timecodes, expected_dt_ms
+        )
 
-        correction = gap_size - expected_dt_ms
-        gap_corrections.append((gap_time, correction))
+    # Method 2: Direct detection - gaps between 60000ms and 70000ms
+    if len(gap_corrections) == 0:
+        for gap_idx in gap_indices:
+            gap_time = gps_time[gap_idx]
+            gap_size = dt[gap_idx]
 
-    # Check for hidden firmware bug: GPS extends ~65533ms beyond other channels
+            # Only fix gaps that match the firmware bug signature (around 65533ms)
+            if not (OVERFLOW_GAP_MIN <= gap_size <= OVERFLOW_GAP_MAX):
+                continue  # Skip - this is a legitimate gap, not the firmware bug
+
+            correction = gap_size - expected_dt_ms
+            gap_corrections.append((gap_time, correction))
+
+    # Method 3: Indirect detection - GPS extends ~65533ms beyond other channels
     # This happens when the bug occurs during GPS signal loss
     if len(gap_corrections) == 0 and len(gap_indices) > 0:
         # Find end time of non-GPS channels
