@@ -62,6 +62,10 @@ class TestSFJXRK(unittest.TestCase):
             "Odo/Usr 3 Time": "1:25:05",
             "Odo/Usr 4 Distance (km)": 165.858,
             "Odo/Usr 4 Time": "1:25:05",
+            "Logger ID": 6603435,
+            "Logger Model ID": 793,
+            "Logger Model": "MXm",
+            "Device Name": "MXm ID airs",
         }
 
         # Check core fields present in both formats

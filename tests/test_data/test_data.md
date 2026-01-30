@@ -64,13 +64,17 @@ The SFJ Folder contains data from a run by a beginner in a Super FJ Junior formu
 * Steering Wheel Position (steering)
 * Performance metrics (Best Run Diff, Best Today Diff, Predictive Time, etc.)
 
-**File-Level Metadata:** 18 entries
+**File-Level Metadata:** 22 entries
 
 | Key | Value |
 |-----|-------|
+| Device Name | MXm ID airs |
 | Driver | CMD |
 | Log Date | 11/04/2025 |
 | Log Time | 15:50:07 |
+| Logger ID | 6603435 |
+| Logger Model | MXm |
+| Logger Model ID | 793 |
 | Long Comment | (empty) |
 | Odo/System Distance (km) | 165.858 |
 | Odo/System Time | 1:25:05 |
@@ -223,13 +227,17 @@ Contains data from a run by an intermediate driver in a Toyota 86.
 * Environment: AmbientTemp, LoggerTemp, Luminosity, External Voltage
 * Performance metrics: Best Run Diff, Best Today Diff, Predictive Time, Prev Lap Diff, Ref Lap Diff, SpeedAverage
 
-**File-Level Metadata:** 18 entries
+**File-Level Metadata:** 22 entries
 
 | Key | Value |
 |-----|-------|
+| Device Name | Inferno 86 v2 |
 | Driver | CMD |
 | Log Date | 11/01/2025 |
 | Log Time | 10:39:06 |
+| Logger ID | 6701209 |
+| Logger Model | MXP 1.3 |
+| Logger Model ID | 649 |
 | Long Comment | Front 15, 2/2<br/>Rear 20 3/3<br/>A052 Used |
 | Odo/System Distance (km) | 5313.42 |
 | Odo/System Time | 79:29:53 |
