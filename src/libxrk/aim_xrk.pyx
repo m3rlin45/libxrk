@@ -778,7 +778,10 @@ def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
                                     np.array(lat_ch.timecodes),
                                     (track['sf_lat'], track['sf_long']))
 
-        lap_markers = [0] + lap_markers + [last_time - time_offset]
+        # Use GPS channel's last timecode as session end (already adjusted)
+        # This avoids relying on last_time which may be 0 when no LAP messages exist
+        session_end = int(lat_ch.timecodes[-1]) if len(lat_ch.timecodes) else (last_time - time_offset if last_time else 0)
+        lap_markers = [0] + lap_markers + [session_end]
 
         for lap, (start_time, end_time) in enumerate(zip(lap_markers[:-1], lap_markers[1:])):
             lap_nums.append(lap)

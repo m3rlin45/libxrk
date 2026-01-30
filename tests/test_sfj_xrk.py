@@ -116,7 +116,7 @@ class TestSFJXRK(unittest.TestCase):
             (9, 1202583.0, 1322384.0),
             (10, 1322384.0, 1445260.0),
             (11, 1445260.0, 1578528.0),
-            (12, 1578528.0, 1696958.0),
+            (12, 1578528.0, 1696859.0),  # end_time is GPS last sample timecode
         ]
 
         self.assertEqual(len(log.laps), len(expected_laps), "Lap count mismatch")

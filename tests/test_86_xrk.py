@@ -121,7 +121,7 @@ class Test86XRK(unittest.TestCase):
             (12, 1547567, 1672955),
             (13, 1672955, 1799131),
             (14, 1799131, 1924187),
-            (15, 1924187, 2161607),
+            (15, 1924187, 2161511),  # end_time is GPS last sample timecode
         ]
 
         self.assertEqual(len(log.laps), len(expected_laps), "Lap count mismatch")
