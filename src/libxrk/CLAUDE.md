@@ -11,6 +11,16 @@ log = aim_xrk('path/to/file.xrk')  # or .xrz, bytes, BytesIO
 df = log.get_channels_as_table().to_pandas()
 ```
 
+## aim_xrk Function
+
+```python
+aim_xrk(fname, progress=None) -> LogFile
+```
+
+**Parameters:**
+- `fname`: Path to XRK/XRZ file, or bytes/BytesIO containing file data
+- `progress`: Optional callback `(current: int, total: int) -> None` for progress updates
+
 ## LogFile Structure
 
 ```python
