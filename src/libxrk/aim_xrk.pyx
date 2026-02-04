@@ -767,10 +767,33 @@ def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
     lap_nums = []
     start_times = []
     end_times = []
-    
-    if lat_ch and lon_ch:
-        # If we have GPS, do gps lap insert.
 
+    # Prefer LAP messages when available (matches official DLL behavior)
+    if _tokdec('LAP') in msg_by_type:
+        for m in msg_by_type[_tokdec('LAP')]:
+            # 2nd byte is segment #, see M4GT4
+            segment, lap, duration, end_time = struct.unpack('xBHIxxxxxxxxI', m.content)
+            end_time -= time_offset
+            if segment:
+                continue
+            elif not lap_nums:
+                pass
+            elif lap_nums[-1] == lap:
+                continue
+            elif lap_nums[-1] + 1 == lap:
+                pass
+            elif lap_nums[-1] + 2 == lap:
+                # emit inferred lap
+                lap_nums.append(lap - 1)
+                start_times.append(end_times[-1])
+                end_times.append(end_time - duration)
+            else:
+                assert False, 'Lap gap from %d to %d' % (lap_nums[-1], lap)
+            lap_nums.append(lap)
+            start_times.append(end_time - duration)
+            end_times.append(end_time)
+    elif lat_ch and lon_ch:
+        # Fall back to GPS-based lap detection only when no LAP messages exist
         track = msg_by_type[_tokdec('TRK')][-1].content
         XYZ = np.column_stack(gps.lla2ecef(np.array(lat_ch.sampledata),
                                            np.array(lon_ch.sampledata), 0))
@@ -781,38 +804,21 @@ def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
         # Use GPS channel's last timecode as session end (already adjusted)
         # This avoids relying on last_time which may be 0 when no LAP messages exist
         session_end = int(lat_ch.timecodes[-1]) if len(lat_ch.timecodes) else (last_time - time_offset if last_time else 0)
-        lap_markers = [0] + lap_markers + [session_end]
 
-        for lap, (start_time, end_time) in enumerate(zip(lap_markers[:-1], lap_markers[1:])):
-            lap_nums.append(lap)
-            start_times.append(start_time)
-            end_times.append(end_time)
-    else:
-        # otherwise, use the lap data provided.
-        if _tokdec('LAP') in msg_by_type:
-            for m in msg_by_type[_tokdec('LAP')]:
-                # 2nd byte is segment #, see M4GT4
-                segment, lap, duration, end_time = struct.unpack('xBHIxxxxxxxxI', m.content)
-                end_time -= time_offset
-                if segment:
-                    continue
-                elif not lap_nums:
-                    pass
-                elif lap_nums[-1] == lap:
-                    continue
-                elif lap_nums[-1] + 1 == lap:
-                    pass
-                elif lap_nums[-1] + 2 == lap:
-                    # emit inferred lap
-                    lap_nums.append(lap - 1)
-                    start_times.append(end_times[-1])
-                    end_times.append(end_time - duration)
-                else:
-                    assert False, 'Lap gap from %d to %d' % (lap_nums[-1], lap)
+        # Only add session boundaries if we have detected lap crossings
+        # This creates laps from each crossing to the next
+        if lap_markers:
+            lap_markers = [0] + lap_markers + [session_end]
+            for lap, (start_time, end_time) in enumerate(zip(lap_markers[:-1], lap_markers[1:])):
                 lap_nums.append(lap)
-                start_times.append(end_time - duration)
+                start_times.append(start_time)
                 end_times.append(end_time)
     
+    # Normalize lap numbers to 0-based indexing (matches DLL behavior)
+    if lap_nums:
+        min_lap = min(lap_nums)
+        lap_nums = [n - min_lap for n in lap_nums]
+
     # Create PyArrow table
     return pa.table({
         'num': pa.array(lap_nums, type=pa.int32()),

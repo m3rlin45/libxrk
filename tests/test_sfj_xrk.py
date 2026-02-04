@@ -103,20 +103,21 @@ class TestSFJXRK(unittest.TestCase):
         log = aim_xrk(str(file_path), progress=None)
 
         # Expected lap data (lap_num, start_time, end_time)
+        # Values now match official AIM DLL (uses LAP messages, not GPS detection)
         expected_laps = [
             (0, 0.0, 193611.0),
             (1, 193611.0, 320961.0),
-            (2, 320961.0, 450166.0),
-            (3, 450166.0, 569437.0),
-            (4, 569437.0, 688126.0),
-            (5, 688126.0, 819303.0),
+            (2, 320961.0, 450167.0),
+            (3, 450167.0, 569437.0),
+            (4, 569437.0, 688127.0),
+            (5, 688127.0, 819303.0),
             (6, 819303.0, 947652.0),
             (7, 947652.0, 1079430.0),
             (8, 1079430.0, 1202583.0),
             (9, 1202583.0, 1322384.0),
-            (10, 1322384.0, 1445260.0),
-            (11, 1445260.0, 1578528.0),
-            (12, 1578528.0, 1696859.0),  # end_time is GPS last sample timecode
+            (10, 1322384.0, 1445261.0),
+            (11, 1445261.0, 1578528.0),
+            (12, 1578528.0, 1696958.0),
         ]
 
         self.assertEqual(len(log.laps), len(expected_laps), "Lap count mismatch")
