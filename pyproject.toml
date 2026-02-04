@@ -141,6 +141,10 @@ ignore_missing_imports = true
 module = "parameterized.*"
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = "aim_dll_wrapper"
+ignore_missing_imports = true
+
 [tool.poe.tasks]
 format = "black ."
 lint = "black --check ."
