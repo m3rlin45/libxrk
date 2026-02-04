@@ -114,11 +114,12 @@ warn_unused_ignores = true
 warn_no_return = true
 strict_optional = true
 
-# Exclude build artifacts and Cython-generated files
+# Exclude build artifacts, Cython files, and DLL comparison test utilities
 exclude = [
     "^build/",
     "^dist/",
     "\\.pyx$",
+    "^tests/reference_dll/",
 ]
 
 [[tool.mypy.overrides]]
