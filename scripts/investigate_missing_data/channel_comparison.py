@@ -43,20 +43,28 @@ def compare_channels_native(xrk_path: Path) -> dict:
     """
     from aim_dll_wrapper import AimDll
 
-    result = {
+    dll_regular_channels: dict[str, dict] = {}
+    dll_gps_derived_channels: dict[str, dict] = {}
+    dll_gps_raw_channels: dict[str, dict] = {}
+    libxrk_channels: dict[str, dict] = {}
+    missing_in_libxrk: list[str] = []
+    missing_in_dll: list[str] = []
+    common_channels: list[str] = []
+
+    result: dict = {
         "file": str(xrk_path),
-        "dll_regular_channels": {},
-        "dll_gps_derived_channels": {},
-        "dll_gps_raw_channels": {},
-        "libxrk_channels": {},
-        "missing_in_libxrk": [],
-        "missing_in_dll": [],
-        "common_channels": [],
+        "dll_regular_channels": dll_regular_channels,
+        "dll_gps_derived_channels": dll_gps_derived_channels,
+        "dll_gps_raw_channels": dll_gps_raw_channels,
+        "libxrk_channels": libxrk_channels,
+        "missing_in_libxrk": missing_in_libxrk,
+        "missing_in_dll": missing_in_dll,
+        "common_channels": common_channels,
     }
 
     # Load libxrk channels
     try:
-        result["libxrk_channels"] = load_libxrk_channels(xrk_path)
+        libxrk_channels.update(load_libxrk_channels(xrk_path))
     except Exception as e:
         result["libxrk_error"] = str(e)
 
@@ -69,7 +77,7 @@ def compare_channels_native(xrk_path: Path) -> dict:
             ch_count = dll.get_channels_count(idx)
             for ch in range(ch_count):
                 name = dll.get_channel_name(idx, ch)
-                result["dll_regular_channels"][name] = {
+                dll_regular_channels[name] = {
                     "units": dll.get_channel_units(idx, ch),
                     "samples_count": dll.get_channel_samples_count(idx, ch),
                     "source": "dll_regular",
@@ -79,7 +87,7 @@ def compare_channels_native(xrk_path: Path) -> dict:
             gps_count = dll.get_GPS_channels_count(idx)
             for ch in range(gps_count):
                 name = dll.get_GPS_channel_name(idx, ch)
-                result["dll_gps_derived_channels"][name] = {
+                dll_gps_derived_channels[name] = {
                     "units": dll.get_GPS_channel_units(idx, ch),
                     "samples_count": dll.get_GPS_channel_samples_count(idx, ch),
                     "source": "dll_gps_derived",
@@ -89,7 +97,7 @@ def compare_channels_native(xrk_path: Path) -> dict:
             raw_count = dll.get_GPS_raw_channels_count(idx)
             for ch in range(raw_count):
                 name = dll.get_GPS_raw_channel_name(idx, ch)
-                result["dll_gps_raw_channels"][name] = {
+                dll_gps_raw_channels[name] = {
                     "units": dll.get_GPS_raw_channel_units(idx, ch),
                     "samples_count": dll.get_GPS_raw_channel_samples_count(idx, ch),
                     "source": "dll_gps_raw",
@@ -104,15 +112,15 @@ def compare_channels_native(xrk_path: Path) -> dict:
 
     # Compute differences
     if "dll_error" not in result and "libxrk_error" not in result:
-        all_dll_channels = set(result["dll_regular_channels"].keys())
-        all_dll_channels.update(result["dll_gps_derived_channels"].keys())
-        all_dll_channels.update(result["dll_gps_raw_channels"].keys())
+        all_dll_channels = set(dll_regular_channels.keys())
+        all_dll_channels.update(dll_gps_derived_channels.keys())
+        all_dll_channels.update(dll_gps_raw_channels.keys())
 
-        libxrk_channels = set(result["libxrk_channels"].keys())
+        libxrk_set = set(libxrk_channels.keys())
 
-        result["missing_in_libxrk"] = sorted(all_dll_channels - libxrk_channels)
-        result["missing_in_dll"] = sorted(libxrk_channels - all_dll_channels)
-        result["common_channels"] = sorted(all_dll_channels & libxrk_channels)
+        missing_in_libxrk.extend(sorted(all_dll_channels - libxrk_set))
+        missing_in_dll.extend(sorted(libxrk_set - all_dll_channels))
+        common_channels.extend(sorted(all_dll_channels & libxrk_set))
 
     return result
 
