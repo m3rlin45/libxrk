@@ -160,11 +160,14 @@ You can test the library in a WebAssembly environment using Pyodide.
 This requires Node.js to be installed.
 
 ```bash
-# Build and run tests in Pyodide (installs Emscripten SDK to build/emsdk if needed)
+# Build and run tests in Pyodide 0.27.x (Python 3.12)
 poetry run poe pyodide-test
+
+# Build and run tests in Pyodide 0.29.x (Python 3.13, requires pyenv)
+poetry run poe pyodide-test-0-29
 ```
 
-Note: Pyodide tests run automatically in CI via GitHub Actions.
+Note: Pyodide tests for both 0.27.x and 0.29.x run automatically in CI via GitHub Actions.
 
 ### Building
 

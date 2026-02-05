@@ -42,7 +42,14 @@ Test data: `tests/test_data/` contains real XRK/XRZ files (SFJ and 86 vehicles).
 
 ## Pyodide (WebAssembly) Builds
 
-The library supports running in the browser via Pyodide. Requires Python 3.12+.
+The library supports running in the browser via Pyodide. Two versions are supported:
+
+| Version | Python | Emscripten | ABI Tag |
+|---------|--------|------------|---------|
+| Pyodide 0.27.x | 3.12 | 3.1.58 | `pyodide_2024_0` |
+| Pyodide 0.29.x | 3.13 | 4.0.9 | `pyodide_2025_0` |
+
+### Pyodide 0.27.x (default)
 
 ```bash
 poetry run poe emsdk-setup    # Install Emscripten SDK (first time only)
@@ -52,7 +59,16 @@ poetry run poe pyodide-test   # Build and run tests in Pyodide
 poetry run poe build-all      # Build CPython wheel, sdist, and Pyodide wheel
 ```
 
-Pyodide test scripts are in `scripts/run_pyodide_tests*.mjs`.
+### Pyodide 0.29.x (requires Python 3.13 via pyenv)
+
+```bash
+poetry run poe emsdk-setup-0-29    # Install Emscripten SDK 4.0.9
+poetry run poe pyodide-setup-0-29  # Install Pyodide 0.29.x npm package
+poetry run poe pyodide-build-0-29  # Build Pyodide 0.29.x wheel
+poetry run poe pyodide-test-0-29   # Build and run tests in Pyodide 0.29.x
+```
+
+Pyodide test scripts are in `scripts/run_pyodide_tests*.mjs`. They accept `--pyodide-version=0.27` or `--pyodide-version=0.29` to select the version.
 
 ## Architecture Notes
 
