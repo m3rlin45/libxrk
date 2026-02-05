@@ -84,6 +84,35 @@ class Test86XRK(unittest.TestCase):
             self.assertEqual(log.metadata.get("Session"), "Generic testing")
 
     @parameterized.expand(FILE_VARIANTS)
+    def test_86_xrk_expansion_devices(self, name, file_path):
+        """Test that the 86 XRK/XRZ file contains expansion device metadata."""
+        from typing import cast
+
+        log = aim_xrk(str(file_path), progress=None)
+
+        # Should have expansion devices
+        self.assertIn("Expansion Devices", log.metadata, "Missing Expansion Devices metadata")
+        devices = cast(list[dict[str, str]], log.metadata["Expansion Devices"])
+        self.assertIsInstance(devices, list, "Expansion Devices should be a list")
+        self.assertEqual(len(devices), 2, f"Expected 2 expansion devices, got {len(devices)}")
+
+        # First device: TOYOTA CAN bus
+        device1 = devices[0]
+        self.assertEqual(device1.get("Bus Unit"), "1")
+        self.assertEqual(device1.get("Bus Type"), "CAN")
+        self.assertEqual(device1.get("Version"), "02.00.07")
+        self.assertEqual(device1.get("Manufacturer"), "TOYOTA")
+        self.assertEqual(device1.get("Model"), "GT86 SCION FRS")
+
+        # Second device: Custom CAN expansion
+        device2 = devices[1]
+        self.assertEqual(device2.get("Bus Unit"), "2")
+        self.assertEqual(device2.get("Bus Type"), "CAN")
+        self.assertEqual(device2.get("Version"), "00.00.00")
+        self.assertEqual(device2.get("Manufacturer"), "Inferno Racing")
+        self.assertEqual(device2.get("Model"), "86 Can 2")
+
+    @parameterized.expand(FILE_VARIANTS)
     def test_86_xrk_laps(self, name, file_path):
         """Test that the 86 XRK/XRZ file contains lap data."""
         log = aim_xrk(str(file_path), progress=None)
