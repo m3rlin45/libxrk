@@ -272,7 +272,9 @@ def format_report(result: dict) -> str:
         lines.append("GPS DERIVED CHANNELS (from DLL):")
         for name, info in sorted(result["dll_gps_derived_channels"].items()):
             in_libxrk = "✓" if name in result.get("libxrk_channels", {}) else "✗ MISSING"
-            lines.append(f"  {name:30s} {info['units']:10s} {info['samples_count']:6d} samples  {in_libxrk}")
+            lines.append(
+                f"  {name:30s} {info['units']:10s} {info['samples_count']:6d} samples  {in_libxrk}"
+            )
         lines.append("")
 
     # GPS Raw channels
@@ -280,7 +282,9 @@ def format_report(result: dict) -> str:
         lines.append("GPS RAW CHANNELS (from DLL):")
         for name, info in sorted(result["dll_gps_raw_channels"].items()):
             in_libxrk = "✓" if name in result.get("libxrk_channels", {}) else "✗ MISSING"
-            lines.append(f"  {name:30s} {info['units']:10s} {info['samples_count']:6d} samples  {in_libxrk}")
+            lines.append(
+                f"  {name:30s} {info['units']:10s} {info['samples_count']:6d} samples  {in_libxrk}"
+            )
         lines.append("")
 
     # Missing channels

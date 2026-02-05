@@ -78,9 +78,7 @@ class DecoderAnalysis:
 
     file_path: str
     channels: list[ChannelInfo] = field(default_factory=list)
-    decoder_usage: dict[int, list[str]] = field(
-        default_factory=lambda: defaultdict(list)
-    )
+    decoder_usage: dict[int, list[str]] = field(default_factory=lambda: defaultdict(list))
     skipped_channels: list[ChannelInfo] = field(default_factory=list)
 
 
@@ -353,7 +351,9 @@ def format_report(result: DecoderAnalysis) -> str:
                 if constant_bytes:
                     lines.append(f"    Constant bytes: {constant_bytes[:10]}")
                 if varying_bytes:
-                    lines.append(f"    Varying byte positions: {[v[0] for v in varying_bytes[:10]]}")
+                    lines.append(
+                        f"    Varying byte positions: {[v[0] for v in varying_bytes[:10]]}"
+                    )
 
     return "\n".join(lines)
 
@@ -405,11 +405,17 @@ def main():
             print("\nUnknown decoder types found:", file=sys.stderr if args.json else sys.stdout)
             for decoder, ch_names in sorted(all_skipped.items()):
                 unique = sorted(set(ch_names))
-                print(f"  Decoder {decoder}: {len(unique)} unique channels", file=sys.stderr if args.json else sys.stdout)
+                print(
+                    f"  Decoder {decoder}: {len(unique)} unique channels",
+                    file=sys.stderr if args.json else sys.stdout,
+                )
                 for name in unique[:5]:
                     print(f"    - {name}", file=sys.stderr if args.json else sys.stdout)
                 if len(unique) > 5:
-                    print(f"    ... and {len(unique) - 5} more", file=sys.stderr if args.json else sys.stdout)
+                    print(
+                        f"    ... and {len(unique) - 5} more",
+                        file=sys.stderr if args.json else sys.stdout,
+                    )
 
     if args.json:
         output = []
@@ -419,9 +425,7 @@ def main():
                     "file": r.file_path,
                     "total_channels": len(r.channels),
                     "skipped_channels": len(r.skipped_channels),
-                    "decoder_usage": {
-                        str(k): sorted(set(v)) for k, v in r.decoder_usage.items()
-                    },
+                    "decoder_usage": {str(k): sorted(set(v)) for k, v in r.decoder_usage.items()},
                     "skipped": [
                         {
                             "name": skipped_info.long_name,
