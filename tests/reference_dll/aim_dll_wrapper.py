@@ -467,9 +467,7 @@ class AimDll:
         """
         return int(self._dll.get_GPS_channel_samples_count(idx, channel))
 
-    def get_GPS_channel_samples(
-        self, idx: int, channel: int
-    ) -> tuple[list[float], list[float]]:
+    def get_GPS_channel_samples(self, idx: int, channel: int) -> tuple[list[float], list[float]]:
         """
         Get GPS derived channel samples.
 

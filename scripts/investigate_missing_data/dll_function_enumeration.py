@@ -223,7 +223,7 @@ def generate_wrapper_code():
     print("=" * 80)
     print()
 
-    code = '''
+    code = """
 # GPS Derived Channel Functions
 # Add to _setup_functions() method:
 
@@ -283,7 +283,7 @@ self._dll.get_library_date.restype = c_char_p
 # get_library_time() -> const char*
 self._dll.get_library_time.argtypes = []
 self._dll.get_library_time.restype = c_char_p
-'''
+"""
 
     print(code)
 

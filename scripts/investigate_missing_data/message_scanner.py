@@ -222,7 +222,9 @@ def scan_xrk(file_path: Path, max_samples: int = 3) -> ScanResult:
                         result.h_messages[key].sizes.extend(v.sizes)
                         if len(result.h_messages[key].sample_data) < max_samples:
                             result.h_messages[key].sample_data.extend(
-                                v.sample_data[: max_samples - len(result.h_messages[key].sample_data)]
+                                v.sample_data[
+                                    : max_samples - len(result.h_messages[key].sample_data)
+                                ]
                             )
 
                 result.bytes_consumed += 12 + hlen + 8
@@ -432,8 +434,12 @@ def format_report(result: ScanResult) -> str:
     lines.append(f"=" * 80)
     lines.append("")
     lines.append(f"File size: {result.file_size:,} bytes")
-    lines.append(f"Bytes consumed: {result.bytes_consumed:,} bytes ({100*result.bytes_consumed/result.file_size:.1f}%)")
-    lines.append(f"Bad/unknown bytes: {result.bad_bytes:,} bytes ({100*result.bad_bytes/result.file_size:.1f}%)")
+    lines.append(
+        f"Bytes consumed: {result.bytes_consumed:,} bytes ({100*result.bytes_consumed/result.file_size:.1f}%)"
+    )
+    lines.append(
+        f"Bad/unknown bytes: {result.bad_bytes:,} bytes ({100*result.bad_bytes/result.file_size:.1f}%)"
+    )
     lines.append("")
 
     lines.append("SAMPLE DATA MESSAGES:")
@@ -448,7 +454,9 @@ def format_report(result: ScanResult) -> str:
         min_size = min(stats.sizes) if stats.sizes else 0
         max_size = max(stats.sizes) if stats.sizes else 0
         avg_size = sum(stats.sizes) / len(stats.sizes) if stats.sizes else 0
-        lines.append(f"  {token:8s}: count={stats.count:5d}, size={min_size}-{max_size} (avg {avg_size:.0f})")
+        lines.append(
+            f"  {token:8s}: count={stats.count:5d}, size={min_size}-{max_size} (avg {avg_size:.0f})"
+        )
 
     lines.append("")
     lines.append("DECODER TYPES USED:")
@@ -509,7 +517,11 @@ def main():
                     "m_messages": r.m_messages,
                     "c_messages": r.c_messages,
                     "h_messages": {
-                        k: {"count": v.count, "sizes": v.sizes, "samples": [s.hex() for s in v.sample_data]}
+                        k: {
+                            "count": v.count,
+                            "sizes": v.sizes,
+                            "samples": [s.hex() for s in v.sample_data],
+                        }
                         for k, v in r.h_messages.items()
                     },
                     "decoder_types": {str(k): v for k, v in r.decoder_types_seen.items()},
