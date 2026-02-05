@@ -718,12 +718,12 @@ def _decode_gps(gpsmsg, time_offset):
     ecefX_cm = alldata[16:].cast('i')[::56//4]
     ecefY_cm = alldata[20:].cast('i')[::56//4]
     ecefZ_cm = alldata[24:].cast('i')[::56//4]
-    #posacc_cm = alldata[28:].cast('i')[::56//4]
+    posacc_cm = np.asarray(alldata[28:].cast('I')[::56//4])  # uint32, position accuracy in cm
     ecefdX_cms = alldata[32:].cast('i')[::56//4]
     ecefdY_cms = alldata[36:].cast('i')[::56//4]
     ecefdZ_cms = alldata[40:].cast('i')[::56//4]
-    #velacc_cms = alldata[44:].cast('i')[::56//4]
-    #nsat = alldata[51::56]
+    velacc_cms = np.asarray(alldata[44:].cast('I')[::56//4])  # uint32, velocity accuracy in cm/s
+    nsat = np.asarray(alldata[51::56])  # uint8, number of satellites
 
     timecodes = memoryview(timecodes - time_offset)
 
@@ -745,7 +745,14 @@ def _decode_gps(gpsmsg, time_offset):
             Channel(long_name='GPS Longitude', units='deg', dec_pts=4, interpolate=True,
                     timecodes=timecodes, sampledata=memoryview(gpsconv.long)),
             Channel(long_name='GPS Altitude', units='m', dec_pts=1, interpolate=True,
-                    timecodes=timecodes, sampledata=memoryview(gpsconv.alt))]
+                    timecodes=timecodes, sampledata=memoryview(gpsconv.alt)),
+            # GPS accuracy metrics
+            Channel(long_name='GPS_Satellites', units='', dec_pts=0, interpolate=False,
+                    timecodes=timecodes, sampledata=memoryview(nsat.astype(np.float32))),
+            Channel(long_name='GPS_Position_Accuracy', units='m', dec_pts=2, interpolate=True,
+                    timecodes=timecodes, sampledata=memoryview((posacc_cm / 100.0).astype(np.float32))),
+            Channel(long_name='GPS_Velocity_Accuracy', units='m/s', dec_pts=2, interpolate=True,
+                    timecodes=timecodes, sampledata=memoryview((velacc_cms / 100.0).astype(np.float32)))]
 
 def _decode_gnfi(gnfimsg, time_offset):
     """Parse GNFI messages and return timecodes array.
