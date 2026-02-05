@@ -10,7 +10,18 @@ if TYPE_CHECKING:
     from .base import LogFile
 
 # GPS channel names that share a common timebase and may need timing correction
-GPS_CHANNEL_NAMES = ("GPS Speed", "GPS Latitude", "GPS Longitude", "GPS Altitude")
+GPS_CHANNEL_NAMES = (
+    "GPS Speed",
+    "GPS Latitude",
+    "GPS Longitude",
+    "GPS Altitude",
+    "GPS_Satellites",
+    "GPS_Position_Accuracy",
+    "GPS_Velocity_Accuracy",
+    "GPS_InlineAcc",
+    "GPS_LateralAcc",
+    "GPS_Yaw_Rate",
+)
 
 # None of the algorithms are slow
 # fastest: Fukushima 2006, but worse accuracy
@@ -368,6 +379,26 @@ def find_laps(
 
 
 ecef2lla = ecef2lla_vermeille2003
+
+
+def ecef_velocity_to_enu(dX, dY, dZ, lat_rad, lon_rad):
+    """Convert ECEF velocity to ENU (East-North-Up) frame.
+
+    Args:
+        dX, dY, dZ: Velocity components in ECEF frame (e.g., cm/s)
+        lat_rad: Latitude in radians
+        lon_rad: Longitude in radians
+
+    Returns:
+        V_east, V_north: Velocity components in local ENU frame (same units as input)
+    """
+    sin_lat, cos_lat = np.sin(lat_rad), np.cos(lat_rad)
+    sin_lon, cos_lon = np.sin(lon_rad), np.cos(lon_rad)
+
+    V_east = -sin_lon * dX + cos_lon * dY
+    V_north = -sin_lat * cos_lon * dX - sin_lat * sin_lon * dY + cos_lat * dZ
+    return V_east, V_north
+
 
 if __name__ == "__main__":
 
