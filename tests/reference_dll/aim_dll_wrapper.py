@@ -139,6 +139,74 @@ class AimDll:
         self._dll.get_venue_type_name.argtypes = [c_int]
         self._dll.get_venue_type_name.restype = c_char_p
 
+        # === GPS DERIVED CHANNEL FUNCTIONS ===
+        # These expose computed GPS channels like GPS_InlineAcc, GPS_LateralAcc, GPS_Yaw_Rate
+
+        # get_GPS_channels_count(int idx) -> int
+        self._dll.get_GPS_channels_count.argtypes = [c_int]
+        self._dll.get_GPS_channels_count.restype = c_int
+
+        # get_GPS_channel_name(int idx, int ch) -> const char*
+        self._dll.get_GPS_channel_name.argtypes = [c_int, c_int]
+        self._dll.get_GPS_channel_name.restype = c_char_p
+
+        # get_GPS_channel_units(int idx, int ch) -> const char*
+        self._dll.get_GPS_channel_units.argtypes = [c_int, c_int]
+        self._dll.get_GPS_channel_units.restype = c_char_p
+
+        # get_GPS_channel_samples_count(int idx, int ch) -> int
+        self._dll.get_GPS_channel_samples_count.argtypes = [c_int, c_int]
+        self._dll.get_GPS_channel_samples_count.restype = c_int
+
+        # get_GPS_channel_samples(int idx, int ch, double* times, double* values, int cnt) -> int
+        self._dll.get_GPS_channel_samples.argtypes = [
+            c_int,
+            c_int,
+            POINTER(c_double),
+            POINTER(c_double),
+            c_int,
+        ]
+        self._dll.get_GPS_channel_samples.restype = c_int
+
+        # === GPS RAW CHANNEL FUNCTIONS ===
+        # These expose raw GPS sensor data
+
+        # get_GPS_raw_channels_count(int idx) -> int
+        self._dll.get_GPS_raw_channels_count.argtypes = [c_int]
+        self._dll.get_GPS_raw_channels_count.restype = c_int
+
+        # get_GPS_raw_channel_name(int idx, int ch) -> const char*
+        self._dll.get_GPS_raw_channel_name.argtypes = [c_int, c_int]
+        self._dll.get_GPS_raw_channel_name.restype = c_char_p
+
+        # get_GPS_raw_channel_units(int idx, int ch) -> const char*
+        self._dll.get_GPS_raw_channel_units.argtypes = [c_int, c_int]
+        self._dll.get_GPS_raw_channel_units.restype = c_char_p
+
+        # get_GPS_raw_channel_samples_count(int idx, int ch) -> int
+        self._dll.get_GPS_raw_channel_samples_count.argtypes = [c_int, c_int]
+        self._dll.get_GPS_raw_channel_samples_count.restype = c_int
+
+        # get_GPS_raw_channel_samples(int idx, int ch, double* times, double* values, int cnt) -> int
+        self._dll.get_GPS_raw_channel_samples.argtypes = [
+            c_int,
+            c_int,
+            POINTER(c_double),
+            POINTER(c_double),
+            c_int,
+        ]
+        self._dll.get_GPS_raw_channel_samples.restype = c_int
+
+        # === LIBRARY METADATA FUNCTIONS ===
+
+        # get_library_date() -> const char*
+        self._dll.get_library_date.argtypes = []
+        self._dll.get_library_date.restype = c_char_p
+
+        # get_library_time() -> const char*
+        self._dll.get_library_time.argtypes = []
+        self._dll.get_library_time.restype = c_char_p
+
     def __enter__(self) -> "AimDll":
         return self
 
@@ -338,3 +406,218 @@ class AimDll:
         """Get venue type name."""
         name = self._dll.get_venue_type_name(idx)
         return name.decode("utf-8") if name else ""
+
+    # === GPS DERIVED CHANNEL METHODS ===
+
+    def get_GPS_channels_count(self, idx: int) -> int:
+        """
+        Get number of GPS derived channels.
+
+        GPS derived channels include computed values like:
+        - GPS_InlineAcc (longitudinal acceleration from GPS)
+        - GPS_LateralAcc (lateral acceleration from GPS)
+        - GPS_Yaw_Rate (rotation rate from GPS heading)
+
+        Args:
+            idx: File index from open_file().
+
+        Returns:
+            Number of GPS derived channels.
+        """
+        return int(self._dll.get_GPS_channels_count(idx))
+
+    def get_GPS_channel_name(self, idx: int, channel: int) -> str:
+        """
+        Get GPS derived channel name.
+
+        Args:
+            idx: File index from open_file().
+            channel: GPS channel index (0-based).
+
+        Returns:
+            Channel name.
+        """
+        name = self._dll.get_GPS_channel_name(idx, channel)
+        return name.decode("latin-1") if name else ""
+
+    def get_GPS_channel_units(self, idx: int, channel: int) -> str:
+        """
+        Get GPS derived channel units.
+
+        Args:
+            idx: File index from open_file().
+            channel: GPS channel index (0-based).
+
+        Returns:
+            Channel units.
+        """
+        units = self._dll.get_GPS_channel_units(idx, channel)
+        return units.decode("latin-1") if units else ""
+
+    def get_GPS_channel_samples_count(self, idx: int, channel: int) -> int:
+        """
+        Get number of samples in GPS derived channel.
+
+        Args:
+            idx: File index from open_file().
+            channel: GPS channel index (0-based).
+
+        Returns:
+            Number of samples.
+        """
+        return int(self._dll.get_GPS_channel_samples_count(idx, channel))
+
+    def get_GPS_channel_samples(
+        self, idx: int, channel: int
+    ) -> tuple[list[float], list[float]]:
+        """
+        Get GPS derived channel samples.
+
+        Args:
+            idx: File index from open_file().
+            channel: GPS channel index (0-based).
+
+        Returns:
+            Tuple of (times_list, values_list).
+        """
+        count = self.get_GPS_channel_samples_count(idx, channel)
+        if count <= 0:
+            return ([], [])
+        times = (c_double * count)()
+        values = (c_double * count)()
+        result = self._dll.get_GPS_channel_samples(idx, channel, times, values, count)
+        if result == 0:
+            return ([], [])
+        return (list(times), list(values))
+
+    def get_all_GPS_channels(self, idx: int) -> dict[str, dict]:
+        """
+        Get all GPS derived channel information.
+
+        Args:
+            idx: File index from open_file().
+
+        Returns:
+            Dict mapping channel name to {units, samples_count}.
+        """
+        result = {}
+        count = self.get_GPS_channels_count(idx)
+        for ch in range(count):
+            name = self.get_GPS_channel_name(idx, ch)
+            result[name] = {
+                "units": self.get_GPS_channel_units(idx, ch),
+                "samples_count": self.get_GPS_channel_samples_count(idx, ch),
+            }
+        return result
+
+    # === GPS RAW CHANNEL METHODS ===
+
+    def get_GPS_raw_channels_count(self, idx: int) -> int:
+        """
+        Get number of raw GPS channels.
+
+        Raw GPS channels may include satellite data, accuracy metrics, etc.
+
+        Args:
+            idx: File index from open_file().
+
+        Returns:
+            Number of raw GPS channels.
+        """
+        return int(self._dll.get_GPS_raw_channels_count(idx))
+
+    def get_GPS_raw_channel_name(self, idx: int, channel: int) -> str:
+        """
+        Get raw GPS channel name.
+
+        Args:
+            idx: File index from open_file().
+            channel: GPS raw channel index (0-based).
+
+        Returns:
+            Channel name.
+        """
+        name = self._dll.get_GPS_raw_channel_name(idx, channel)
+        return name.decode("latin-1") if name else ""
+
+    def get_GPS_raw_channel_units(self, idx: int, channel: int) -> str:
+        """
+        Get raw GPS channel units.
+
+        Args:
+            idx: File index from open_file().
+            channel: GPS raw channel index (0-based).
+
+        Returns:
+            Channel units.
+        """
+        units = self._dll.get_GPS_raw_channel_units(idx, channel)
+        return units.decode("latin-1") if units else ""
+
+    def get_GPS_raw_channel_samples_count(self, idx: int, channel: int) -> int:
+        """
+        Get number of samples in raw GPS channel.
+
+        Args:
+            idx: File index from open_file().
+            channel: GPS raw channel index (0-based).
+
+        Returns:
+            Number of samples.
+        """
+        return int(self._dll.get_GPS_raw_channel_samples_count(idx, channel))
+
+    def get_GPS_raw_channel_samples(
+        self, idx: int, channel: int
+    ) -> tuple[list[float], list[float]]:
+        """
+        Get raw GPS channel samples.
+
+        Args:
+            idx: File index from open_file().
+            channel: GPS raw channel index (0-based).
+
+        Returns:
+            Tuple of (times_list, values_list).
+        """
+        count = self.get_GPS_raw_channel_samples_count(idx, channel)
+        if count <= 0:
+            return ([], [])
+        times = (c_double * count)()
+        values = (c_double * count)()
+        result = self._dll.get_GPS_raw_channel_samples(idx, channel, times, values, count)
+        if result == 0:
+            return ([], [])
+        return (list(times), list(values))
+
+    def get_all_GPS_raw_channels(self, idx: int) -> dict[str, dict]:
+        """
+        Get all raw GPS channel information.
+
+        Args:
+            idx: File index from open_file().
+
+        Returns:
+            Dict mapping channel name to {units, samples_count}.
+        """
+        result = {}
+        count = self.get_GPS_raw_channels_count(idx)
+        for ch in range(count):
+            name = self.get_GPS_raw_channel_name(idx, ch)
+            result[name] = {
+                "units": self.get_GPS_raw_channel_units(idx, ch),
+                "samples_count": self.get_GPS_raw_channel_samples_count(idx, ch),
+            }
+        return result
+
+    # === LIBRARY METADATA METHODS ===
+
+    def get_library_date(self) -> str:
+        """Get DLL build date."""
+        date = self._dll.get_library_date()
+        return date.decode("latin-1") if date else ""
+
+    def get_library_time(self) -> str:
+        """Get DLL build time."""
+        time_str = self._dll.get_library_time()
+        return time_str.decode("latin-1") if time_str else ""
