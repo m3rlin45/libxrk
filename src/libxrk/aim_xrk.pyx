@@ -109,6 +109,7 @@ _decoders = {
     3:  Decoder('i'), # Master Clock on ScottE46?
     4:  Decoder('h'),
     6:  Decoder('f', interpolate=True),
+    8:  Decoder('i'), # iGPS reference
     11: Decoder('h'),
     12: Decoder('i'), # Predictive Time?
     13: Decoder('B'), # status field?
@@ -116,7 +117,16 @@ _decoders = {
     20: Decoder('H', interpolate=True,
                 fixup=lambda a: np.ndarray(buffer=a, shape=(len(a),),
                                            dtype=np.float16).astype(np.float32).data),
+    22: Decoder('i'), # Lap Time (variant)
     24: Decoder('i'), # Best Run Diff?
+    26: Decoder('i'), # Total Odometer
+    27: Decoder('i'), # Reset Odometer
+    31: Decoder('i'), # Lap Time
+    32: Decoder('i'), # Roll Time
+    33: Decoder('i'), # Best Time
+    37: Decoder('i'), # GPS_Hours
+    38: Decoder('i'), # GPS_Date
+    39: Decoder('i'), # GPS_Time
 }
 
 # Logger model ID to name mapping
