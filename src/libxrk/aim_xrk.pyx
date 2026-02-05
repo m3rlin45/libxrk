@@ -725,11 +725,43 @@ def _decode_gps(gpsmsg, time_offset):
     velacc_cms = np.asarray(alldata[44:].cast('I')[::56//4])  # uint32, velocity accuracy in cm/s
     nsat = np.asarray(alldata[51::56])  # uint8, number of satellites
 
-    timecodes = memoryview(timecodes - time_offset)
+    timecodes_raw = timecodes - time_offset
+    timecodes = memoryview(timecodes_raw)
 
     gpsconv = gps.ecef2lla(np.divide(ecefX_cm, 100),
                            np.divide(ecefY_cm, 100),
                            np.divide(ecefZ_cm, 100))
+
+    # Compute GPS speed (m/s)
+    speed_ms = np.sqrt(np.square(ecefdX_cms) + np.square(ecefdY_cms) + np.square(ecefdZ_cms)) / 100.0
+
+    # Compute heading from ECEF velocity using ENU transformation
+    lat_rad = gpsconv.lat * (np.pi / 180)
+    lon_rad = gpsconv.long * (np.pi / 180)
+    V_east, V_north = gps.ecef_velocity_to_enu(
+        np.asarray(ecefdX_cms), np.asarray(ecefdY_cms), np.asarray(ecefdZ_cms),
+        lat_rad, lon_rad
+    )
+    heading_deg = np.arctan2(V_east, V_north) * (180 / np.pi)
+
+    # Compute time deltas (in seconds)
+    dt_sec = np.diff(timecodes_raw) / 1000.0
+    # Protect against division by zero
+    dt_sec = np.where(dt_sec > 0, dt_sec, np.inf)
+
+    # GPS_InlineAcc = d(speed)/dt / 9.81 (convert m/s² to g)
+    dv = np.diff(speed_ms)
+    inline_acc = np.concatenate([[0], dv / dt_sec]) / 9.81
+
+    # GPS_Yaw_Rate = d(heading)/dt (deg/s)
+    dheading = np.diff(heading_deg)
+    # Handle wrap-around at ±180°
+    dheading = np.where(dheading > 180, dheading - 360, dheading)
+    dheading = np.where(dheading < -180, dheading + 360, dheading)
+    yaw_rate = np.concatenate([[0], dheading / dt_sec])
+
+    # GPS_LateralAcc = speed × yaw_rate × π/180 / 9.81 (g)
+    lateral_acc = speed_ms * yaw_rate * (np.pi / 180) / 9.81
 
     return [Channel(
         long_name='GPS Speed',
@@ -737,9 +769,7 @@ def _decode_gps(gpsmsg, time_offset):
         dec_pts=1,
         interpolate=True,
         timecodes=timecodes,
-        sampledata=memoryview(np.sqrt(np.square(ecefdX_cms) +
-                                      np.square(ecefdY_cms) +
-                                      np.square(ecefdZ_cms)) / 100.)),
+        sampledata=memoryview(speed_ms.astype(np.float64))),
             Channel(long_name='GPS Latitude',  units='deg', dec_pts=4, interpolate=True,
                     timecodes=timecodes, sampledata=memoryview(gpsconv.lat)),
             Channel(long_name='GPS Longitude', units='deg', dec_pts=4, interpolate=True,
@@ -752,7 +782,14 @@ def _decode_gps(gpsmsg, time_offset):
             Channel(long_name='GPS_Position_Accuracy', units='m', dec_pts=2, interpolate=True,
                     timecodes=timecodes, sampledata=memoryview((posacc_cm / 100.0).astype(np.float32))),
             Channel(long_name='GPS_Velocity_Accuracy', units='m/s', dec_pts=2, interpolate=True,
-                    timecodes=timecodes, sampledata=memoryview((velacc_cms / 100.0).astype(np.float32)))]
+                    timecodes=timecodes, sampledata=memoryview((velacc_cms / 100.0).astype(np.float32))),
+            # GPS derived channels
+            Channel(long_name='GPS_InlineAcc', units='g', dec_pts=2, interpolate=True,
+                    timecodes=timecodes, sampledata=memoryview(inline_acc.astype(np.float32))),
+            Channel(long_name='GPS_LateralAcc', units='g', dec_pts=2, interpolate=True,
+                    timecodes=timecodes, sampledata=memoryview(lateral_acc.astype(np.float32))),
+            Channel(long_name='GPS_Yaw_Rate', units='deg/s', dec_pts=1, interpolate=True,
+                    timecodes=timecodes, sampledata=memoryview(yaw_rate.astype(np.float32)))]
 
 def _decode_gnfi(gnfimsg, time_offset):
     """Parse GNFI messages and return timecodes array.
