@@ -688,6 +688,25 @@ def _get_metadata(msg_by_type):
     # Device name from NDV message
     if _tokdec('NDV') in msg_by_type:
         ret['Device Name'] = msg_by_type[_tokdec('NDV')][-1].content
+    # Expansion device info from ENF messages
+    if _tokdec('ENF') in msg_by_type:
+        expansion_devices = []
+        for enf_msg in msg_by_type[_tokdec('ENF')]:
+            if isinstance(enf_msg.content, dict):
+                device = {}
+                # Extract device properties from nested messages
+                for tok_str, key in [('DBUN', 'Bus Unit'),
+                                     ('DBUT', 'Bus Type'),
+                                     ('DVER', 'Version'),
+                                     ('MANL', 'Manufacturer'),
+                                     ('MODL', 'Model')]:
+                    tok = _tokdec(tok_str)
+                    if tok in enf_msg.content and enf_msg.content[tok]:
+                        device[key] = enf_msg.content[tok][-1].content
+                if device:
+                    expansion_devices.append(device)
+        if expansion_devices:
+            ret['Expansion Devices'] = expansion_devices
     return ret
 
 def _bg_gps_laps(gpsmsg, gnfimsg, msg_by_type, time_offset, last_time):
