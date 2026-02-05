@@ -9,7 +9,18 @@ on:
 jobs:
   pyodide-build:
     runs-on: ubuntu-latest
-    name: Build wheel for Pyodide (WebAssembly)
+    strategy:
+      matrix:
+        include:
+          - pyodide-version: "0.27.3"
+            python-version: "3.12"
+            emscripten-version: "3.1.58"
+            artifact-suffix: "-0.27"
+          - pyodide-version: "0.29.3"
+            python-version: "3.13"
+            emscripten-version: "4.0.9"
+            artifact-suffix: "-0.29"
+    name: Build wheel for Pyodide ${{ matrix.pyodide-version }}
 
     steps:
     - uses: actions/checkout@v4
@@ -19,20 +30,20 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.12'
+        python-version: ${{ matrix.python-version }}
 
     - name: Install Emscripten SDK
       uses: mymindstorm/setup-emsdk@v14
       with:
-        version: '3.1.58'
+        version: ${{ matrix.emscripten-version }}
 
     - name: Install pyodide-build
       run: |
         pip install "wheel<0.44.0"
-        pip install pyodide-build==0.27.3
+        pip install pyodide-build==${{ matrix.pyodide-version }}
 
-    - name: Install Pyodide xbuildenv 0.27.3
-      run: pyodide xbuildenv install 0.27.3
+    - name: Install Pyodide xbuildenv
+      run: pyodide xbuildenv install ${{ matrix.pyodide-version }}
 
     - name: Build wheel for Pyodide
       run: pyodide build --exports whole_archive
@@ -40,14 +51,25 @@ jobs:
     - name: Upload wheel artifact
       uses: actions/upload-artifact@v4
       with:
-        name: pyodide-wheel
+        name: pyodide-wheel${{ matrix.artifact-suffix }}
         path: dist/*.whl
         retention-days: 7
 
   pyodide-test:
     runs-on: ubuntu-latest
     needs: pyodide-build
-    name: Test with Pyodide (WebAssembly)
+    strategy:
+      matrix:
+        include:
+          - pyodide-version: "0.27.3"
+            npm-package: "pyodide-0.27@npm:pyodide@0.27.3"
+            artifact-suffix: "-0.27"
+            version-arg: "0.27"
+          - pyodide-version: "0.29.3"
+            npm-package: "pyodide-0.29@npm:pyodide@0.29.3"
+            artifact-suffix: "-0.29"
+            version-arg: "0.29"
+    name: Test with Pyodide ${{ matrix.pyodide-version }}
 
     steps:
     - uses: actions/checkout@v4
@@ -62,14 +84,14 @@ jobs:
     - name: Download wheel artifact
       uses: actions/download-artifact@v4
       with:
-        name: pyodide-wheel
+        name: pyodide-wheel${{ matrix.artifact-suffix }}
         path: dist/
 
     - name: Install Pyodide
-      run: npm install pyodide@0.27.3
+      run: npm install ${{ matrix.npm-package }}
 
     - name: Run unit tests in Pyodide
-      run: node scripts/run_pyodide_tests.mjs --dist-dir=./dist
+      run: node scripts/run_pyodide_tests.mjs --dist-dir=./dist --pyodide-version=${{ matrix.version-arg }}
 
     - name: Run bytes input tests in Pyodide
-      run: node scripts/run_pyodide_tests_idbfs.mjs --dist-dir=./dist
+      run: node scripts/run_pyodide_tests_idbfs.mjs --dist-dir=./dist --pyodide-version=${{ matrix.version-arg }}

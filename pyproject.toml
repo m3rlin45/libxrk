@@ -165,15 +165,59 @@ interpreter = "bash"
 help = "Install Emscripten SDK to build/emsdk"
 
 [tool.poe.tasks.pyodide-setup]
-shell = "npm install pyodide@0.27.3"
+shell = "npm install pyodide-0.27@npm:pyodide@0.27.3"
 interpreter = "bash"
-help = "Install Pyodide npm package for WebAssembly testing"
+help = "Install Pyodide 0.27.x npm package for WebAssembly testing"
 
 [tool.poe.tasks.pyodide-test]
-shell = "rm -f src/libxrk/*.so dist/*.whl && source ./build/emsdk/emsdk_env.sh && pyodide build --exports whole_archive && node scripts/run_pyodide_tests.mjs --dist-dir=./dist && node scripts/run_pyodide_tests_idbfs.mjs --dist-dir=./dist && poetry install --only-root"
+shell = "rm -f src/libxrk/*.so dist/*pyodide_2024*.whl && source ./build/emsdk/emsdk_env.sh && pyodide build --exports whole_archive && node scripts/run_pyodide_tests.mjs --dist-dir=./dist --pyodide-version=0.27 && node scripts/run_pyodide_tests_idbfs.mjs --dist-dir=./dist --pyodide-version=0.27 && poetry install --only-root"
 interpreter = "bash"
-help = "Build and run tests in Pyodide (WebAssembly)"
+help = "Build and run tests in Pyodide 0.27.x (WebAssembly)"
 deps = ["emsdk-setup", "pyodide-setup"]
+
+[tool.poe.tasks.emsdk-setup-0-29]
+shell = """
+export PATH="$HOME/.pyenv/versions/3.13.12/bin:$PATH" && \
+pip install pyodide-build==0.29.3 "wheel<0.44" && \
+EMSDK_VERSION=$(pyodide config get emscripten_version) && \
+mkdir -p build/emsdk-0.29 && \
+([ -d build/emsdk-0.29/.git ] || git clone https://github.com/emscripten-core/emsdk.git build/emsdk-0.29) && \
+cd build/emsdk-0.29 && git config core.autocrlf false && git checkout -- . && \
+./emsdk install $EMSDK_VERSION && ./emsdk activate $EMSDK_VERSION
+"""
+interpreter = "bash"
+help = "Install Emscripten SDK for Pyodide 0.29.x (requires Python 3.13 via pyenv)"
+
+[tool.poe.tasks.pyodide-setup-0-29]
+shell = "npm install pyodide-0.29@npm:pyodide@0.29.3"
+interpreter = "bash"
+help = "Install Pyodide 0.29.x npm package"
+
+[tool.poe.tasks.pyodide-build-0-29]
+shell = """
+export PATH="$HOME/.pyenv/versions/3.13.12/bin:$PATH" && \
+pip install pyodide-build==0.29.3 "wheel<0.44" && \
+source ./build/emsdk-0.29/emsdk_env.sh && \
+pyodide build --exports whole_archive
+"""
+interpreter = "bash"
+help = "Build Pyodide 0.29.x wheel (requires Python 3.13 via pyenv)"
+deps = ["emsdk-setup-0-29"]
+
+[tool.poe.tasks.pyodide-test-0-29]
+shell = """
+export PATH="$HOME/.pyenv/versions/3.13.12/bin:$PATH" && \
+rm -f src/libxrk/*.so dist/*pyodide_2025*.whl && \
+pip install pyodide-build==0.29.3 "wheel<0.44" && \
+source ./build/emsdk-0.29/emsdk_env.sh && \
+pyodide build --exports whole_archive && \
+node scripts/run_pyodide_tests.mjs --dist-dir=./dist --pyodide-version=0.29 && \
+node scripts/run_pyodide_tests_idbfs.mjs --dist-dir=./dist --pyodide-version=0.29 && \
+poetry install --only-root
+"""
+interpreter = "bash"
+help = "Build and test with Pyodide 0.29.x (requires Python 3.13 via pyenv)"
+deps = ["emsdk-setup-0-29", "pyodide-setup-0-29"]
 
 [tool.poe.tasks.build-all]
 shell = "rm -rf dist/ && poetry build && source ./build/emsdk/emsdk_env.sh && pyodide build --exports whole_archive && ls -la dist/"
