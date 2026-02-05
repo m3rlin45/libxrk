@@ -300,8 +300,8 @@ def format_report(result: DecoderAnalysis) -> str:
 
         lines.append(f"\n  Decoder {decoder_type:2d} [{status}] {desc}")
         lines.append(f"  Channels ({len(channels)}):")
-        for ch in sorted(set(channels)):
-            lines.append(f"    - {ch}")
+        for ch_name in sorted(set(channels)):
+            lines.append(f"    - {ch_name}")
 
     # Skipped channels detail
     if result.skipped_channels:
@@ -309,19 +309,19 @@ def format_report(result: DecoderAnalysis) -> str:
         lines.append("=" * 60)
         lines.append("SKIPPED CHANNELS (DATA LOSS)")
         lines.append("=" * 60)
-        for ch in result.skipped_channels:
-            lines.append(f"\n  {ch.long_name}")
-            lines.append(f"    Short name: {ch.short_name}")
-            lines.append(f"    Decoder type: {ch.decoder_type}")
-            lines.append(f"    Size: {ch.size} bytes")
-            lines.append(f"    Units: {ch.unit_str} (type {ch.unit_type})")
-            lines.append(f"    Sample rate byte: {ch.sample_rate_byte}")
-            lines.append(f"    Skip reason: {ch.skip_reason}")
+        for skipped_ch in result.skipped_channels:
+            lines.append(f"\n  {skipped_ch.long_name}")
+            lines.append(f"    Short name: {skipped_ch.short_name}")
+            lines.append(f"    Decoder type: {skipped_ch.decoder_type}")
+            lines.append(f"    Size: {skipped_ch.size} bytes")
+            lines.append(f"    Units: {skipped_ch.unit_str} (type {skipped_ch.unit_type})")
+            lines.append(f"    Sample rate byte: {skipped_ch.sample_rate_byte}")
+            lines.append(f"    Skip reason: {skipped_ch.skip_reason}")
 
             # Show relevant bytes for reverse engineering
-            lines.append(f"    Raw metadata bytes [20]: {ch.raw_bytes[20]:02x}")
-            lines.append(f"    Raw metadata bytes [84]: {ch.raw_bytes[84]:02x}")
-            lines.append(f"    Raw bytes [12-24]: {ch.raw_bytes[12:24].hex()}")
+            lines.append(f"    Raw metadata bytes [20]: {skipped_ch.raw_bytes[20]:02x}")
+            lines.append(f"    Raw metadata bytes [84]: {skipped_ch.raw_bytes[84]:02x}")
+            lines.append(f"    Raw bytes [12-24]: {skipped_ch.raw_bytes[12:24].hex()}")
 
     # Channel metadata analysis for skipped channels
     if result.skipped_channels:
@@ -332,19 +332,19 @@ def format_report(result: DecoderAnalysis) -> str:
 
         # Group by decoder type
         by_decoder: dict[int, list[ChannelInfo]] = defaultdict(list)
-        for ch in result.skipped_channels:
-            by_decoder[ch.decoder_type].append(ch)
+        for skipped_info in result.skipped_channels:
+            by_decoder[skipped_info.decoder_type].append(skipped_info)
 
-        for decoder_type, channels in sorted(by_decoder.items()):
-            lines.append(f"\n  Decoder {decoder_type} ({len(channels)} channels):")
+        for decoder_type, ch_list in sorted(by_decoder.items()):
+            lines.append(f"\n  Decoder {decoder_type} ({len(ch_list)} channels):")
 
             # Analyze common byte patterns
-            if len(channels) >= 2:
+            if len(ch_list) >= 2:
                 # Find bytes that are constant across all channels with this decoder
                 constant_bytes = []
                 varying_bytes = []
-                for i in range(min(len(ch.raw_bytes) for ch in channels)):
-                    values = set(ch.raw_bytes[i] for ch in channels)
+                for i in range(min(len(c.raw_bytes) for c in ch_list)):
+                    values = set(c.raw_bytes[i] for c in ch_list)
                     if len(values) == 1:
                         constant_bytes.append((i, list(values)[0]))
                     else:
@@ -383,8 +383,8 @@ def main():
             result = analyze_xrk(f)
             all_results.append(result)
 
-            for ch in result.skipped_channels:
-                all_skipped[ch.decoder_type].append(ch.long_name)
+            for skipped in result.skipped_channels:
+                all_skipped[skipped.decoder_type].append(skipped.long_name)
 
             if not args.json and not args.skipped_only:
                 print(format_report(result))
@@ -403,11 +403,11 @@ def main():
 
         if all_skipped:
             print("\nUnknown decoder types found:", file=sys.stderr if args.json else sys.stdout)
-            for decoder, channels in sorted(all_skipped.items()):
-                unique = sorted(set(channels))
+            for decoder, ch_names in sorted(all_skipped.items()):
+                unique = sorted(set(ch_names))
                 print(f"  Decoder {decoder}: {len(unique)} unique channels", file=sys.stderr if args.json else sys.stdout)
-                for ch in unique[:5]:
-                    print(f"    - {ch}", file=sys.stderr if args.json else sys.stdout)
+                for name in unique[:5]:
+                    print(f"    - {name}", file=sys.stderr if args.json else sys.stdout)
                 if len(unique) > 5:
                     print(f"    ... and {len(unique) - 5} more", file=sys.stderr if args.json else sys.stdout)
 
@@ -424,13 +424,13 @@ def main():
                     },
                     "skipped": [
                         {
-                            "name": ch.long_name,
-                            "decoder_type": ch.decoder_type,
-                            "size": ch.size,
-                            "units": ch.unit_str,
-                            "reason": ch.skip_reason,
+                            "name": skipped_info.long_name,
+                            "decoder_type": skipped_info.decoder_type,
+                            "size": skipped_info.size,
+                            "units": skipped_info.unit_str,
+                            "reason": skipped_info.skip_reason,
                         }
-                        for ch in r.skipped_channels
+                        for skipped_info in r.skipped_channels
                     ],
                 }
             )
@@ -438,11 +438,11 @@ def main():
 
     if args.skipped_only:
         print("\nSKIPPED CHANNELS SUMMARY:")
-        for decoder, channels in sorted(all_skipped.items()):
-            unique = sorted(set(channels))
+        for decoder, ch_names in sorted(all_skipped.items()):
+            unique = sorted(set(ch_names))
             print(f"\nDecoder {decoder}:")
-            for ch in unique:
-                print(f"  - {ch}")
+            for name in unique:
+                print(f"  - {name}")
 
 
 if __name__ == "__main__":

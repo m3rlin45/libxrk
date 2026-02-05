@@ -524,19 +524,19 @@ def main():
         print("SUMMARY ACROSS ALL FILES")
         print("=" * 80)
 
-        all_tokens = set()
+        all_tokens: set[str] = set()
         all_decoders: dict[int, set[str]] = defaultdict(set)
         for r in all_results:
             all_tokens.update(r.h_messages.keys())
-            for d, channels in r.decoder_types_seen.items():
-                all_decoders[d].update(channels)
+            for d, chs in r.decoder_types_seen.items():
+                all_decoders[d].update(chs)
 
         print(f"\nAll message tokens seen: {sorted(all_tokens)}")
         print(f"\nAll decoder types seen:")
         known_decoders = {0, 1, 3, 4, 6, 11, 12, 13, 15, 20, 24}
-        for d, channels in sorted(all_decoders.items()):
-            status = "KNOWN" if d in known_decoders else "UNKNOWN"
-            print(f"  Decoder {d:2d} [{status}]: {len(channels)} unique channels")
+        for decoder_type, ch_set in sorted(all_decoders.items()):
+            status = "KNOWN" if decoder_type in known_decoders else "UNKNOWN"
+            print(f"  Decoder {decoder_type:2d} [{status}]: {len(ch_set)} unique channels")
 
 
 if __name__ == "__main__":

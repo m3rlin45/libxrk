@@ -149,7 +149,7 @@ def print_enumeration():
     # Count by category
     categories: dict[str, list[str]] = {}
     for func, info in DLL_FUNCTIONS.items():
-        cat = info["category"]
+        cat = str(info["category"])
         if cat not in categories:
             categories[cat] = []
         categories[cat].append(func)
