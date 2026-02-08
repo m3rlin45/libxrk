@@ -93,3 +93,7 @@ jobs:
     - name: Run pytest
       run: |
         poetry run pytest tests/ -v --tb=short
+
+    - name: Run spec tests
+      run: |
+        poetry run pytest spec/tests/ -v --tb=short
