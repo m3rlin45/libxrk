@@ -83,6 +83,45 @@ class TestSFJXRK(unittest.TestCase):
             self.assertEqual(log.metadata.get("Session"), "Generic testing")
 
     @parameterized.expand(FILE_VARIANTS)
+    def test_sfj_xrk_race_mode(self, name, file_path):
+        """Test that SFJ has Race Mode 'speed' metadata."""
+        log = aim_xrk(str(file_path), progress=None)
+        self.assertEqual(log.metadata["Race Mode"], "speed")
+
+    @parameterized.expand(FILE_VARIANTS)
+    def test_sfj_xrk_vehicle_electronics_type(self, name, file_path):
+        """Test that VET metadata is exposed."""
+        log = aim_xrk(str(file_path), progress=None)
+        self.assertEqual(log.metadata["Vehicle Electronics Type"], 0)
+
+    @parameterized.expand(FILE_VARIANTS)
+    def test_sfj_xrk_calibrations(self, name, file_path):
+        """Test that calibration metadata is exposed with channel cross-references."""
+        log = aim_xrk(str(file_path), progress=None)
+        cals = log.metadata["Calibrations"]
+        self.assertEqual(len(cals), 8)
+
+        # Check type 1 (2-point linear) calibrations
+        type1_cals = [c for c in cals if c["type"] == 1]
+        self.assertEqual(len(type1_cals), 2)
+
+        # Steering calibration
+        steering_cal = next(c for c in type1_cals if c.get("channel") == "steering")
+        self.assertAlmostEqual(steering_cal["output_1"], -180.0)
+        self.assertAlmostEqual(steering_cal["output_2"], 180.0)
+
+        # Throttle (ACCEL) calibration
+        accel_cal = next(c for c in type1_cals if c.get("channel") == "ACCEL")
+        self.assertAlmostEqual(accel_cal["output_1"], 50.0)
+        self.assertAlmostEqual(accel_cal["output_2"], 0.0)
+
+        # Check type 20 (IMU bias) calibrations
+        type20_cals = [c for c in cals if c["type"] == 20]
+        self.assertEqual(len(type20_cals), 6)
+        for cal in type20_cals:
+            self.assertIn("channel", cal)
+
+    @parameterized.expand(FILE_VARIANTS)
     def test_sfj_xrk_laps(self, name, file_path):
         """Test that the SFJ XRK/XRZ file contains lap data."""
         log = aim_xrk(str(file_path), progress=None)

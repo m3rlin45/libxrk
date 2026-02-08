@@ -48,8 +48,11 @@ Standard metadata fields extracted from XRK files:
 | Logger Model | str or None | Human-readable model name (e.g., "MXP 1.3", "MXm") |
 | Device Name | str | User-configured device name |
 | GPS Receiver | str | GPS receiver type: `"GPS"` (external) or `"iGPS"` (internal) |
+| Race Mode | str | Lap detection mode: `"speed"` or `"performance"` (absent if not set) |
+| Vehicle Electronics Type | int | Vehicle electronics config type |
 | Odo/* | various | Odometer readings |
-| Expansion Devices | list[dict] | CAN expansion devices (Bus Unit, Bus Type, Version, Manufacturer, Model) |
+| Expansion Devices | list[dict] | CAN expansion devices (Bus Unit, Bus Type, Version, Manufacturer, Model, Logger ID, Model ID) |
+| Calibrations | list[dict] | Per-channel calibration data (type, raw_1, raw_2, channel; type 1 adds output_1, output_2) |
 
 ## Channel Tables
 
