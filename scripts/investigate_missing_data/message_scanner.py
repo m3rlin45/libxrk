@@ -179,7 +179,7 @@ def scan_xrk(file_path: Path, max_samples: int = 3) -> ScanResult:
                     ch_index = struct.unpack_from("<H", msg_data, 0)[0]
                     short_name = msg_data[24:32].split(b"\x00")[0].decode("ascii", errors="replace")
                     long_name = msg_data[32:56].split(b"\x00")[0].decode("ascii", errors="replace")
-                    ch_size = msg_data[56]
+                    ch_size = msg_data[72]
                     unit_type = msg_data[12] & 127
                     decoder_type = msg_data[20]
                     sample_period_us = struct.unpack_from("<I", msg_data, 64)[0]
