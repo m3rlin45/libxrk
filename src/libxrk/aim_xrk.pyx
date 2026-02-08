@@ -56,6 +56,13 @@ class Channel:
     dec_pts: int = 0
     interpolate: bool = False
     unknown: bytes = b""
+    source_type: int = 0
+    source_channel_id: int = 0
+    device_tag: str = ""
+    cal_value_1: float = 0.0
+    cal_value_2: float = 1.0
+    display_range_min: float = 0.0
+    display_range_max: float = 0.0
     group: Optional[GroupRef] = None
     timecodes: object = field(default=None, repr=False)
     sampledata: object = field(default=None, repr=False)
@@ -490,6 +497,14 @@ def _decode_sequence(s, progress=None):
                                     (_ch_name,
                                      ', '.join('[%d]=0x%02x' % (i, b)
                                                for i, b in _nonzero)))
+
+                            data.source_type = dcopy[16]
+                            data.source_channel_id = struct.unpack_from('<H', dcopy, 6)[0]
+                            _dtag = dcopy[76:80]
+                            data.device_tag = _dtag.rstrip(b'\x00').decode('ascii', errors='replace') if any(_dtag) else ''
+                            (data.cal_value_1, data.cal_value_2,
+                             data.display_range_min, data.display_range_max
+                            ) = struct.unpack_from('<4f', dcopy, 96)
 
                             dcopy[0:2] = [0] * 2 # reset index
                             dcopy[24:32] = [0] * 8 # short name
@@ -1090,7 +1105,14 @@ def _channel_to_table(ch):
     metadata = {
         b'units': (ch.units if ch.size != 1 else '').encode('utf-8'),
         b'dec_pts': str(ch.dec_pts).encode('utf-8'),
-        b'interpolate': str(ch.interpolate).encode('utf-8')
+        b'interpolate': str(ch.interpolate).encode('utf-8'),
+        b'source_type': str(ch.source_type).encode('utf-8'),
+        b'source_channel_id': str(ch.source_channel_id).encode('utf-8'),
+        b'device_tag': ch.device_tag.encode('utf-8'),
+        b'cal_value_1': str(ch.cal_value_1).encode('utf-8'),
+        b'cal_value_2': str(ch.cal_value_2).encode('utf-8'),
+        b'display_range_min': str(ch.display_range_min).encode('utf-8'),
+        b'display_range_max': str(ch.display_range_max).encode('utf-8'),
     }
     
     # Determine the appropriate type for values based on the data

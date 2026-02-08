@@ -69,7 +69,7 @@ field = log.channels['Engine RPM'].schema.field('Engine RPM')
 units = field.metadata.get(b'units', b'').decode()  # e.g., "rpm"
 ```
 
-Keys: `b"units"`, `b"dec_pts"`, `b"interpolate"`
+Keys: `b"units"`, `b"dec_pts"`, `b"interpolate"`, `b"source_type"`, `b"source_channel_id"`, `b"device_tag"`, `b"cal_value_1"`, `b"cal_value_2"`, `b"display_range_min"`, `b"display_range_max"`
 
 ## LogFile Methods
 
