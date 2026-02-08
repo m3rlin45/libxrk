@@ -87,3 +87,6 @@ dmypy.json
 node_modules/
 
 .pyodide-xbuildenv-*/
+
+# Generated test vectors (spec/test_vectors/*.yaml)
+spec/test_vectors/*.yaml
