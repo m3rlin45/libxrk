@@ -654,6 +654,64 @@ The byte 12 high bit could potentially be exposed as metadata, but since the cur
 
 ---
 
+## Phase 8: CDE Message Analysis
+
+**Date:** 2026-02-08
+**Method:** Byte-level analysis of all 358 CDE messages across 5 XRK files, paired with their corresponding CHS messages
+
+### Background
+
+CDE ("Channel Definition Extension"?) messages appear once per channel, paired 1:1 with CHS messages inside CNF containers. Each CDE is exactly 6 bytes. The parser currently converts them to hex strings without interpretation:
+
+```python
+elif tok == _tokdec('CDE'):
+    data = ['%02x' % x for x in data]
+```
+
+### CDE Layout (6 bytes)
+
+| Offset | Size | Type | Field | Status | Evidence |
+|--------|------|------|-------|--------|----------|
+| 0-1 | 2 | uint16 LE | `channel_index` | **CONFIRMED** | 358/358 pairs match the paired CHS channel index |
+| 2-5 | 4 | uint32 LE | `session_uid` | **IDENTIFIED** | Opaque per-session unique identifier (see analysis below) |
+
+### Analysis of Bytes 2-5
+
+**Statistical properties:**
+- 357 unique values out of 358 total (one collision: `IntakeAirT` vs `WheelSpdFR` in the 86 file)
+- Near-uniform bit distribution across all 32 bits (~42-62% set per bit, centered around 50%)
+- Range: 0x01604109 to 0xFEFFB1FA (full 32-bit space)
+
+**What it is NOT:**
+- Not CRC32 of CHS data (no matches)
+- Not derived from channel name, decoder type, unit type, or any CHS field
+- Not stable across sessions: 0/38 common channels matched between two SFJ files from the same logger
+- Not unique per file in all cases: one collision exists in the 86 file (110 unique out of 111)
+
+**Conclusion:** Bytes 2-5 are a **per-session random/opaque unique identifier**, likely assigned when AIM RaceStudio generates the logger configuration or when the session starts. Probably used internally by AIM software for channel identity tracking across configuration changes.
+
+### Cross-File Comparison
+
+| File | CDE Count | Unique UIDs | All Unique? |
+|------|-----------|-------------|-------------|
+| 86_2248.xrk | 111 | 110 | No (1 collision) |
+| SFJ_0033.xrk | 39 | 39 | Yes |
+| SFJ_0101.xrk | 40 | 40 | Yes |
+| SFJ_Suzuka_0090.xrk | 40 | 40 | Yes |
+| test.xrk | 128 | 128 | Yes |
+
+Same channel names across different files always have **different** CDE UIDs, confirming these are session-specific, not channel-specific.
+
+### Practical Impact
+
+**None.** The CDE message contains:
+1. A channel index (redundant — already in the paired CHS message)
+2. An opaque session UID with no data extraction value
+
+No changes to the parser are needed. The current hex-string storage is adequate for debugging purposes.
+
+---
+
 ## Next Steps
 
 1. **Run DLL comparison** - Use Wine to compare GPS derived channels from DLL
