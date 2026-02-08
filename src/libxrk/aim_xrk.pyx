@@ -429,9 +429,68 @@ def _decode_sequence(s, progress=None):
                                 data.units = ''
                                 data.dec_pts = 0
 
-                            # [12] unit type (lower 7 bits), used by _unit_map
-                            # [20] decoder type, used by _decoders
-                            # [64:68] sample period in microseconds (uint32 LE). Mms = value // 1000
+                            # CHS layout (112 bytes):
+                            # [0:2]    uint16 LE   channel index
+                            # [2:4]    padding
+                            # [4:6]    uint16 LE   hardware ID (non-zero for GPS only)
+                            # [6:8]    uint16 LE   source channel ID within device
+                            # [8:12]   uint32 LE   hardware reference (GPS-only)
+                            # [12]     uint8       unit type (lower 7 bits); high bit = calibrated flag
+                            # [13]     uint8       maybe_display_format (purpose unclear)
+                            # [14:16]  uint16 LE   maybe_config_flags (encoding unknown)
+                            # [16]     uint8       source type (1=internal, 5=GPS, 9=CAN, etc.)
+                            # [17:20]  padding
+                            # [20]     uint8       decoder type, used by _decoders
+                            # [21:24]  padding
+                            # [24:32]  char[8]     short name
+                            # [32:56]  char[24]    long name
+                            # [56:64]  padding
+                            # [64:68]  uint32 LE   sample period in microseconds; Mms = value // 1000
+                            # [68:70]  uint16 LE   data offset into packed channel data
+                            # [70:72]  padding
+                            # [72]     uint8       data size (bytes per sample)
+                            # [73:76]  padding
+                            # [76:80]  char[4]     device tag ("@AIM" or null)
+                            # [80]     uint8       device node ID
+                            # [81]     uint8       maybe_device_flags (3 values: 0x00, 0x02, 0x10)
+                            # [82:84]  padding
+                            # [84]     uint8       maybe_output_type (1/4/6/0xFF)
+                            # [85:88]  padding
+                            # [88:92]  uint32 LE   display index (0xFFFFFFFF for virtual)
+                            # [92]     uint8       maybe_output_size (0/2/4/8)
+                            # [93:96]  padding
+                            # [96:100] float32 LE  cal_value_1 (= CAL offset 24; confirmed)
+                            # [100:104] float32 LE cal_value_2 (= CAL offset 28; confirmed)
+                            # [104:108] float32 LE display range min
+                            # [108:112] float32 LE display range max
+
+                            # Validate padding bytes - if any are non-zero, this CHS
+                            # layout has unknown fields we haven't seen before.
+                            _chs_padding = (
+                                dcopy[2:4] + dcopy[17:20] + dcopy[21:24] +
+                                dcopy[56:64] + dcopy[70:72] + dcopy[73:76] +
+                                dcopy[82:84] + dcopy[85:88] + dcopy[93:96]
+                            )
+                            if any(_chs_padding):
+                                _ch_name = dcopy[32:56].split(b'\x00')[0].decode(
+                                    'ascii', errors='replace')
+                                _nonzero = [
+                                    (i, b) for i, b in enumerate(dcopy)
+                                    if b != 0 and i in (
+                                        2, 3, 17, 18, 19, 21, 22, 23,
+                                        56, 57, 58, 59, 60, 61, 62, 63,
+                                        70, 71, 73, 74, 75, 82, 83,
+                                        85, 86, 87, 93, 94, 95)
+                                ]
+                                print(
+                                    'CHS padding non-zero for channel %s: %s. '
+                                    'Please report at '
+                                    'https://github.com/m3rlin45/libxrk/issues '
+                                    'with your XRK file.' %
+                                    (_ch_name,
+                                     ', '.join('[%d]=0x%02x' % (i, b)
+                                               for i, b in _nonzero)))
+
                             dcopy[0:2] = [0] * 2 # reset index
                             dcopy[24:32] = [0] * 8 # short name
                             dcopy[32:56] = [0] * 24 # long name

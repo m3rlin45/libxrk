@@ -498,6 +498,162 @@ And filters out internal channels (Master Clk, StrtRec).
 
 ---
 
+## Phase 7: CHS Unknown Bytes Analysis
+
+**Date:** 2026-02-08
+**Method:** Byte-level analysis of all 548 CHS messages across 8 test files (5 XRK + 3 XRZ)
+
+### Complete CHS Layout (112 bytes)
+
+Analysis of 548 CHS messages across all test files reveals the following complete layout. Calibration fields (bytes 96-103) were **confirmed** by cross-referencing with CAL message analysis in Phase 6.
+
+| Offset | Size | Type | Field | Status | Evidence |
+|--------|------|------|-------|--------|----------|
+| 0-1 | 2 | uint16 LE | `index` | KNOWN | Channel index |
+| 2-3 | 2 | | *padding* | **IDENTIFIED** | Always zero |
+| 4-5 | 2 | uint16 LE | `hardware_id` | **IDENTIFIED** | Only non-zero for GPS decoder 8 (value 0x0846); likely hardware/CAN bus address |
+| 6-7 | 2 | uint16 LE | `source_channel_id` | **IDENTIFIED** | Sequential ID within the source device; GPS-derived channels use 800+ range |
+| 8-9 | 2 | uint16 LE | `hardware_ref_1` | **IDENTIFIED** | Only non-zero for GPS decoder 8 (value 0xF084); likely GPS hardware reference |
+| 10-11 | 2 | uint16 LE | `hardware_ref_2` | **IDENTIFIED** | Only non-zero for GPS decoder 8 (value 0x0084); pairs with bytes 8-9 |
+| 12 | 1 | uint8 | `unit_type` (full byte) | KNOWN+ | Lower 7 bits = unit type for `_unit_map`; **high bit = "signed/calibrated" flag** (set for CAN channels, shock pots, analog inputs, etc.) |
+| 13 | 1 | uint8 | `maybe_display_format` | **IDENTIFIED** | Varies per channel; 25 unique values; purpose unclear — possibly decimal places or display widget type |
+| 14-15 | 2 | uint16 LE | `maybe_config_flags` | **IDENTIFIED** | Channel configuration; non-zero for channels with special input config (shock pots: 1286/1158/774/646, wheel speed: 519, Reset Odometer: 64/192/320/448); encoding unknown |
+| 16 | 1 | uint8 | `source_type` | **IDENTIFIED** | Values: 1=internal simple, 2=RPM/encoder, 4=AIM computed/timer, 5=GPS raw, 9=CAN bus, 10=CAN group, 12=expansion |
+| 17-19 | 3 | | *padding* | **IDENTIFIED** | Always zero |
+| 20 | 1 | uint8 | `decoder_type` | KNOWN | Decoder function selector |
+| 21-23 | 3 | | *padding* | **IDENTIFIED** | Always zero |
+| 24-31 | 8 | char[8] | `short_name` | KNOWN | Null-terminated ASCII |
+| 32-55 | 24 | char[24] | `long_name` | KNOWN | Null-terminated ASCII |
+| 56-63 | 8 | | *padding* | **IDENTIFIED** | Always zero |
+| 64-67 | 4 | uint32 LE | `sample_period_us` | KNOWN | Microseconds per sample |
+| 68-69 | 2 | uint16 LE | `data_offset` | **IDENTIFIED** | Byte offset into packed channel data; consecutive channels pack at `offset + data_size` |
+| 70-71 | 2 | | *padding* | **IDENTIFIED** | Always zero |
+| 72 | 1 | uint8 | `data_size` | KNOWN | Bytes per sample |
+| 73-75 | 3 | | *padding* | **IDENTIFIED** | Always zero |
+| 76-79 | 4 | char[4] | `device_tag` | **IDENTIFIED** | Only two values observed: "@AIM" (0x40,0x41,0x49,0x4D) for internal AIM firmware channels, or all zeros for CAN bus/expansion/sensor channels |
+| 80 | 1 | uint8 | `device_node_id` | **IDENTIFIED** | Source device node: 0=CAN bus, 1=AIM timer, 2=AIM sensor, 3=AIM computed, 6=AIM IMU |
+| 81 | 1 | uint8 | `maybe_device_flags` | **IDENTIFIED** | Only 3 values seen: 0x00=normal, 0x02=alarm/switch type, 0x10=master clock only |
+| 82-83 | 2 | | *padding* | **IDENTIFIED** | Always zero |
+| 84 | 1 | uint8 | `maybe_output_type` | **IDENTIFIED** | 4 values seen: 1=simple value, 4=CAN decoded, 6=IMU/filtered, 0xFF=virtual/computed; grouping is clean but semantics are inferred |
+| 85-87 | 3 | | *padding* | **IDENTIFIED** | Always zero |
+| 88-91 | 4 | uint32 LE | `display_index` | **IDENTIFIED** | Sequential display/calibration slot index (0,2,4,6...); 0xFFFFFFFF for virtual/GPS-derived channels with no data storage |
+| 92 | 1 | uint8 | `maybe_output_size` | **IDENTIFIED** | Values: 0, 2, 4, 8; loosely correlates with decoded data width but doesn't always match data_size; 0 for virtual channels |
+| 93-95 | 3 | | *padding* | **IDENTIFIED** | Always zero |
+| 96-99 | 4 | float32 LE | `cal_value_1` | **CONFIRMED** | Calibration parameter 1. For 2-point linear (CAL type 1): raw ADC reading at cal point 1. For IMU (CAL type 20): zero-offset bias. Duplicated in CAL message offset 24-27. Most channels = 0.0 |
+| 100-103 | 4 | float32 LE | `cal_value_2` | **CONFIRMED** | Calibration parameter 2. For 2-point linear: raw ADC reading at cal point 2. For IMU: scale factor (always 1.0). Duplicated in CAL message offset 28-31. Most channels = 1.0 |
+| 104-107 | 4 | float32 LE | `display_range_min` | **IDENTIFIED** | Minimum display range: -1e30 (auto-range), 0.0 (zero-based), or specific min value |
+| 108-111 | 4 | float32 LE | `display_range_max` | **IDENTIFIED** | Maximum display range: +1e30 (auto-range), +inf, 99999.9, or specific max value |
+
+### Key Findings
+
+#### 1. Calibration Fields (bytes 96-103) — CONFIRMED via CAL cross-reference
+
+The Phase 6 CAL message analysis independently confirmed these fields. CHS bytes 96-99 and 100-103 are **exact duplicates** of CAL message offsets 24-27 and 28-31 respectively. This was verified for all channels that have both CHS and CAL entries:
+
+| Channel | CHS f32[96] | CHS f32[100] | CAL type | Confirmed meaning |
+|---------|-------------|--------------|----------|-------------------|
+| steering | 1669.06 | -3314.92 | 1 (2-point) | Raw ADC readings at -180° and +180° |
+| ACCEL | -4.85 | 80.03 | 1 (2-point) | Raw ADC readings at 50mm and 0mm pedal travel |
+| LF_Shock_Pot | -68.45 | 80.03 | 1 (2-point) | Raw ADC readings at two calibration points |
+| InlineAcc | 0.049 | 1.0 | 20 (IMU) | Zero-offset bias and scale (factory calibration) |
+| LateralAcc | 0.018 | 1.0 | 20 (IMU) | Zero-offset bias and scale |
+| YawRate | -1.021 | 1.0 | 20 (IMU) | Zero-offset bias and scale |
+
+Channels without CAL messages have identity values (0.0, 1.0), meaning calibration is handled internally by the decoder.
+
+Note: these are NOT `offset` and `scale` in the `value = raw * scale + offset` sense. For type 1 calibration, they are the two raw ADC readings at the two user-defined calibration points. The actual output values at those points are in the CAL message at offsets 32-35 and 36-39 (not duplicated in CHS).
+
+#### 2. Byte 12 High Bit (Previously Masked Out)
+
+The current parser uses `dcopy[12] & 127` to extract unit_type, discarding the high bit. Analysis shows the high bit is set for ~32% of channels (177/548), specifically:
+- All CAN bus channels (decoder 6/15)
+- Shock pot channels
+- Analog input channels with calibration
+- GPS-derived computed channels
+- Timer/odometer channels
+
+This bit likely indicates "has extended calibration" or "signed data" — channels where the raw data needs the cal_value fields to produce meaningful values.
+
+#### 3. Data Offset (bytes 68-69)
+
+This uint16 LE field is a **byte offset into packed channel data**. When channels are sorted by this offset, consecutive channels pack tightly:
+
+```
+offset=  0, size= 4: Master Clk     (gap=0)
+offset=  4, size=20: Lap Time       (gap=4)
+offset= 24, size= 4: Predictive Time (gap=20)
+offset= 28, size= 4: Best Run Diff  (gap=4)
+...
+```
+
+Each channel's data starts at `data_offset` and occupies `data_size` bytes. This is used internally by AIM software for direct data addressing.
+
+#### 4. Source Channel ID (bytes 6-7)
+
+This field identifies the channel's source within its hardware device:
+- Internal AIM channels: small sequential numbers (0-50)
+- CAN bus channels: CAN signal ID / message offset (0-1011)
+- GPS-derived channels: 800+ range (800=GPS_LateralAcc, 801=GPS_InlineAcc, etc.)
+
+#### 5. Display Range (bytes 104-111)
+
+Two float32 fields define the display range in AIM RaceStudio software:
+- `display_range_min` (bytes 104-107): -1e30 = auto-range, 0.0 = zero-based
+- `display_range_max` (bytes 108-111): +1e30 = auto-range, +inf = unbounded, 99999.9 = specific max
+
+#### 6. Device Tag (bytes 76-79)
+
+Only two values were observed across all 548 CHS messages:
+- `40 41 49 4d` = "@AIM" (177 messages) — channels originating from the AIM logger's firmware (Master Clk, computed timers, odometers, expansion device alarms)
+- `00 00 00 00` = null (371 messages) — CAN bus, sensor, and expansion channels
+
+No other device tag values were seen in any test file.
+
+#### 7. Virtual Channels
+
+GPS-derived channels (GPS_LateralAcc, GPS_InlineAcc, GPS_Yaw_Rate, GPS_Hours, GPS_Date, GPS_Time) have distinctive signatures:
+- `output_type` = 0xFF
+- `display_index` = 0xFFFFFFFF
+- `output_size` = 0
+
+These are computed by AIM firmware from GPS data and don't have their own raw data storage.
+
+#### 8. Always-Zero Regions (Confirmed Padding)
+
+The following byte ranges are confirmed padding (always zero across all 548 messages):
+- Bytes 2-3
+- Bytes 17-19
+- Bytes 21-23
+- Bytes 56-63
+- Bytes 70-71
+- Bytes 73-75
+- Bytes 82-83
+- Bytes 85-87
+- Bytes 93-95
+
+Total: 30 of 112 bytes are padding (27%).
+
+The parser now validates these padding bytes and prints a warning with a link to the issue tracker if any are non-zero, to help identify new fields in future XRK files.
+
+### Cross-File Stability
+
+119 channels appear across multiple files. For the vast majority, **all unknown bytes are identical across files** — confirming these are channel definition properties, not session-specific data. The few that differ:
+- `data_offset` (bytes 68-69): Varies because different files have different numbers of channels, so the packing order changes
+- `display_index` (bytes 88-91): Sequential index varies with file channel count
+- `device_tag` (bytes 76-79): Differs between AIM logger models (present on some, absent on others for the same channel)
+
+### Practical Impact
+
+The identified fields have limited impact on libxrk's core functionality:
+- **Calibration values**: Already applied before data is stored in XRK. Informational only — useful for diagnostics/verification (see Phase 6 CAL analysis).
+- **CDE offset / display_index**: Internal AIM addressing; not needed for data extraction.
+- **Display range**: Only useful for visualization defaults; not needed for data extraction.
+- **Source channel ID / device tag**: Useful for debugging channel provenance but not needed for data parsing.
+
+The byte 12 high bit could potentially be exposed as metadata, but since the current masking works correctly for `_unit_map` lookup, changing it is low priority.
+
+---
+
 ## Next Steps
 
 1. **Run DLL comparison** - Use Wine to compare GPS derived channels from DLL
