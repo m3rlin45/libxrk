@@ -252,54 +252,97 @@ Detailed analysis of the 5 unknown message types: CAL, GPSR, iSLV, RACM, VET.
 
 ### CAL — Calibration Data (144 bytes)
 
-**Purpose:** Per-channel sensor calibration/conversion parameters. Links to specific channels via channel index.
+**Purpose:** Per-channel sensor calibration parameters. Each CAL message describes how to convert raw sensor readings to engineering units for one channel.
 
-**Count:** 8–10 per file (only for channels with analog sensor inputs or special decoders). Not present in `aim_official/test.xrk`.
+**Count:** 8–10 per file (only for channels with calibrated analog inputs or special decoders). Not present in `aim_official/test.xrk`.
 
-**Structure:**
+**Channel matching:** CAL messages are matched to channels by their calibration values, NOT by a channel index field. The values at CAL offsets 24–27 and 28–31 are **duplicated** in the corresponding CHS message at offsets 96–99 and 100–103, providing a reliable cross-reference. The `uint32` at CAL offset 4 is an internal reference number (possibly a physical input or calibration slot number), not a channel index.
 
-| Offset | Type | Description | Notes |
-|--------|------|-------------|-------|
-| 0–3 | 4 bytes | Hardware address / sensor ID | Varies per sensor; bytes[0:2] seem hardware-specific |
-| 4–7 | uint32 | **Channel index** | Matches CHS channel index exactly |
-| 8–11 | uint32 | Always 1 | Version or entry count |
-| 12–15 | uint32 | Always 0 | Reserved |
-| 16–19 | uint32 | Always 0 | Reserved |
-| 20–23 | uint32 | Calibration point count? | Usually 20; sometimes 1 for special channels |
-| 24–27 | float32 | **Zero offset / bias** | Varies per sensor installation (-68 to +1669) |
-| 28–31 | float32 | Scale factor | 1.0 for standard analog channels |
-| 32–35 | float32 | Range parameter | 1.0 for standard; -180 for GPS-type |
-| 36–39 | float32 | Range parameter | 0.0 for standard; 180 for GPS-type |
-| 40–43 | float32 | Midpoint / coefficient | 0.5 for standard analog |
-| 44–47 | float32 | Additional parameter | Usually 0.0 |
-| 48–51 | float32 | Max range / ADC max | 5000 for standard analog |
-| 52–55 | float32 | Additional range | 0.0 for standard |
-| 56–59 | float32 | Mid range / ADC mid | 2500 for standard analog |
-| 60–63 | float32 | Additional parameter | Usually 0.0 |
-| 64–139 | zeros | Reserved | Room for extended calibration curves |
-| 140–143 | 4 bytes | Possibly timestamp or CRC | Non-zero, varies per message |
+**Calibration types:** The `uint32` at offset 20 determines the calibration type:
 
-**Observations:**
-- Standard analog channels (decoder=20): `offset=bias, scale=1.0, mid=0.5, max=5000, mid=2500`
-- Lap Time (decoder=31): Very different parameters (1669, -3315, -180..180 range) — likely lap timing conversion
-- Best Run Diff (decoder=24): Also different parameters (80, 50, 3427, 303)
-- Odometer channels (decoder=26/27): Standard analog pattern despite being virtual
-- The float32 at offset 24 is the **zero offset bias** — unique per physical sensor
+#### Type 1 — 2-point linear calibration (user-calibrated sensors)
 
-**Channel correlation (86 file):**
+Used for potentiometer-based inputs where the user sets two calibration points in RaceStudio (e.g., steering angle sensor, throttle position sensor).
 
-| CAL | Channel | Decoder | Offset (f32[24]) |
-|-----|---------|---------|------------------|
-| 0 | LateralAcc | 20 | -0.083 |
-| 1 | VerticalAcc | 20 | 0.012 |
-| 2 | RollRate | 20 | -0.014 |
-| 3 | PitchRate | 20 | -0.634 |
-| 4 | YawRate | 20 | 0.499 |
-| 5 | GPS_LateralAcc | 20 | 0.681 |
-| 6 | Best Today Diff | 24 | -68.4 |
-| 7 | Prev Lap Diff | 24 | -64.3 |
-| 8 | Ref Lap Diff | 24 | -63.0 |
-| 9 | Roll Time | 32 | -66.0 |
+| Offset | Type | Field | Steering example | Throttle (ACCEL) example |
+|--------|------|-------|------------------|--------------------------|
+| 0–3 | 4 bytes | Hardware/sensor ID | `84 0d 00 00` | `8c 0e 00 00` |
+| 4–7 | uint32 | Internal reference number | 1 | 3 |
+| 8–11 | uint32 | Always 1 | 1 | 1 |
+| 12–19 | 8 bytes | Reserved (zeros) | 0 | 0 |
+| 20–23 | uint32 | **Calibration type = 1** | 1 | 1 |
+| 24–27 | float32 | **Raw reading at cal point 1** | 1669.06 | -4.85 |
+| 28–31 | float32 | **Raw reading at cal point 2** | -3314.92 | 80.03 |
+| 32–35 | float32 | **Output at cal point 1** | -180.0 (deg) | 50.0 (mm) |
+| 36–39 | float32 | **Output at cal point 2** | 180.0 (deg) | 0.0 (mm) |
+| 40–43 | float32 | Unknown | 0.0 | 25.0 |
+| 44–47 | float32 | Unknown | -180.0 | -0.032 |
+| 48–51 | float32 | Unknown (ADC-related?) | 2789.0 | 3427.0 |
+| 52–55 | float32 | Unknown (ADC-related?) | 2246.0 | 303.0 |
+| 56–59 | float32 | Unknown (ADC-related?) | 2246.0 | 303.0 |
+| 60–63 | float32 | Unknown (ADC-related?) | 2789.0 | 301.0 |
+| 64–139 | zeros | Reserved | | |
+| 140–143 | 4 bytes | Unknown (CRC/timestamp?) | Non-zero | Non-zero |
+
+**Confirmed by known calibration settings:**
+- SFJ steering: calibrated to **-180° / +180°** with a potentiometer → matches f32[32]=-180, f32[36]=+180
+- SFJ throttle (ACCEL): calibrated to **0mm / 50mm** pedal travel → matches f32[32]=50, f32[36]=0 (inverted pot wiring)
+- Data can exceed the calibrated range (steering goes to -220.5°/+135°, throttle to 54.5mm) via linear extrapolation
+
+#### Type 20 — IMU bias/offset calibration (factory-calibrated sensors)
+
+Used for internal accelerometers and gyroscopes. The bias value corrects for the sensor's zero-point offset from the factory calibration.
+
+| Offset | Type | Field | Example (InlineAcc) |
+|--------|------|-------|---------------------|
+| 0–3 | 4 bytes | Hardware/sensor ID | `03 11 00 04` |
+| 4–7 | uint32 | Internal reference number | 12 |
+| 8–11 | uint32 | Always 1 | 1 |
+| 12–19 | 8 bytes | Reserved (zeros) | 0 |
+| 20–23 | uint32 | **Calibration type = 20** | 20 |
+| 24–27 | float32 | **Zero offset bias** | 0.0486 |
+| 28–31 | float32 | Scale factor | 1.0 |
+| 32–35 | float32 | Scale factor | 1.0 |
+| 36–39 | float32 | (zero) | 0.0 |
+| 40–43 | float32 | Midpoint | 0.5 |
+| 44–47 | float32 | (zero) | 0.0 |
+| 48–51 | float32 | Max ADC range | 5000.0 |
+| 52–55 | float32 | (zero) | 0.0 |
+| 56–59 | float32 | Mid ADC range | 2500.0 |
+| 60–63 | float32 | (zero) | 0.0 |
+| 64–139 | zeros | Reserved | |
+| 140–143 | 4 bytes | Unknown (CRC/timestamp?) | Non-zero |
+
+The bias value at offset 24 is unique per physical sensor installation (e.g., InlineAcc=0.049, LateralAcc=0.018, YawRate=-1.021).
+
+#### CHS / CAL cross-reference
+
+The calibration values at CAL offsets 24–27 and 28–31 are duplicated in the CHS (channel definition) message at offsets 96–99 and 100–103. This provides two ways to find calibration data:
+
+**CHS extended fields (offsets 72+):**
+
+| CHS Offset | Type | Description |
+|------------|------|-------------|
+| 72–75 | uint32 | Channel sample size (bytes) |
+| 80–83 | uint32 | Calibration point count? (10 for type 1, 6 for IMU, 2 for simple) |
+| 88–91 | uint32 | Calibration slot index (sequential, increments by 2) |
+| 96–99 | float32 | **= CAL f32[24]** (raw at cal point 1, or IMU bias) |
+| 100–103 | float32 | **= CAL f32[28]** (raw at cal point 2, or scale factor) |
+
+Channels without calibration (GPS-derived, timers, etc.) have f32[96]=0.0 and f32[100]=1.0 (identity).
+
+**SFJ channel calibration summary (CHS f32[96:104]):**
+
+| Channel | CHS f32[96] | CHS f32[100] | CAL type | Confirmed |
+|---------|-------------|--------------|----------|-----------|
+| steering | 1669.06 | -3314.92 | 1 (2-point) | Yes: -180°/+180° pot calibration |
+| ACCEL | -4.85 | 80.03 | 1 (2-point) | Yes: 0mm/50mm throttle travel |
+| InlineAcc | 0.049 | 1.0 | 20 (IMU) | Bias offset |
+| LateralAcc | 0.018 | 1.0 | 20 (IMU) | Bias offset |
+| VerticalAcc | -0.003 | 1.0 | 20 (IMU) | Bias offset |
+| RollRate | 0.734 | 1.0 | 20 (IMU) | Bias offset |
+| PitchRate | -0.657 | 1.0 | 20 (IMU) | Bias offset |
+| YawRate | -1.021 | 1.0 | 20 (IMU) | Bias offset |
 
 **Priority: LOW** — Calibration is already applied before data is stored in the XRK file. These values are informational only and would be useful for diagnostics/verification but not for data extraction.
 
