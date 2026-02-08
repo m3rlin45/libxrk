@@ -238,13 +238,187 @@ Fuel entries are explicitly skipped because the mapping is unknown.
 
 ### Low Priority
 
-5. **Parse CAL Messages**
-   - Calibration data (144 bytes per sensor)
-   - Would enable channel scaling verification
-
-6. **Investigate Fuel Mapping**
+5. **Investigate Fuel Mapping**
    - Correlate Fuel Used channel values with ODO fuel entries
    - Determine conversion formula
+
+---
+
+## Phase 6: Unknown Message Types Investigation
+
+**Date:** 2026-02-08
+
+Detailed analysis of the 5 unknown message types: CAL, GPSR, iSLV, RACM, VET.
+
+### CAL — Calibration Data (144 bytes)
+
+**Purpose:** Per-channel sensor calibration/conversion parameters. Links to specific channels via channel index.
+
+**Count:** 8–10 per file (only for channels with analog sensor inputs or special decoders). Not present in `aim_official/test.xrk`.
+
+**Structure:**
+
+| Offset | Type | Description | Notes |
+|--------|------|-------------|-------|
+| 0–3 | 4 bytes | Hardware address / sensor ID | Varies per sensor; bytes[0:2] seem hardware-specific |
+| 4–7 | uint32 | **Channel index** | Matches CHS channel index exactly |
+| 8–11 | uint32 | Always 1 | Version or entry count |
+| 12–15 | uint32 | Always 0 | Reserved |
+| 16–19 | uint32 | Always 0 | Reserved |
+| 20–23 | uint32 | Calibration point count? | Usually 20; sometimes 1 for special channels |
+| 24–27 | float32 | **Zero offset / bias** | Varies per sensor installation (-68 to +1669) |
+| 28–31 | float32 | Scale factor | 1.0 for standard analog channels |
+| 32–35 | float32 | Range parameter | 1.0 for standard; -180 for GPS-type |
+| 36–39 | float32 | Range parameter | 0.0 for standard; 180 for GPS-type |
+| 40–43 | float32 | Midpoint / coefficient | 0.5 for standard analog |
+| 44–47 | float32 | Additional parameter | Usually 0.0 |
+| 48–51 | float32 | Max range / ADC max | 5000 for standard analog |
+| 52–55 | float32 | Additional range | 0.0 for standard |
+| 56–59 | float32 | Mid range / ADC mid | 2500 for standard analog |
+| 60–63 | float32 | Additional parameter | Usually 0.0 |
+| 64–139 | zeros | Reserved | Room for extended calibration curves |
+| 140–143 | 4 bytes | Possibly timestamp or CRC | Non-zero, varies per message |
+
+**Observations:**
+- Standard analog channels (decoder=20): `offset=bias, scale=1.0, mid=0.5, max=5000, mid=2500`
+- Lap Time (decoder=31): Very different parameters (1669, -3315, -180..180 range) — likely lap timing conversion
+- Best Run Diff (decoder=24): Also different parameters (80, 50, 3427, 303)
+- Odometer channels (decoder=26/27): Standard analog pattern despite being virtual
+- The float32 at offset 24 is the **zero offset bias** — unique per physical sensor
+
+**Channel correlation (86 file):**
+
+| CAL | Channel | Decoder | Offset (f32[24]) |
+|-----|---------|---------|------------------|
+| 0 | LateralAcc | 20 | -0.083 |
+| 1 | VerticalAcc | 20 | 0.012 |
+| 2 | RollRate | 20 | -0.014 |
+| 3 | PitchRate | 20 | -0.634 |
+| 4 | YawRate | 20 | 0.499 |
+| 5 | GPS_LateralAcc | 20 | 0.681 |
+| 6 | Best Today Diff | 24 | -68.4 |
+| 7 | Prev Lap Diff | 24 | -64.3 |
+| 8 | Ref Lap Diff | 24 | -63.0 |
+| 9 | Roll Time | 32 | -66.0 |
+
+**Priority: LOW** — Calibration is already applied before data is stored in the XRK file. These values are informational only and would be useful for diagnostics/verification but not for data extraction.
+
+---
+
+### GPSR — GPS Receiver Configuration (36 bytes)
+
+**Purpose:** Identifies the GPS receiver type and links to the GPS reference channel.
+
+**Count:** 1 per file. Not present in `aim_official/test.xrk`.
+
+**Structure:**
+
+| Offset | Type | Description | Notes |
+|--------|------|-------------|-------|
+| 0–3 | uint32 | Session/config ID | Varies per session |
+| 4–7 | char[4] | GPS type identifier | `"GPS\0"` (external) or `"iGPS"` (internal) |
+| 8–11 | 4 bytes | Config parameters | Non-zero only for external GPS (e.g., 0x0422, "LA") |
+| 12–19 | 8 bytes | Receiver config | Non-zero only for internal GPS (consistent across SFJ sessions) |
+| 20–21 | uint16 | Reserved | Always 0 |
+| 22–23 | uint16 | **GPS channel index** | Points to GPS/iGPS channel in CHS (109 or 37) |
+| 24–27 | uint16+uint16 | Device ID (external only) | Matches iSLV idn[2:4] for 86 file |
+| 28–31 | uint32 | Logger ID (external only) | Matches main logger idn for 86 file |
+| 32–35 | uint32 | Always 410 (0x019A) | Possibly GPS sample interval config |
+
+**Key findings:**
+- `"GPS\0"` at offset 4 = external GPS receiver (86 file with expansion devices)
+- `"iGPS"` at offset 4 = internal GPS receiver (SFJ files with built-in GPS)
+- Offset 22–23 contains the **channel index** for the GPS reference channel
+- External GPS receivers have logger ID info; internal ones have receiver config bytes
+
+**Priority: LOW** — Metadata only. Could expose GPS receiver type in `log.metadata` but provides no new data channels.
+
+---
+
+### iSLV — Slave/Expansion Device Configuration (64 bytes)
+
+**Purpose:** Describes CAN expansion devices connected to the logger. Wraps an embedded `idn` message.
+
+**Count:** 0–2 per file. Present in 86 file (2 devices) and Suzuka SFJ (1 device). Not in Fuji SFJ or aim_official files.
+
+**Structure:**
+
+| Offset | Type | Description | Notes |
+|--------|------|-------------|-------|
+| 0–2 | char[3] | Token: `"idn"` | Same format as SRC embedded idn |
+| 3 | uint8 | Version: 1 | |
+| 4–5 | uint16 | Payload length: 56 | |
+| 6–7 | uint16 | Model ID | Device model (e.g., 1313=MXP, 739=MXm, 639=SmartyCam) |
+| 8–9 | uint16 | Additional ID | Hardware revision? |
+| 10–11 | uint16 | Reserved | Always 0 |
+| 12–15 | uint32 | Device serial number | Unique per device |
+| 16–61 | 46 bytes | Firmware version / capabilities | Contains version pairs, mostly zeros |
+| 62–63 | padding | Zeros | |
+
+**Observations:**
+- Format identical to SRC-embedded idn messages
+- Already partially handled by ENF message parsing (which extracts device name/manufacturer)
+- iSLV provides the **hardware identification** while ENF provides **software/bundle metadata**
+- 86 file has 2 iSLV messages matching the 2 ENF messages (both expansion CAN devices)
+
+**Priority: LOW** — Already have device info from ENF. Could enrich `Expansion Devices` metadata with serial numbers and model IDs from iSLV, but low user value.
+
+---
+
+### RACM — Race Mode (1 or 6 bytes)
+
+**Purpose:** Race/timing mode configuration flag.
+
+**Count:** 1–2 per file. Not present in `aim_official/test.xrk`.
+
+**Structure (varies by version):**
+
+| Version | Size | Content | Files |
+|---------|------|---------|-------|
+| ver=0 | 1 byte | `0x00` — mode flag (always 0) | All files |
+| ver=1 | 6 bytes | `"speed\0"` — null-terminated mode string | SFJ files only |
+
+**Observations:**
+- 86 file: single byte (0) — no race mode set
+- SFJ files: have both version 0 (byte=0) and version 1 ("speed")
+- "speed" likely refers to speed-based lap detection mode (vs beacon-based)
+- Other possible values might include "beacon", "gps", etc.
+
+**Priority: LOW** — Simple metadata. Could expose as `log.metadata['Race Mode']` but provides no new data.
+
+---
+
+### VET — Vehicle Electronics Type (1 byte)
+
+**Purpose:** Vehicle electronics/wiring configuration type.
+
+**Count:** 1 per file. Not present in `aim_official/test.xrk`.
+
+**Value:** Always `0x00` across all test files.
+
+**Observations:**
+- Likely an enum for different vehicle electronics configurations
+- Value 0 probably means "default" or "custom"
+- Would need files from different vehicle types to understand the range of values
+
+**Priority: VERY LOW** — Single byte flag, always 0 in test data. No actionable information.
+
+---
+
+### Summary Table
+
+| Message | Decoded? | Contains Data? | Actionable? | Priority |
+|---------|----------|----------------|-------------|----------|
+| **CAL** | Yes | Calibration coefficients per channel | Diagnostic only — calibration already applied | LOW |
+| **GPSR** | Yes | GPS type, channel index, device ID | Metadata enrichment | LOW |
+| **iSLV** | Yes | Expansion device idn (model, serial) | Complements ENF data | LOW |
+| **RACM** | Yes | Race/timing mode flag | Simple metadata | LOW |
+| **VET** | Yes | Vehicle electronics type | Always 0 | VERY LOW |
+
+**Conclusion:** None of these message types contain sample data or new channels. They are all configuration/metadata messages. The most potentially useful for end users would be:
+1. CAL — for sensor diagnostics/verification (confirming calibration is correct)
+2. GPSR — for distinguishing external vs internal GPS receiver
+3. RACM — for knowing what lap detection mode was configured
 
 ---
 
@@ -257,6 +431,7 @@ Fuel entries are explicitly skipped because the mapping is unknown.
 | `scripts/investigate_missing_data/decoder_analysis.py` | New tool |
 | `scripts/investigate_missing_data/channel_comparison.py` | New tool |
 | `scripts/investigate_missing_data/dll_function_enumeration.py` | New tool |
+| `scripts/investigate_missing_data/unknown_messages.py` | New tool — CAL/GPSR/iSLV/RACM/VET analysis |
 
 ---
 
