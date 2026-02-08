@@ -475,15 +475,32 @@ def _decode_sequence(s, progress=None):
                             if len(data) >= 36:
                                 gps_type = _nullterm_string(data[4:8])
                                 gps_channel_idx = struct.unpack_from('<H', data, 22)[0]
+                                _gpsr_u32_32 = struct.unpack_from('<I', data, 32)[0]
+                                if _gpsr_u32_32 != 410:
+                                    print('libxrk: unexpected GPSR u32[32]=%d (expected 410).'
+                                          ' Please report at https://github.com/m3rlin45/libxrk/issues'
+                                          % _gpsr_u32_32)
                                 data = {'type': gps_type,
                                         'channel_index': gps_channel_idx}
                         elif tok == _tokdec('RACM'):
                             if len(data) > 1:
                                 data = _nullterm_string(data)
+                                if data not in ('speed', 'performance'):
+                                    print('libxrk: unexpected RACM mode %r (expected "speed" or "performance").'
+                                          ' Please report at https://github.com/m3rlin45/libxrk/issues'
+                                          % data)
                             else:
                                 data = data[0]
+                                if data != 0:
+                                    print('libxrk: unexpected RACM flag %d (expected 0).'
+                                          ' Please report at https://github.com/m3rlin45/libxrk/issues'
+                                          % data)
                         elif tok == _tokdec('VET'):
                             data = data[0]
+                            if data != 0:
+                                print('libxrk: unexpected VET value %d (expected 0).'
+                                      ' Please report at https://github.com/m3rlin45/libxrk/issues'
+                                      % data)
                         elif tok == _tokdec('iSLV'):
                             if len(data) >= 16 and data[:3] == b'idn':
                                 idn = data[6:]
@@ -493,7 +510,16 @@ def _decode_sequence(s, progress=None):
                                     data = {'model_id': model_id, 'logger_id': logger_id}
                         elif tok == _tokdec('CAL'):
                             if len(data) >= 40:
+                                _cal_u32_8 = struct.unpack_from('<I', data, 8)[0]
+                                if _cal_u32_8 != 1:
+                                    print('libxrk: unexpected CAL u32[8]=%d (expected 1).'
+                                          ' Please report at https://github.com/m3rlin45/libxrk/issues'
+                                          % _cal_u32_8)
                                 cal_type = struct.unpack_from('<I', data, 20)[0]
+                                if cal_type not in (1, 20):
+                                    print('libxrk: unexpected CAL type %d (expected 1 or 20).'
+                                          ' Please report at https://github.com/m3rlin45/libxrk/issues'
+                                          % cal_type)
                                 val_1 = struct.unpack_from('<f', data, 24)[0]
                                 val_2 = struct.unpack_from('<f', data, 28)[0]
                                 cal = {'type': cal_type, 'raw_1': val_1, 'raw_2': val_2}
