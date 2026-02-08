@@ -477,6 +477,30 @@ def _decode_sequence(s, progress=None):
                                 gps_channel_idx = struct.unpack_from('<H', data, 22)[0]
                                 data = {'type': gps_type,
                                         'channel_index': gps_channel_idx}
+                        elif tok == _tokdec('RACM'):
+                            if len(data) > 1:
+                                data = _nullterm_string(data)
+                            else:
+                                data = data[0]
+                        elif tok == _tokdec('VET'):
+                            data = data[0]
+                        elif tok == _tokdec('iSLV'):
+                            if len(data) >= 16 and data[:3] == b'idn':
+                                idn = data[6:]
+                                if len(idn) >= 10:
+                                    model_id = struct.unpack('<H', idn[0:2])[0]
+                                    logger_id = struct.unpack('<I', idn[6:10])[0]
+                                    data = {'model_id': model_id, 'logger_id': logger_id}
+                        elif tok == _tokdec('CAL'):
+                            if len(data) >= 40:
+                                cal_type = struct.unpack_from('<I', data, 20)[0]
+                                val_1 = struct.unpack_from('<f', data, 24)[0]
+                                val_2 = struct.unpack_from('<f', data, 28)[0]
+                                cal = {'type': cal_type, 'raw_1': val_1, 'raw_2': val_2}
+                                if cal_type == 1 and len(data) >= 40:
+                                    cal['output_1'] = struct.unpack_from('<f', data, 32)[0]
+                                    cal['output_2'] = struct.unpack_from('<f', data, 36)[0]
+                                data = cal
                         elif tok == _tokdec('ENF'):
                             data = _decode_sequence(data).messages
                         elif tok == _tokdec('TRK'):
@@ -652,7 +676,7 @@ def _decode_sequence(s, progress=None):
         time_offset=time_offset,
         gnfi_timecodes=gnfi_timecodes)
 
-def _get_metadata(msg_by_type):
+def _get_metadata(msg_by_type, channels=None):
     ret = {}
     for msg, name in [(_tokdec('RCR'), 'Driver'),
                       (_tokdec('VEH'), 'Vehicle'),
@@ -705,8 +729,45 @@ def _get_metadata(msg_by_type):
                         device[key] = enf_msg.content[tok][-1].content
                 if device:
                     expansion_devices.append(device)
+        # Enrich with hardware IDs from iSLV messages (positional match)
+        if _tokdec('iSLV') in msg_by_type:
+            slave_msgs = [m for m in msg_by_type[_tokdec('iSLV')]
+                          if isinstance(m.content, dict)]
+            for i, device in enumerate(expansion_devices):
+                if i < len(slave_msgs):
+                    device['Logger ID'] = slave_msgs[i].content['logger_id']
+                    device['Model ID'] = slave_msgs[i].content['model_id']
         if expansion_devices:
             ret['Expansion Devices'] = expansion_devices
+    # Race mode from RACM message
+    if _tokdec('RACM') in msg_by_type:
+        for racm_msg in msg_by_type[_tokdec('RACM')]:
+            if isinstance(racm_msg.content, str):
+                ret['Race Mode'] = racm_msg.content
+    # Vehicle electronics type from VET message
+    if _tokdec('VET') in msg_by_type:
+        vet = msg_by_type[_tokdec('VET')][-1].content
+        if isinstance(vet, int):
+            ret['Vehicle Electronics Type'] = vet
+    # Calibrations from CAL messages, cross-referenced with CHS channel data
+    if _tokdec('CAL') in msg_by_type:
+        # Build map from (cal_val_1, cal_val_2) -> channel name via CHS offsets 96-103
+        cal_to_channel = {}
+        if channels:
+            for ch in channels.values():
+                if hasattr(ch, 'unknown') and len(ch.unknown) >= 104:
+                    f96, f100 = struct.unpack_from('<ff', ch.unknown, 96)
+                    cal_to_channel[(f96, f100)] = ch.long_name
+        calibrations = []
+        for cal_msg in msg_by_type[_tokdec('CAL')]:
+            if isinstance(cal_msg.content, dict):
+                cal = dict(cal_msg.content)
+                key = (cal['raw_1'], cal['raw_2'])
+                if key in cal_to_channel:
+                    cal['channel'] = cal_to_channel[key]
+                calibrations.append(cal)
+        if calibrations:
+            ret['Calibrations'] = calibrations
     return ret
 
 def _bg_gps_laps(gpsmsg, gnfimsg, msg_by_type, time_offset, last_time):
@@ -1068,7 +1129,7 @@ def aim_xrk(fname, progress=None):
     log = base.LogFile(
         {ch.long_name: _channel_to_table(ch) for ch in data.channels.values()},
         data.laps,
-        _get_metadata(data.messages),
+        _get_metadata(data.messages, data.channels),
         fname if not isinstance(fname, (bytes, bytearray, memoryview)) and not hasattr(fname, 'read') else "<bytes>")
 
     # Fix GPS timing gaps (spurious timestamp jumps in some AIM loggers)

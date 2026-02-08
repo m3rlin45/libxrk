@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 import sys
+from typing import Any
 import pyarrow as pa
 import pyarrow.compute as pc
 import numpy as np
@@ -36,7 +37,7 @@ class LogFile:
 
     channels: dict[str, pa.Table]
     laps: pa.Table
-    metadata: dict[str, str]
+    metadata: dict[str, Any]
     file_name: str
 
     def get_channels_as_table(self) -> pa.Table:

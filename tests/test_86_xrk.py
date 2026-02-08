@@ -97,13 +97,15 @@ class Test86XRK(unittest.TestCase):
         self.assertIsInstance(devices, list, "Expansion Devices should be a list")
         self.assertEqual(len(devices), 2, f"Expected 2 expansion devices, got {len(devices)}")
 
-        # First device: TOYOTA CAN bus
+        # First device: TOYOTA CAN bus (enriched with iSLV hardware IDs)
         device1 = devices[0]
         self.assertEqual(device1.get("Bus Unit"), "1")
         self.assertEqual(device1.get("Bus Type"), "CAN")
         self.assertEqual(device1.get("Version"), "02.00.07")
         self.assertEqual(device1.get("Manufacturer"), "TOYOTA")
         self.assertEqual(device1.get("Model"), "GT86 SCION FRS")
+        self.assertEqual(device1.get("Logger ID"), 8712324)
+        self.assertEqual(device1.get("Model ID"), 1313)
 
         # Second device: Custom CAN expansion
         device2 = devices[1]
@@ -112,6 +114,39 @@ class Test86XRK(unittest.TestCase):
         self.assertEqual(device2.get("Version"), "00.00.00")
         self.assertEqual(device2.get("Manufacturer"), "Inferno Racing")
         self.assertEqual(device2.get("Model"), "86 Can 2")
+        self.assertEqual(device2.get("Logger ID"), 7201204)
+        self.assertEqual(device2.get("Model ID"), 739)
+
+    @parameterized.expand(FILE_VARIANTS)
+    def test_86_xrk_vehicle_electronics_type(self, name, file_path):
+        """Test that VET metadata is exposed."""
+        log = aim_xrk(str(file_path), progress=None)
+        self.assertEqual(log.metadata["Vehicle Electronics Type"], 0)
+
+    @parameterized.expand(FILE_VARIANTS)
+    def test_86_xrk_no_race_mode(self, name, file_path):
+        """Test that 86 file has no Race Mode string (only byte flag)."""
+        log = aim_xrk(str(file_path), progress=None)
+        self.assertNotIn("Race Mode", log.metadata)
+
+    @parameterized.expand(FILE_VARIANTS)
+    def test_86_xrk_calibrations(self, name, file_path):
+        """Test that calibration metadata is exposed with channel cross-references."""
+        log = aim_xrk(str(file_path), progress=None)
+        cals = log.metadata["Calibrations"]
+        self.assertEqual(len(cals), 10)
+
+        # All 86 calibrations are type 20 (IMU bias)
+        for cal in cals:
+            self.assertEqual(cal["type"], 20)
+            self.assertIn("channel", cal)
+
+        # Check specific channels are present
+        cal_channels = {c["channel"] for c in cals}
+        self.assertIn("InlineAcc", cal_channels)
+        self.assertIn("LateralAcc", cal_channels)
+        self.assertIn("YawRate", cal_channels)
+        self.assertIn("LF_Shock_Pot", cal_channels)
 
     @parameterized.expand(FILE_VARIANTS)
     def test_86_xrk_laps(self, name, file_path):
