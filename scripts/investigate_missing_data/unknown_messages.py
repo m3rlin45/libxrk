@@ -154,9 +154,7 @@ def analyze_islv(messages: list[bytes], chs_messages: list[bytes] | None = None)
                                 val = struct.unpack_from("<I", remaining, j)[0]
                                 hi = (val >> 16) & 0xFFFF
                                 lo = val & 0xFFFF
-                                pairs.append(
-                                    f"    +{j}: 0x{val:08x} = {val} (hi={hi}, lo={lo})"
-                                )
+                                pairs.append(f"    +{j}: 0x{val:08x} = {val} (hi={hi}, lo={lo})")
                         print("\n".join(pairs))
 
 
@@ -332,7 +330,9 @@ def main() -> None:
         print(f"\n  {fname}:")
         for j, (b0, b1, b2, b3) in enumerate(fb_list):
             u16 = b0 | (b1 << 8)
-            print(f"    CAL[{j}]: byte0=0x{b0:02x} byte1=0x{b1:02x} byte2=0x{b2:02x} byte3=0x{b3:02x}  (u16_0={u16})")
+            print(
+                f"    CAL[{j}]: byte0=0x{b0:02x} byte1=0x{b1:02x} byte2=0x{b2:02x} byte3=0x{b3:02x}  (u16_0={u16})"
+            )
 
     print("\n  GPSR comparison:")
     for fname, msg in all_gpsr:
