@@ -70,6 +70,10 @@ poetry run poe pyodide-test-0-29   # Build and run tests in Pyodide 0.29.x
 
 Pyodide test scripts are in `scripts/run_pyodide_tests*.mjs`. They accept `--pyodide-version=0.27` or `--pyodide-version=0.29` to select the version.
 
+## Cython Rebuild
+
+After modifying `src/libxrk/aim_xrk.pyx`, you **must** run `poetry install` to recompile the Cython extension before running tests. Stale `.so` files will cause incorrect test results without any obvious error.
+
 ## Architecture Notes
 
 - Each channel is a PyArrow table with `timecodes` + value columns
