@@ -68,6 +68,7 @@ class Test86XRK(unittest.TestCase):
             "Logger Model ID": 649,
             "Logger Model": "MXP 1.3",
             "Device Name": "Inferno 86 v2",
+            "GPS Receiver": "GPS",
         }
 
         # Check core fields present in both formats

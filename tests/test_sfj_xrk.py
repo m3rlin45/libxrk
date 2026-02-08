@@ -66,6 +66,7 @@ class TestSFJXRK(unittest.TestCase):
             "Logger Model ID": 793,
             "Logger Model": "MXm",
             "Device Name": "MXm ID airs",
+            "GPS Receiver": "iGPS",
         }
 
         # Check core fields present in both formats

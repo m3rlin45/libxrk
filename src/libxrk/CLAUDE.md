@@ -47,6 +47,7 @@ Standard metadata fields extracted from XRK files:
 | Logger Model ID | int | Numeric model code |
 | Logger Model | str or None | Human-readable model name (e.g., "MXP 1.3", "MXm") |
 | Device Name | str | User-configured device name |
+| GPS Receiver | str | GPS receiver type: `"GPS"` (external) or `"iGPS"` (internal) |
 | Odo/* | various | Odometer readings |
 | Expansion Devices | list[dict] | CAN expansion devices (Bus Unit, Bus Type, Version, Manufacturer, Model) |
 

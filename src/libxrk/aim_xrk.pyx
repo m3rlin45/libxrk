@@ -471,6 +471,12 @@ def _decode_sequence(s, progress=None):
                                 if _tokdec('idn') not in messages:
                                     messages[_tokdec('idn')] = []
                                 messages[_tokdec('idn')].append(idn_msg)
+                        elif tok == _tokdec('GPSR'):
+                            if len(data) >= 36:
+                                gps_type = _nullterm_string(data[4:8])
+                                gps_channel_idx = struct.unpack_from('<H', data, 22)[0]
+                                data = {'type': gps_type,
+                                        'channel_index': gps_channel_idx}
                         elif tok == _tokdec('ENF'):
                             data = _decode_sequence(data).messages
                         elif tok == _tokdec('TRK'):
@@ -677,6 +683,11 @@ def _get_metadata(msg_by_type):
     # Device name from NDV message
     if _tokdec('NDV') in msg_by_type:
         ret['Device Name'] = msg_by_type[_tokdec('NDV')][-1].content
+    # GPS receiver info from GPSR message
+    if _tokdec('GPSR') in msg_by_type:
+        gpsr_data = msg_by_type[_tokdec('GPSR')][-1].content
+        if isinstance(gpsr_data, dict):
+            ret['GPS Receiver'] = gpsr_data['type']
     # Expansion device info from ENF messages
     if _tokdec('ENF') in msg_by_type:
         expansion_devices = []
