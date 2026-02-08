@@ -710,6 +710,33 @@ def _bg_gps_laps(gpsmsg, gnfimsg, msg_by_type, time_offset, last_time):
     return channels, laps, gnfi_timecodes
 
 def _decode_gps(gpsmsg, time_offset):
+    """Decode GPS messages from XRK data stream.
+
+    Each GPS message is 56 bytes: a 4-byte AIM logger timecode followed by a
+    52-byte u-blox NAV-SOL (Navigation Solution) payload.
+
+    56-byte layout:
+
+        Offset  NAV-SOL  Field      Type    Notes
+        0       -        timecode   int32   AIM logger time [ms]
+        4       0        iTOW       uint32  GPS time of week [ms]
+        8       4        fTOW       int32   Fractional TOW [ns], +/-500000
+        12      8        week       uint16  GPS week number
+        14      10       gpsFix     uint8   Fix type (0=none, 2=2D, 3=3D)
+        15      11       flags      uint8   Validity bitmask
+        16      12       ecefX      int32   ECEF X position [cm]
+        20      16       ecefY      int32   ECEF Y position [cm]
+        24      20       ecefZ      int32   ECEF Z position [cm]
+        28      24       pAcc       uint32  Position accuracy [cm]
+        32      28       ecefVX     int32   ECEF X velocity [cm/s]
+        36      32       ecefVY     int32   ECEF Y velocity [cm/s]
+        40      36       ecefVZ     int32   ECEF Z velocity [cm/s]
+        44      40       sAcc       uint32  Speed accuracy [cm/s]
+        48      44       pDOP       uint16  Position DOP [*0.01]
+        50      46       reserved1  uint8   u-blox reserved
+        51      47       numSV      uint8   Number of satellites used
+        52      48       reserved2  uint32  u-blox reserved (non-zero in some firmware)
+    """
     if not gpsmsg: return []
     alldata = memoryview(gpsmsg)
     assert len(alldata) % 56 == 0
@@ -721,17 +748,23 @@ def _decode_gps(gpsmsg, time_offset):
     if np.any(timecodes[1:] < timecodes[:-1]):
         timecodes = (timecodes & 65535) + (timecodes[0] - (timecodes[0] & 65535))
         timecodes += 65536 * np.cumsum(np.concatenate(([0], timecodes[1:] < timecodes[:-1])))
-    #itow_ms = alldata[4:].cast('I')[::56//4]
-    #weekN = alldata[12:].cast('H')[::56//2]
-    ecefX_cm = alldata[16:].cast('i')[::56//4]
-    ecefY_cm = alldata[20:].cast('i')[::56//4]
-    ecefZ_cm = alldata[24:].cast('i')[::56//4]
-    posacc_cm = np.asarray(alldata[28:].cast('I')[::56//4])  # uint32, position accuracy in cm
-    ecefdX_cms = alldata[32:].cast('i')[::56//4]
-    ecefdY_cms = alldata[36:].cast('i')[::56//4]
-    ecefdZ_cms = alldata[40:].cast('i')[::56//4]
-    velacc_cms = np.asarray(alldata[44:].cast('I')[::56//4])  # uint32, velocity accuracy in cm/s
-    nsat = np.asarray(alldata[51::56])  # uint8, number of satellites
+    # NAV-SOL fields (known, used for position/velocity)
+    #itow_ms = alldata[4:].cast('I')[::56//4]       # iTOW - GPS time of week
+    #fTOW_ns = alldata[8:].cast('i')[::56//4]       # fTOW - fractional TOW [ns]
+    #weekN = alldata[12:].cast('H')[::56//2]         # GPS week number
+    ecefX_cm = alldata[16:].cast('i')[::56//4]       # ecefX [cm]
+    ecefY_cm = alldata[20:].cast('i')[::56//4]       # ecefY [cm]
+    ecefZ_cm = alldata[24:].cast('i')[::56//4]       # ecefZ [cm]
+    posacc_cm = np.asarray(alldata[28:].cast('I')[::56//4])   # pAcc [cm]
+    ecefdX_cms = alldata[32:].cast('i')[::56//4]     # ecefVX [cm/s]
+    ecefdY_cms = alldata[36:].cast('i')[::56//4]     # ecefVY [cm/s]
+    ecefdZ_cms = alldata[40:].cast('i')[::56//4]     # ecefVZ [cm/s]
+    velacc_cms = np.asarray(alldata[44:].cast('I')[::56//4])  # sAcc [cm/s]
+
+    # NAV-SOL fields (newly exposed as channels)
+    gpsFix = np.asarray(alldata[14::56]).astype(np.uint8)     # gpsFix [0-5]
+    pDOP_raw = np.asarray(alldata[48:].cast('H')[::56//2])    # pDOP [*0.01]
+    nsat = np.asarray(alldata[51::56])                        # numSV
 
     timecodes_raw = timecodes - time_offset
     timecodes = memoryview(timecodes_raw)
@@ -784,9 +817,14 @@ def _decode_gps(gpsmsg, time_offset):
                     timecodes=timecodes, sampledata=memoryview(gpsconv.long)),
             Channel(long_name='GPS Altitude', units='m', dec_pts=1, interpolate=True,
                     timecodes=timecodes, sampledata=memoryview(gpsconv.alt)),
-            # GPS accuracy metrics
+            # GPS accuracy metrics (from NAV-SOL)
             Channel(long_name='GPS_Satellites', units='', dec_pts=0, interpolate=False,
                     timecodes=timecodes, sampledata=memoryview(nsat.astype(np.float32))),
+            Channel(long_name='GPS_Fix', units='', dec_pts=0, interpolate=False,
+                    timecodes=timecodes, sampledata=memoryview(gpsFix.astype(np.float32))),
+            Channel(long_name='GPS_pDOP', units='', dec_pts=2, interpolate=False,
+                    timecodes=timecodes,
+                    sampledata=memoryview(np.divide(pDOP_raw, 100.0).astype(np.float32))),
             Channel(long_name='GPS_Position_Accuracy', units='m', dec_pts=2, interpolate=True,
                     timecodes=timecodes, sampledata=memoryview((posacc_cm / 100.0).astype(np.float32))),
             Channel(long_name='GPS_Velocity_Accuracy', units='m/s', dec_pts=2, interpolate=True,
