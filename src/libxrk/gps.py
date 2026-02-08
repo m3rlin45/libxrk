@@ -16,6 +16,8 @@ GPS_CHANNEL_NAMES = (
     "GPS Longitude",
     "GPS Altitude",
     "GPS_Satellites",
+    "GPS_Fix",
+    "GPS_pDOP",
     "GPS_Position_Accuracy",
     "GPS_Velocity_Accuracy",
     "GPS_InlineAcc",
