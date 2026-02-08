@@ -185,7 +185,7 @@ def _tokenc(i):
 accum = cython.struct(
     last_timecode=cython.int,
     add_helper=cython.ushort,
-    Mms=cython.ushort,
+    Mms=cython.uint,
     data=vector[cython.uchar],
     timecodes=vector[cython.int])
 
@@ -238,15 +238,6 @@ cdef _resize_vaccum(vaccum & v, size_t idx):
             v[i].add_helper = 1
             v[i].Mms = 0
 
-cdef _Mms_lookup(int k):
-    # Not sure how to represent 500 Hz
-    if k == 8:  return 5  # 200 Hz
-    if k == 16: return 10 # 100 Hz
-    if k == 32: return 20 #  50 Hz
-    if k == 64: return 40 #  25 Hz
-    if k == 80: return 50 #  20 Hz
-    # I guess 10Hz, 5Hz, 2Hz, and 1Hz don't use M messages
-    return 0
 
 @cython.wraparound(False)
 def _decode_sequence(s, progress=None):
@@ -397,8 +388,8 @@ def _decode_sequence(s, progress=None):
                                     gc_data[2][m.content.index].add_helper = m.content.size + 12
                                     _resize_vaccum(gc_data[3], m.content.index)
                                     gc_data[3][m.content.index].add_helper = m.content.size
-                                    gc_data[3][m.content.index].Mms = _Mms_lookup(
-                                        m.content.unknown[64] & 127)
+                                    gc_data[3][m.content.index].Mms = struct.unpack_from(
+                                        '<I', m.content.unknown, 64)[0] // 1000
                                 else:
                                     assert channels[m.content.index].short_name == m.content.short_name, "%s vs %s" % (channels[m.content.index].short_name, m.content.short_name)
                                     assert channels[m.content.index].long_name == m.content.long_name
@@ -438,11 +429,9 @@ def _decode_sequence(s, progress=None):
                                 data.units = ''
                                 data.dec_pts = 0
 
-                            # [12] maybe type (lower bits) combined with scale or ??
-                            # [13] decoder of some type?
-                            # [20] possibly how to decode bytes
-                            # [64] data rate.  32=50Hz, 64=25Hz, 80=20Hz, 160=10Hz.  What about 5Hz, 2Hz, 1Hz?
-                            # [84] decoder of some type?
+                            # [12] unit type (lower 7 bits), used by _unit_map
+                            # [20] decoder type, used by _decoders
+                            # [64:68] sample period in microseconds (uint32 LE). Mms = value // 1000
                             dcopy[0:2] = [0] * 2 # reset index
                             dcopy[24:32] = [0] * 8 # short name
                             dcopy[32:56] = [0] * 24 # long name
@@ -1046,16 +1035,4 @@ def aim_track_dbg(fname):
         data = _decode_sequence(m, None)
     return {_tokenc(k): v for k, v in data.messages.items()}
 
-#def _help_decode_channels(self, chmap):
-#    pprint(chmap)
-#    for i in range(len(self.data.channels[0].unknown)):
-#        d = sorted([(v.unknown[i], chmap.get(v.long_name, ''), v.long_name)
-#                    for v in self.data.channels
-#                    if len(v.unknown) > i])
-#        if len(set([x[0] for x in d])) == 1:
-#            continue
-#        pprint((i, d))
-#    d = sorted([(len(v.sampledata), chmap.get(v.long_name, ''), v.long_name)
-#                for v in self.data.channels])
-#    if len(set([x[0] for x in d])) != 1:
-#        pprint(('len', d))
+

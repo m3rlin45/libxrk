@@ -182,7 +182,7 @@ def scan_xrk(file_path: Path, max_samples: int = 3) -> ScanResult:
                     ch_size = msg_data[56]
                     unit_type = msg_data[12] & 127
                     decoder_type = msg_data[20]
-                    sample_rate_byte = msg_data[64] & 127
+                    sample_period_us = struct.unpack_from("<I", msg_data, 64)[0]
 
                     channel_sizes[ch_index] = ch_size
 
@@ -198,7 +198,7 @@ def scan_xrk(file_path: Path, max_samples: int = 3) -> ScanResult:
                             "size": ch_size,
                             "unit_type": unit_type,
                             "decoder_type": decoder_type,
-                            "sample_rate_byte": sample_rate_byte,
+                            "sample_period_us": sample_period_us,
                             "raw_bytes": msg_data.hex(),
                         }
                     )

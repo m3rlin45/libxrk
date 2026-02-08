@@ -66,7 +66,7 @@ class ChannelInfo:
     unit_type: int
     unit_str: str
     decoder_type: int
-    sample_rate_byte: int
+    sample_period_us: int
     raw_bytes: bytes
     is_skipped: bool = False
     skip_reason: str = ""
@@ -242,7 +242,7 @@ def parse_channel_info(msg_data: bytes) -> ChannelInfo:
     ch_size = msg_data[56]
     unit_type = msg_data[12] & 127
     decoder_type = msg_data[20]
-    sample_rate_byte = msg_data[64] & 127
+    sample_period_us = struct.unpack_from("<I", msg_data, 64)[0]
 
     # Get unit string
     unit_str = ""
@@ -268,7 +268,7 @@ def parse_channel_info(msg_data: bytes) -> ChannelInfo:
         unit_type=unit_type,
         unit_str=unit_str,
         decoder_type=decoder_type,
-        sample_rate_byte=sample_rate_byte,
+        sample_period_us=sample_period_us,
         raw_bytes=msg_data,
         is_skipped=is_skipped,
         skip_reason=skip_reason,
@@ -313,7 +313,9 @@ def format_report(result: DecoderAnalysis) -> str:
             lines.append(f"    Decoder type: {skipped_ch.decoder_type}")
             lines.append(f"    Size: {skipped_ch.size} bytes")
             lines.append(f"    Units: {skipped_ch.unit_str} (type {skipped_ch.unit_type})")
-            lines.append(f"    Sample rate byte: {skipped_ch.sample_rate_byte}")
+            lines.append(
+                f"    Sample period: {skipped_ch.sample_period_us} us ({skipped_ch.sample_period_us // 1000} ms)"
+            )
             lines.append(f"    Skip reason: {skipped_ch.skip_reason}")
 
             # Show relevant bytes for reverse engineering
