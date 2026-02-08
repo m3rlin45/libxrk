@@ -82,6 +82,8 @@ poethepoet = "^0.24.0"
 pyodide-build = {version = "^0.27.3", python = ">=3.12"}
 parameterized = "^0.9.0"
 py-spy = "^0.4.1"
+construct = "^2.10.0"
+pyyaml = "^6.0"
 
 [tool.black]
 line-length = 100
@@ -120,6 +122,7 @@ exclude = [
     "^dist/",
     "\\.pyx$",
     "^tests/reference_dll/",
+    "^spec/",
 ]
 
 [[tool.mypy.overrides]]
@@ -146,12 +149,22 @@ ignore_missing_imports = true
 module = "aim_dll_wrapper"
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = "construct.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "yaml.*"
+ignore_missing_imports = true
+
 [tool.poe.tasks]
 format = "black ."
 lint = "black --check ."
 typecheck = "mypy ."
 test = "pytest tests/ -v"
-check = ["lint", "typecheck", "test"]
+check = ["lint", "typecheck", "test", "spec-test"]
+spec-test = "pytest spec/tests/ -v"
+spec-vectors = "python spec/test_vectors/generate_vectors.py"
 repl = "python -i -c \"from libxrk import aim_xrk; log = aim_xrk('tests/test_data/SFJ/CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrk'); print('XRK file loaded as: log'); print(f'Channels: {len(log.channels)}'); print(f'Laps: {len(log.laps)}'); print(f'Metadata keys: {list(log.metadata.keys())}')\"" 
 [tool.poe.tasks.pyodide-build]
 shell = "source ./build/emsdk/emsdk_env.sh && pyodide build --exports whole_archive"
