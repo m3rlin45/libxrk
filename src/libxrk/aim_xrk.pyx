@@ -159,7 +159,7 @@ _unit_map = {
     18: ('ms', 0),
     19: ('Nm', 0),
     20: ('km/h', 0),
-    21: ('V', 1), # mv?
+    21: ('mV', 1),
     22: ('l', 1),
     24: ('l/s', 0), # ? rs3 displayed 1l/h
     26: ('time?', 0),
@@ -435,6 +435,8 @@ def _decode_sequence(s, progress=None):
                                       (dcopy[12] & 127, data.long_name))
                                 data.units = ''
                                 data.dec_pts = 0
+                            if dcopy[12] & 0x80 and data.units == 'mV':
+                                data.units = 'V'
 
                             # CHS layout (112 bytes):
                             # [0:2]    uint16 LE   channel index
@@ -728,7 +730,7 @@ def _decode_sequence(s, progress=None):
 
         if d.fixup:
             c.sampledata = memoryview(d.fixup(c.sampledata))
-        if c.units == 'V': # most are really encoded as mV, but one or two aren't....
+        if c.units == 'V': # unit_type 21 is mV; calibrated flag converts to V
             c.sampledata = np.divide(c.sampledata, 1000).data
 
     laps = None
