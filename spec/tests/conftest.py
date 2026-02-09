@@ -62,6 +62,22 @@ def file_86_cython():
     return aim_xrk(str(FILE_86_XRK))
 
 
+@pytest.fixture(scope="session")
+def aim_official_parsed():
+    """Parse the AIM official XRK file once per session."""
+    from spec.xrk_format import parse_xrk_file
+
+    return parse_xrk_file(str(AIM_OFFICIAL_XRK))
+
+
+@pytest.fixture(scope="session")
+def aim_official_cython():
+    """Load the AIM official file via Cython parser once per session."""
+    from libxrk import aim_xrk
+
+    return aim_xrk(str(AIM_OFFICIAL_XRK))
+
+
 def _dll_available():
     """Check if Wine and the AIM DLL are available."""
     dll_path = REFERENCE_DLL_DIR / "MatLabXRK-2017-64-ReleaseU.dll"
