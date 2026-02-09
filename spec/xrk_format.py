@@ -19,6 +19,7 @@ Usage:
 """
 
 import io
+import struct as _struct
 import zlib
 from pathlib import Path
 
@@ -39,7 +40,7 @@ from construct import (
     Int16ul,
     Int32sl,
     Int32ul,
-    Select,
+    Rebuild,
     Struct,
     this,
 )
@@ -256,6 +257,21 @@ CHSPayload = Struct(
     "cal_value_2" / Float32l,  # [100:104] calibration value 2
     "display_range_min" / Float32l,  # [104:108] display range minimum
     "display_range_max" / Float32l,  # [108:112] display range maximum
+    # Derived fields (computed at parse time, not stored in binary)
+    "name" / Computed(lambda ctx: _nullterm(ctx.long_name)),
+    "units"
+    / Computed(
+        lambda ctx: (
+            "V"
+            if (
+                ctx.unit_type_byte & 0x80
+                and UNIT_MAP.get(ctx.unit_type_byte & 127, ("", 0))[0] == "mV"
+            )
+            else UNIT_MAP.get(ctx.unit_type_byte & 127, ("", 0))[0]
+        )
+    ),
+    "dec_pts" / Computed(lambda ctx: UNIT_MAP.get(ctx.unit_type_byte & 127, ("", 0))[1]),
+    "interpolate" / Computed(lambda ctx: DECODER_TABLE.get(ctx.decoder_type, ("", False))[1]),
 )
 
 
@@ -379,7 +395,22 @@ ODORecord = Struct(
 )
 
 # ODO — Odometer array (N * 64-byte records)
-ODOPayload = GreedyRange(ODORecord)
+# Raw record array (used internally by adapter)
+_ODORawPayload = GreedyRange(ODORecord)
+
+
+class _ODOAdapter(Adapter):
+    """Parses ODO records and converts to {name: {time, dist}} dict."""
+
+    def _decode(self, obj, context, path):
+        return {r.name: {"time": r.time, "dist": r.dist} for r in obj}
+
+    def _encode(self, obj, context, path):
+        # Not needed for round-trip (ODO uses raw payload rebuild)
+        raise NotImplementedError
+
+
+ODOPayload = _ODOAdapter(_ODORawPayload)
 
 
 # iSLV — Expansion Device Identity (embedded idn at offset 6)
@@ -417,6 +448,27 @@ RACMFlagPayload = Struct(
     "mode" / Computed("flag"),
 )
 
+
+class _RACMAdapter(Adapter):
+    """Dispatches RACM payload to string or flag struct based on length."""
+
+    def _decode(self, obj, context, path):
+        if len(obj) > 1:
+            return RACMStringPayload.parse(obj)
+        elif len(obj) == 1:
+            return RACMFlagPayload.parse(obj)
+        return None
+
+    def _encode(self, obj, context, path):
+        if obj is None:
+            return b""
+        if hasattr(obj, "mode") and obj.mode == "flag":
+            return RACMFlagPayload.build(obj)
+        return RACMStringPayload.build(obj)
+
+
+RACMPayload = _RACMAdapter(GreedyBytes)
+
 # VET — Vehicle Electronics Type (single byte)
 VETPayload = Struct(
     "value" / Int8ul,
@@ -440,14 +492,18 @@ VETPayload = Struct(
 #   '>'           footer close (0x3E)
 HeaderMessage = Struct(
     Const(b"\x3c\x68"),  # opcode '<h'
-    "wire_token" / Int32ul,  # token (may include trailing space)
-    "payload_length" / Int32sl,  # payload byte count
+    "wire_token"
+    / Rebuild(
+        Int32ul,
+        lambda ctx: (ctx.token + (0x20 << 24) if len(_tokenc(ctx.token)) == 3 else ctx.token),
+    ),
+    "payload_length" / Rebuild(Int32sl, lambda ctx: len(ctx.raw_payload)),
     "version" / Int8ul,  # message version
     Const(b"\x3e"),  # '>'
     "raw_payload" / Bytes(this.payload_length),  # payload data
     Const(b"\x3c"),  # footer '<'
-    "_footer_token" / Int32ul,  # must match wire_token
-    "checksum" / Int16ul,  # sum of payload bytes as uint16
+    "_footer_token" / Rebuild(Int32ul, lambda ctx: ctx.wire_token),
+    "checksum" / Rebuild(Int16ul, lambda ctx: sum(ctx.raw_payload) & 0xFFFF),
     Const(b"\x3e"),  # footer '>'
     # Inline validation (raises ConstructError on mismatch)
     Check(lambda ctx: ctx._footer_token == ctx.wire_token),
@@ -467,15 +523,17 @@ HeaderMessage = Struct(
 
 # (S — Single channel sample
 # Reference: aim_xrk.pyx data handling
+# Note: Check removed and Bytes uses `this` expressions to enable Construct .compile().
+# Invalid channel_index raises KeyError (caught alongside ConstructError in _parse_sequence).
 SMessage = Struct(
     Const(b"\x28\x53"),  # '(S'
     "msg_type" / Computed("S"),
     "timecode" / Int32sl,
     "channel_index" / Int16ul,
-    Check(lambda ctx: ctx.channel_index in ctx._params.channel_sizes),
-    "data" / Bytes(lambda ctx: ctx._params.channel_sizes[ctx.channel_index]),
+    "data" / Bytes(this._params.channel_sizes[this.channel_index]),
     Const(b"\x29"),  # ')'
 )
+SMessageCompiled = SMessage.compile()
 
 # (G — Group data
 GMessage = Struct(
@@ -483,10 +541,10 @@ GMessage = Struct(
     "msg_type" / Computed("G"),
     "timecode" / Int32sl,
     "group_index" / Int16ul,
-    Check(lambda ctx: ctx.group_index in ctx._params.group_sizes),
-    "data" / Bytes(lambda ctx: ctx._params.group_sizes[ctx.group_index]),
+    "data" / Bytes(this._params.group_sizes[this.group_index]),
     Const(b"\x29"),  # ')'
 )
+GMessageCompiled = GMessage.compile()
 
 # (M — Multi-sample burst
 MMessage = Struct(
@@ -495,10 +553,10 @@ MMessage = Struct(
     "timecode" / Int32sl,
     "channel_index" / Int16ul,
     "count" / Int16ul,
-    Check(lambda ctx: ctx.channel_index in ctx._params.channel_sizes),
-    "data" / Bytes(lambda ctx: ctx._params.channel_sizes[ctx.channel_index] * ctx.count),
+    "data" / Bytes(this._params.channel_sizes[this.channel_index] * this.count),
     Const(b"\x29"),  # ')'
 )
+MMessageCompiled = MMessage.compile()
 
 # (c — Expansion device channel data
 cMessage = Struct(
@@ -509,12 +567,20 @@ cMessage = Struct(
     "unk3" / Int8ul,
     "unk4" / Int8ul,
     "timecode" / Int32sl,
-    "channel_index" / Computed(lambda ctx: ctx.channel_field >> 3),
-    Check(lambda ctx: (ctx.channel_field >> 3) in ctx._params.channel_sizes),
-    "data" / Bytes(lambda ctx: ctx._params.channel_sizes[ctx.channel_field >> 3]),
+    "channel_index" / Computed(this.channel_field >> 3),
+    "data" / Bytes(this._params.channel_sizes[this.channel_field >> 3]),
     Const(b"\x29"),  # ')'
 )
+cMessageCompiled = cMessage.compile()
 
+
+# Data message opcode dispatch (compiled structs, avoids Select try-all-four overhead)
+_DATA_MSG_STRUCTS = {
+    b"\x28\x53": SMessageCompiled,  # '(S'
+    b"\x28\x47": GMessageCompiled,  # '(G'
+    b"\x28\x4d": MMessageCompiled,  # '(M'
+    b"\x28\x63": cMessageCompiled,  # '(c'
+}
 
 # ---------------------------------------------------------------------------
 # Payload Dispatch Table
@@ -535,6 +601,8 @@ _PAYLOAD_STRUCTS = {
     TOK_ISLV: ISLVPayload,
     TOK_SRC: SRCPayload,
     TOK_VET: VETPayload,
+    TOK_RACM: RACMPayload,
+    TOK_ODO: ODOPayload,
 }
 
 
@@ -551,31 +619,10 @@ def _parse_payload(struct_def, payload):
         return None
 
 
-def _parse_odo(payload):
-    """Parse an ODO payload into a dict of records using ODOPayload.
-
-    Returns {name: {"time": int, "dist": int}} for each 64-byte record.
-    Uses GreedyRange(ODORecord) for parsing, then converts to a dict
-    keyed by record name for convenient access.
-    """
-    try:
-        records = ODOPayload.parse(payload)
-    except ConstructError:
-        return {}
-    return {r.name: {"time": r.time, "dist": r.dist} for r in records}
-
-
-def _parse_racm(payload):
-    """Parse a RACM payload using RACMStringPayload or RACMFlagPayload."""
-    if len(payload) > 1:
-        return _parse_payload(RACMStringPayload, payload)
-    elif len(payload) == 1:
-        return _parse_payload(RACMFlagPayload, payload)
-    return None
-
-
 def _container_to_dict(container):
     """Convert a Construct Container to a plain dict for data messages."""
+    # Use direct dict access (container is dict-like) to avoid slow
+    # hasattr/getattr on Container objects (Container.__getattr__ is expensive).
     d = {}
     for key in (
         "msg_type",
@@ -589,11 +636,9 @@ def _container_to_dict(container):
         "unk3",
         "unk4",
     ):
-        if hasattr(container, key):
-            val = getattr(container, key)
-            if isinstance(val, memoryview):
-                val = bytes(val)
-            d[key] = val
+        val = container.get(key)
+        if val is not None:
+            d[key] = bytes(val) if isinstance(val, memoryview) else val
     return d
 
 
@@ -651,14 +696,7 @@ def _dispatch_payload(token, raw_payload, result, _depth):
     if token in _PAYLOAD_STRUCTS:
         return _parse_payload(_PAYLOAD_STRUCTS[token], raw_payload)
 
-    # 5. Non-Struct payloads (ODO array, RACM)
-    if token == TOK_ODO:
-        return _parse_odo(raw_payload)
-
-    if token == TOK_RACM:
-        return _parse_racm(raw_payload)
-
-    # 6. String messages
+    # 5. String messages
     if token in _STRING_TOKENS:
         return _nullterm(raw_payload)
 
@@ -809,48 +847,92 @@ class ParseResult:
         return result
 
 
+_HEADER_OPCODE = b"\x3c\x68"  # '<h'
+
+
 def _parse_sequence(data, include_data_messages=True, _depth=0):
     """Internal recursive parser for XRK byte sequences.
 
     Uses stream-based parsing with declarative Construct Structs:
     - HeaderMessage (self-validating with inline Check)
-    - Select(SMessage, GMessage, MMessage, cMessage) for data messages
+    - Compiled data message structs with opcode dispatch
     """
     result = ParseResult()
     stream = io.BytesIO(data)
     data_len = len(data)
 
+    if not include_data_messages:
+        # Fast path: scan for header opcode using bytes.find() (C-implemented)
+        # instead of trying HeaderMessage.parse_stream() at every byte position.
+        pos = data.find(_HEADER_OPCODE, 0)
+        while pos != -1:
+            stream.seek(pos)
+            try:
+                frame = HeaderMessage.parse_stream(stream)
+                msg = ParsedMessage(
+                    "header",
+                    token=frame.token,
+                    version=frame.version,
+                    raw_payload=bytes(frame.raw_payload),
+                )
+                msg.payload = _dispatch_payload(
+                    frame.token, bytes(frame.raw_payload), result, _depth
+                )
+                result.messages.append(msg)
+                pos = data.find(_HEADER_OPCODE, stream.tell())
+            except ConstructError:
+                pos = data.find(_HEADER_OPCODE, pos + 1)
+        return result
+
+    # Full parse: headers + data messages.
+    # Pre-build a reusable context for compiled data message parsers to avoid
+    # creating a new Container per call. The channel_sizes/group_sizes dicts are
+    # shared by reference so updates from header messages are visible immediately.
+    data_ctx = Container(
+        _parsing=True,
+        _building=False,
+        _sizing=False,
+        channel_sizes=result.channel_sizes,
+        group_sizes=result.group_sizes,
+    )
+    data_ctx["_params"] = data_ctx
+    messages_append = result.messages.append
+
     while stream.tell() < data_len:
         pos = stream.tell()
 
-        # Try header message (self-validating Struct with inline Check)
-        try:
-            frame = HeaderMessage.parse_stream(stream)
-            msg = ParsedMessage(
-                "header",
-                token=frame.token,
-                version=frame.version,
-                raw_payload=bytes(frame.raw_payload),
-            )
-            msg.payload = _dispatch_payload(frame.token, bytes(frame.raw_payload), result, _depth)
-            result.messages.append(msg)
-            continue
-        except ConstructError:
-            stream.seek(pos)
+        # Check 2-byte opcode to dispatch without unnecessary parse attempts
+        opcode = data[pos : pos + 2]
 
-        # Try data messages via Select
-        if include_data_messages:
+        # Header message
+        if opcode == _HEADER_OPCODE:
             try:
-                dmsg = Select(SMessage, GMessage, MMessage, cMessage).parse_stream(
-                    stream,
-                    channel_sizes=result.channel_sizes,
-                    group_sizes=result.group_sizes,
+                frame = HeaderMessage.parse_stream(stream)
+                msg = ParsedMessage(
+                    "header",
+                    token=frame.token,
+                    version=frame.version,
+                    raw_payload=bytes(frame.raw_payload),
                 )
-                parsed_dict = _container_to_dict(dmsg)
-                msg = ParsedMessage(dmsg.msg_type, parsed=parsed_dict)
-                result.messages.append(msg)
+                msg.payload = _dispatch_payload(
+                    frame.token, bytes(frame.raw_payload), result, _depth
+                )
+                messages_append(msg)
                 continue
             except ConstructError:
+                stream.seek(pos)
+
+        # Data messages via opcode dispatch (compiled structs).
+        # Call parsefunc directly to bypass parse_stream/Container overhead.
+        struct_def = _DATA_MSG_STRUCTS.get(opcode)
+        if struct_def is not None:
+            try:
+                dmsg = struct_def.parsefunc(stream, data_ctx)
+                parsed_dict = _container_to_dict(dmsg)
+                msg = ParsedMessage(dmsg.msg_type, parsed=parsed_dict)
+                messages_append(msg)
+                continue
+            except (ConstructError, KeyError, _struct.error):
                 stream.seek(pos)
 
         # Unknown byte — skip (matches Cython parser's error recovery)
@@ -869,25 +951,14 @@ def build_header_frame(token_str, payload, version=0):
     """Build a complete header message frame using HeaderMessage Struct.
 
     Returns the complete framed message bytes including header, payload,
-    and footer with checksum.
+    and footer with checksum. Token padding, payload length, footer token,
+    and checksum are computed declaratively by Rebuild fields.
     """
-    tok_int = _tokdec(token_str)
-    # 3-char tokens get space-padded to 4 chars in the wire format
-    if len(token_str) == 3:
-        wire_tok = tok_int + (0x20 << 24)
-    else:
-        wire_tok = tok_int
-
-    checksum = sum(payload) & 0xFFFF
     return HeaderMessage.build(
         Container(
-            wire_token=wire_tok,
-            payload_length=len(payload),
+            token=_tokdec(token_str),
             version=version,
             raw_payload=payload,
-            _footer_token=wire_tok,
-            checksum=checksum,
-            token=tok_int,
         )
     )
 
@@ -938,35 +1009,23 @@ def chs_short_name(chs):
 
 
 def chs_long_name(chs):
-    """Extract the long_name string from a CHS Container."""
-    return _nullterm(chs.long_name)
+    """Extract the long_name string from a CHS Container. Alias for chs.name."""
+    return chs.name
 
 
 def chs_units(chs):
-    """Derive the unit string from a CHS Container."""
-    unit_key = chs.unit_type_byte & 127
-    if unit_key in UNIT_MAP:
-        units = UNIT_MAP[unit_key][0]
-        if chs.unit_type_byte & 0x80 and units == "mV":
-            return "V"
-        return units
-    return ""
+    """Derive the unit string from a CHS Container. Alias for chs.units."""
+    return chs.units
 
 
 def chs_dec_pts(chs):
-    """Derive the decimal points from a CHS Container."""
-    unit_key = chs.unit_type_byte & 127
-    if unit_key in UNIT_MAP:
-        return UNIT_MAP[unit_key][1]
-    return 0
+    """Derive the decimal points from a CHS Container. Alias for chs.dec_pts."""
+    return chs.dec_pts
 
 
 def chs_interpolate(chs):
-    """Derive the interpolate flag from a CHS Container."""
-    dt = chs.decoder_type
-    if dt in DECODER_TABLE:
-        return DECODER_TABLE[dt][1]
-    return False
+    """Derive the interpolate flag from a CHS Container. Alias for chs.interpolate."""
+    return chs.interpolate
 
 
 def chs_device_tag(chs):

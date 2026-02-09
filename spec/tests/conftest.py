@@ -1,5 +1,6 @@
 """Shared fixtures and path constants for spec tests."""
 
+import filelock
 import json
 import subprocess
 from pathlib import Path
@@ -86,11 +87,15 @@ def _dll_available():
     return dll_path.exists() and wine_path.exists() and python_path.exists()
 
 
+_WINE_LOCK = filelock.FileLock(Path(__file__).parent / ".wine_extract.lock")
+
+
 def _dll_extract(xrk_path):
     """Extract channel data from the official AIM DLL via Wine.
 
     Returns a dict with 'channels' (list of {name, units, sample_count, ...}),
     'laps', and 'metadata'.
+    Uses a file lock to prevent concurrent Wine processes (xdist-safe).
     """
     wine_path = "/usr/lib/wine/wine64"
     python_path = str(REFERENCE_DLL_DIR / ".setup" / "python-embed" / "python.exe")
@@ -103,13 +108,14 @@ def _dll_extract(xrk_path):
         "HOME": str(Path.home()),
         "PATH": "/usr/bin:/bin",
     }
-    result = subprocess.run(
-        [wine_path, python_path, script_path, xrk_wine_path],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        env=env,
-    )
+    with _WINE_LOCK:
+        result = subprocess.run(
+            [wine_path, python_path, script_path, xrk_wine_path],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+        )
     # Wine may return nonzero exit even on success; check stdout for JSON
     if not result.stdout.strip():
         raise RuntimeError(f"DLL extraction failed: {result.stderr}")

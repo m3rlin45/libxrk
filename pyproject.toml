@@ -84,6 +84,7 @@ parameterized = "^0.9.0"
 py-spy = "^0.4.1"
 construct = "^2.10.0"
 pyyaml = "^6.0"
+pytest-xdist = "^3.8.0"
 
 [tool.black]
 line-length = 100
@@ -161,10 +162,9 @@ ignore_missing_imports = true
 format = "black ."
 lint = "black --check ."
 typecheck = "mypy ."
-test = "pytest tests/ -v"
+test = "pytest tests/ -v -n auto"
 check = ["lint", "typecheck", "test", "spec-test"]
-spec-test = "pytest spec/tests/ -v -m 'not slow'"
-spec-test-full = "pytest spec/tests/ -v"
+spec-test = "pytest spec/tests/ -v -n auto"
 spec-vectors = "python spec/test_vectors/generate_vectors.py"
 repl = "python -i -c \"from libxrk import aim_xrk; log = aim_xrk('tests/test_data/SFJ/CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrk'); print('XRK file loaded as: log'); print(f'Channels: {len(log.channels)}'); print(f'Laps: {len(log.laps)}'); print(f'Metadata keys: {list(log.metadata.keys())}')\"" 
 [tool.poe.tasks.pyodide-build]
@@ -240,9 +240,6 @@ help = "Build CPython wheel, sdist, and Pyodide wheel"
 deps = ["emsdk-setup"]
 
 [tool.pytest.ini_options]
-markers = [
-    "slow: marks tests as slow (parses full files with data messages)",
-]
 
 [tool.cibuildwheel]
 build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
