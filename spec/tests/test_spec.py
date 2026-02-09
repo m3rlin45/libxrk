@@ -623,7 +623,7 @@ class TestDataMessageCrossValidation:
         """Apply decoder fixup to get the final value."""
         import numpy as np
 
-        if decoder_type in (1, 20):
+        if decoder_type == 20:
             # float16 encoded as uint16
             arr = np.array([raw_value], dtype=np.uint16)
             return float(np.frombuffer(arr.tobytes(), dtype=np.float16)[0])
@@ -955,16 +955,20 @@ class TestExhaustiveChannelValues:
                 if idx not in result.channels:
                     continue
                 tc = m.parsed["timecode"]
-                if tc <= last_tc_m.get(idx, -1):
-                    continue
                 ch_size = result.channel_sizes[idx]
                 data = m.parsed["data"]
                 count = m.parsed["count"]
                 mms = result.channel_mms.get(idx, 0)
+                # Partial skip: only skip overlapping front samples (matches Cython)
+                m_skip = 0
+                if tc <= last_tc_m.get(idx, -1) and mms > 0:
+                    m_skip = (last_tc_m[idx] - tc) // mms + 1
+                if m_skip >= count:
+                    continue
                 last_tc_m[idx] = tc + (count - 1) * mms
                 if idx not in arrays:
                     arrays[idx] = []
-                for i in range(count):
+                for i in range(m_skip, count):
                     sample = data[i * ch_size : (i + 1) * ch_size]
                     if len(sample) == ch_size:
                         arrays[idx].append(sample)
@@ -1007,7 +1011,7 @@ class TestExhaustiveChannelValues:
         """Apply decoder fixup to get the final value."""
         import numpy as np
 
-        if decoder_type in (1, 20):
+        if decoder_type == 20:
             # float16 encoded as uint16
             arr = np.array([raw_value], dtype=np.uint16)
             return float(np.frombuffer(arr.tobytes(), dtype=np.float16)[0])
@@ -1089,14 +1093,20 @@ class TestExhaustiveChannelValues:
 
         return checked, errors
 
+    def test_aim_official_every_value(self, aim_official_parsed, aim_official_cython):
+        """Every sample of every AIM official channel must match Cython (3.1M)."""
+        checked, errors = self._compare_all_values(aim_official_parsed, aim_official_cython)
+        assert checked > 0, "No channels were cross-validated"
+        assert not errors, f"Value mismatches:\n" + "\n".join(errors)
+
     def test_sfj_every_value(self, sfj_parsed, sfj_cython):
-        """Every sample of every SFJ channel must match Cython."""
+        """Every sample of every SFJ channel must match Cython (7.9M)."""
         checked, errors = self._compare_all_values(sfj_parsed, sfj_cython)
         assert checked > 0, "No channels were cross-validated"
         assert not errors, f"Value mismatches:\n" + "\n".join(errors)
 
     def test_86_every_value(self, file_86_parsed, file_86_cython):
-        """Every sample of every 86 channel must match Cython."""
+        """Every sample of every 86 channel must match Cython (40M)."""
         checked, errors = self._compare_all_values(file_86_parsed, file_86_cython)
         assert checked > 0, "No channels were cross-validated"
         assert not errors, f"Value mismatches:\n" + "\n".join(errors)
