@@ -42,6 +42,7 @@ from spec.tests.conftest import (
 class TestParseAllFiles:
     """Verify that all test files parse successfully."""
 
+    @pytest.mark.slow
     @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
     def test_parse_without_errors(self, filepath):
         """Each file should parse without raising exceptions."""
@@ -49,6 +50,7 @@ class TestParseAllFiles:
         assert isinstance(result, ParseResult)
         assert len(result.messages) > 0
 
+    @pytest.mark.slow
     @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
     def test_minimal_leftover_bytes(self, filepath):
         """Leftover bytes should be zero or negligible (< 20)."""
@@ -129,6 +131,7 @@ class TestCHSCrossValidation:
             "display_range_max": md.get(b"display_range_max", b"").decode(),
         }
 
+    @pytest.mark.slow
     def test_sfj_channel_names(self, sfj_parsed, sfj_cython):
         """All CHS long_names should match channels known to Cython parser."""
         spec_names = {chs_long_name(ch) for ch in sfj_parsed.channels.values()}
@@ -140,6 +143,7 @@ class TestCHSCrossValidation:
                 continue
             assert name in spec_names, f"Cython channel {name!r} not in spec CHS definitions"
 
+    @pytest.mark.slow
     def test_86_channel_names(self, file_86_parsed, file_86_cython):
         """All CHS long_names should match channels known to Cython parser."""
         spec_names = {chs_long_name(ch) for ch in file_86_parsed.channels.values()}
@@ -165,6 +169,7 @@ class TestCHSCrossValidation:
         "GPS_Yaw_Rate",
     }
 
+    @pytest.mark.slow
     def test_sfj_channel_metadata(self, sfj_parsed, sfj_cython):
         """Every CHS metadata field should match the Cython parser for SFJ."""
         for idx, ch in sfj_parsed.channels.items():
@@ -215,6 +220,7 @@ class TestCHSCrossValidation:
                 str(ch.display_range_max) == md["display_range_max"]
             ), f"Ch {name!r}: display_range_max mismatch"
 
+    @pytest.mark.slow
     def test_86_channel_metadata(self, file_86_parsed, file_86_cython):
         """Every CHS metadata field should match the Cython parser for 86."""
         for idx, ch in file_86_parsed.channels.items():
@@ -283,6 +289,7 @@ class TestCHSCrossValidation:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 class TestGRPCrossValidation:
     """Verify group definitions are consistent."""
 
@@ -311,6 +318,7 @@ class TestGRPCrossValidation:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 class TestGPSCrossValidation:
     """Verify GPS message parsing matches Cython output."""
 
@@ -379,6 +387,7 @@ class TestGPSCrossValidation:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 class TestLAPCrossValidation:
     """Verify LAP messages match Cython laps table."""
 
@@ -438,6 +447,7 @@ class TestLAPCrossValidation:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 class TestMetadataCrossValidation:
     """Verify metadata from string and structured messages."""
 
@@ -590,8 +600,14 @@ class TestCDECrossValidation:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 class TestDataMessageCrossValidation:
-    """Verify data messages decode to the same values as Cython parser."""
+    """Verify data messages decode to the same values as Cython parser.
+
+    For every channel with a known decoder type, decode the first and last
+    raw data samples from the spec-parsed data messages and compare against
+    the Cython parser's channel arrays.
+    """
 
     def _decode_sample(self, data_bytes, decoder_type):
         """Decode raw data bytes using the decoder type's struct format."""
@@ -603,7 +619,7 @@ class TestDataMessageCrossValidation:
             return None
         return struct.unpack_from("<" + fmt, data_bytes, 0)[0]
 
-    def _apply_fixup(self, raw_value, decoder_type, channel_name):
+    def _apply_fixup(self, raw_value, decoder_type):
         """Apply decoder fixup to get the final value."""
         import numpy as np
 
@@ -625,53 +641,259 @@ class TestDataMessageCrossValidation:
             return table.get(raw_value, raw_value)
         return raw_value
 
-    def test_sfj_s_message_first_sample(self, sfj_parsed, sfj_cython):
-        """First S-message sample for select channels should match Cython."""
-        # Find first S message for a known channel
-        channels_to_check = {}
-        for m in sfj_parsed.data_messages():
-            if m.msg_type != "S":
-                continue
-            idx = m.parsed["channel_index"]
-            if idx not in channels_to_check and idx in sfj_parsed.channels:
-                channels_to_check[idx] = m
+    def _decode_and_fixup(self, data_bytes, ch):
+        """Decode raw bytes for a channel and apply all fixups."""
+        raw = self._decode_sample(data_bytes, ch.decoder_type)
+        if raw is None:
+            return None
+        value = self._apply_fixup(raw, ch.decoder_type)
+        # Voltage channels are stored as mV, Cython divides by 1000
+        if chs_units(ch) == "V":
+            value = value / 1000.0
+        return float(value)
 
-            if len(channels_to_check) >= 5:
-                break
+    def _collect_channel_samples(self, result):
+        """Collect first and last data sample for each channel from data messages.
 
-        for idx, msg in channels_to_check.items():
-            ch = sfj_parsed.channels[idx]
+        Handles S, M, c, and G message types.
+        Returns {channel_index: {"first": bytes, "last": bytes}}.
+        """
+        first = {}  # channel_index -> first raw data bytes
+        last = {}  # channel_index -> last raw data bytes
+
+        for m in result.data_messages():
+            if m.msg_type == "S" or m.msg_type == "c":
+                idx = m.parsed["channel_index"]
+                data = m.parsed["data"]
+                if idx not in first:
+                    first[idx] = data
+                last[idx] = data
+
+            elif m.msg_type == "M":
+                idx = m.parsed["channel_index"]
+                if idx not in result.channels:
+                    continue
+                ch_size = result.channel_sizes[idx]
+                data = m.parsed["data"]
+                count = m.parsed["count"]
+                if count > 0 and len(data) >= ch_size:
+                    first_sample = data[:ch_size]
+                    last_sample = data[(count - 1) * ch_size : count * ch_size]
+                    if idx not in first:
+                        first[idx] = first_sample
+                    last[idx] = last_sample
+
+            elif m.msg_type == "G":
+                grp_idx = m.parsed["group_index"]
+                if grp_idx not in result.groups:
+                    continue
+                grp = result.groups[grp_idx]
+                data = m.parsed["data"]
+                offset = 0
+                for ch_idx in grp.channel_indices:
+                    if ch_idx not in result.channel_sizes:
+                        continue
+                    ch_size = result.channel_sizes[ch_idx]
+                    sample = data[offset : offset + ch_size]
+                    if len(sample) == ch_size:
+                        if ch_idx not in first:
+                            first[ch_idx] = sample
+                        last[ch_idx] = sample
+                    offset += ch_size
+
+        return {idx: {"first": first[idx], "last": last.get(idx, first[idx])} for idx in first}
+
+    def test_sfj_all_channels_first_sample(self, sfj_parsed, sfj_cython):
+        """First sample for every SFJ channel should match Cython output."""
+        samples = self._collect_channel_samples(sfj_parsed)
+        checked = 0
+        for idx, ch in sfj_parsed.channels.items():
             name = chs_long_name(ch)
             if name not in sfj_cython.channels:
                 continue
-
-            raw = self._decode_sample(msg.parsed["data"], ch.decoder_type)
-            if raw is None:
+            if idx not in samples:
+                continue
+            if ch.decoder_type not in DECODER_TABLE:
                 continue
 
-            value = self._apply_fixup(raw, ch.decoder_type, name)
+            value = self._decode_and_fixup(samples[idx]["first"], ch)
+            if value is None:
+                continue
+
             cython_first = sfj_cython.channels[name].column(name)[0].as_py()
+            assert abs(value - float(cython_first)) < 0.01, (
+                f"Ch {name!r} (decoder={ch.decoder_type}): "
+                f"first sample {value} != cython {cython_first}"
+            )
+            checked += 1
 
-            # V channels are divided by 1000 in Cython
-            if chs_units(ch) == "V":
-                value = value / 1000.0
+        assert checked > 0, "No channels were cross-validated"
 
-            assert (
-                abs(float(value) - float(cython_first)) < 0.01
-            ), f"Ch {name!r}: first sample {value} != cython {cython_first}"
+    def test_sfj_all_channels_last_sample(self, sfj_parsed, sfj_cython):
+        """Last sample for every SFJ channel should match Cython output."""
+        samples = self._collect_channel_samples(sfj_parsed)
+        checked = 0
+        for idx, ch in sfj_parsed.channels.items():
+            name = chs_long_name(ch)
+            if name not in sfj_cython.channels:
+                continue
+            if idx not in samples:
+                continue
+            if ch.decoder_type not in DECODER_TABLE:
+                continue
 
-    def test_86_g_message_decoding(self, file_86_parsed, file_86_cython):
-        """First G-message should decode group data correctly."""
-        # Find first G message
-        g_msgs = [m for m in file_86_parsed.data_messages() if m.msg_type == "G"]
-        assert len(g_msgs) > 0
-        first_g = g_msgs[0]
-        group_idx = first_g.parsed["group_index"]
+            value = self._decode_and_fixup(samples[idx]["last"], ch)
+            if value is None:
+                continue
 
-        # Verify the group exists
-        assert group_idx in file_86_parsed.groups
-        grp = file_86_parsed.groups[group_idx]
+            cython_last = sfj_cython.channels[name].column(name)[-1].as_py()
+            assert abs(value - float(cython_last)) < 0.01, (
+                f"Ch {name!r} (decoder={ch.decoder_type}): "
+                f"last sample {value} != cython {cython_last}"
+            )
+            checked += 1
 
-        # Verify the data length matches expected group size
-        expected_size = file_86_parsed.group_sizes[group_idx]
-        assert len(first_g.parsed["data"]) == expected_size
+        assert checked > 0, "No channels were cross-validated"
+
+    def test_86_all_channels_first_sample(self, file_86_parsed, file_86_cython):
+        """First sample for every 86 channel should match Cython output."""
+        samples = self._collect_channel_samples(file_86_parsed)
+        checked = 0
+        for idx, ch in file_86_parsed.channels.items():
+            name = chs_long_name(ch)
+            if name not in file_86_cython.channels:
+                continue
+            if idx not in samples:
+                continue
+            if ch.decoder_type not in DECODER_TABLE:
+                continue
+
+            value = self._decode_and_fixup(samples[idx]["first"], ch)
+            if value is None:
+                continue
+
+            cython_first = file_86_cython.channels[name].column(name)[0].as_py()
+            assert abs(value - float(cython_first)) < 0.01, (
+                f"Ch {name!r} (decoder={ch.decoder_type}): "
+                f"first sample {value} != cython {cython_first}"
+            )
+            checked += 1
+
+        assert checked > 0, "No channels were cross-validated"
+
+    def test_86_all_channels_last_sample(self, file_86_parsed, file_86_cython):
+        """Last sample for every 86 channel should match Cython output."""
+        samples = self._collect_channel_samples(file_86_parsed)
+        checked = 0
+        for idx, ch in file_86_parsed.channels.items():
+            name = chs_long_name(ch)
+            if name not in file_86_cython.channels:
+                continue
+            if idx not in samples:
+                continue
+            if ch.decoder_type not in DECODER_TABLE:
+                continue
+
+            value = self._decode_and_fixup(samples[idx]["last"], ch)
+            if value is None:
+                continue
+
+            cython_last = file_86_cython.channels[name].column(name)[-1].as_py()
+            assert abs(value - float(cython_last)) < 0.01, (
+                f"Ch {name!r} (decoder={ch.decoder_type}): "
+                f"last sample {value} != cython {cython_last}"
+            )
+            checked += 1
+
+        assert checked > 0, "No channels were cross-validated"
+
+    def test_sfj_decoder_type_coverage(self, sfj_parsed, sfj_cython):
+        """Every decoder type with Cython-exposed channels should be validated."""
+        samples = self._collect_channel_samples(sfj_parsed)
+        # Only count decoder types that have at least one Cython-exposed channel
+        decoder_types_exposed = set()
+        decoder_types_validated = set()
+
+        for idx, ch in sfj_parsed.channels.items():
+            if ch.decoder_type not in DECODER_TABLE:
+                continue
+            name = chs_long_name(ch)
+            if name not in sfj_cython.channels:
+                continue  # Internal channel not exposed by Cython
+            decoder_types_exposed.add(ch.decoder_type)
+            if idx in samples:
+                value = self._decode_and_fixup(samples[idx]["first"], ch)
+                if value is not None:
+                    decoder_types_validated.add(ch.decoder_type)
+
+        missing = decoder_types_exposed - decoder_types_validated
+        assert not missing, f"Decoder types not validated: {missing}"
+        assert len(decoder_types_validated) >= 3, "Too few decoder types validated"
+
+    def test_86_decoder_type_coverage(self, file_86_parsed, file_86_cython):
+        """Every decoder type with Cython-exposed channels should be validated."""
+        samples = self._collect_channel_samples(file_86_parsed)
+        decoder_types_exposed = set()
+        decoder_types_validated = set()
+
+        for idx, ch in file_86_parsed.channels.items():
+            if ch.decoder_type not in DECODER_TABLE:
+                continue
+            name = chs_long_name(ch)
+            if name not in file_86_cython.channels:
+                continue
+            decoder_types_exposed.add(ch.decoder_type)
+            if idx in samples:
+                value = self._decode_and_fixup(samples[idx]["first"], ch)
+                if value is not None:
+                    decoder_types_validated.add(ch.decoder_type)
+
+        missing = decoder_types_exposed - decoder_types_validated
+        assert not missing, f"Decoder types not validated: {missing}"
+        assert len(decoder_types_validated) >= 3, "Too few decoder types validated"
+
+    def test_86_g_message_group_unpacking(self, file_86_parsed, file_86_cython):
+        """G-message data should unpack to match Cython channel values."""
+        # Find first G message for each group
+        first_g_by_group = {}
+        for m in file_86_parsed.data_messages():
+            if m.msg_type != "G":
+                continue
+            grp_idx = m.parsed["group_index"]
+            if grp_idx not in first_g_by_group:
+                first_g_by_group[grp_idx] = m
+
+        checked = 0
+        for grp_idx, msg in first_g_by_group.items():
+            if grp_idx not in file_86_parsed.groups:
+                continue
+            grp = file_86_parsed.groups[grp_idx]
+            data = msg.parsed["data"]
+
+            # Unpack individual channel data from the group payload
+            offset = 0
+            for ch_idx in grp.channel_indices:
+                if ch_idx not in file_86_parsed.channels:
+                    continue
+                ch = file_86_parsed.channels[ch_idx]
+                ch_size = file_86_parsed.channel_sizes[ch_idx]
+                sample_bytes = data[offset : offset + ch_size]
+                offset += ch_size
+
+                name = chs_long_name(ch)
+                if name not in file_86_cython.channels:
+                    continue
+                if ch.decoder_type not in DECODER_TABLE:
+                    continue
+
+                value = self._decode_and_fixup(sample_bytes, ch)
+                if value is None:
+                    continue
+
+                cython_first = file_86_cython.channels[name].column(name)[0].as_py()
+                assert abs(value - float(cython_first)) < 0.01, (
+                    f"Group {grp_idx}, Ch {name!r}: " f"unpacked {value} != cython {cython_first}"
+                )
+                checked += 1
+
+        assert checked > 0, "No G-message channels were cross-validated"

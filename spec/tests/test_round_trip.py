@@ -8,6 +8,8 @@ import struct
 
 import pytest
 
+pytestmark = pytest.mark.slow
+
 from spec.xrk_format import (
     CHSPayload,
     GRPPayload,
