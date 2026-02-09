@@ -4,11 +4,14 @@ For each message type, extract raw bytes from a real file, parse with Construct,
 build back, and verify byte-identical output.
 """
 
+import io
 import struct
 
 import pytest
 
 pytestmark = pytest.mark.slow
+
+from construct import ConstructError, Select
 
 from spec.xrk_format import (
     CHSPayload,
@@ -18,6 +21,12 @@ from spec.xrk_format import (
     LAPPayload,
     CDEPayload,
     GPSRPayload,
+    HeaderMessage,
+    SMessage,
+    GMessage,
+    MMessage,
+    cMessage,
+    _container_to_dict,
     build_chs,
     build_grp,
     build_gps,
@@ -26,7 +35,6 @@ from spec.xrk_format import (
     build_gnfi,
     build_gpsr,
     build_header_frame,
-    parse_header_message,
     parse_xrk_file,
     chs_long_name,
     _tokdec,
@@ -258,36 +266,29 @@ class TestHeaderFrameRoundTrip:
         msg = chs_msgs[0]
         # Build a complete framed message
         frame = build_header_frame("CHS", msg.raw_payload, version=msg.version)
-        # Parse it back
-        parsed = parse_header_message(frame, 0)
-        assert parsed is not None
-        tok, ver, payload, next_offset = parsed
-        assert tok == _tokdec("CHS")
-        assert ver == msg.version
-        assert payload == msg.raw_payload
-        assert next_offset == len(frame)
+        # Parse it back using HeaderMessage Struct directly
+        parsed = HeaderMessage.parse(frame)
+        assert parsed.token == _tokdec("CHS")
+        assert parsed.version == msg.version
+        assert bytes(parsed.raw_payload) == msg.raw_payload
 
     def test_build_parse_lap_frame(self, sfj_parsed):
         """Build a LAP header frame and parse it back."""
         lap_msgs = sfj_parsed.messages_by_token("LAP")
         msg = lap_msgs[0]
         frame = build_header_frame("LAP", msg.raw_payload, version=msg.version)
-        parsed = parse_header_message(frame, 0)
-        assert parsed is not None
-        tok, ver, payload, next_offset = parsed
-        assert tok == _tokdec("LAP")
-        assert payload == msg.raw_payload
+        parsed = HeaderMessage.parse(frame)
+        assert parsed.token == _tokdec("LAP")
+        assert bytes(parsed.raw_payload) == msg.raw_payload
 
     def test_build_parse_gps_frame(self, sfj_parsed):
         """Build a GPS header frame and parse it back."""
         raw = sfj_parsed.gps_payloads[0]
         frame = build_header_frame("GPS", raw, version=1)
-        parsed = parse_header_message(frame, 0)
-        assert parsed is not None
-        tok, ver, payload, next_offset = parsed
+        parsed = HeaderMessage.parse(frame)
         # GPS is a 3-char token, so it gets padded and then stripped
-        assert tok == _tokdec("GPS")
-        assert payload == raw
+        assert parsed.token == _tokdec("GPS")
+        assert bytes(parsed.raw_payload) == raw
 
     def test_build_parse_4char_token(self, sfj_parsed):
         """Build a GNFI header frame (4-char token) and parse it back."""
@@ -295,11 +296,9 @@ class TestHeaderFrameRoundTrip:
             pytest.skip("No GNFI data")
         raw = sfj_parsed.gnfi_payloads[0]
         frame = build_header_frame("GNFI", raw, version=1)
-        parsed = parse_header_message(frame, 0)
-        assert parsed is not None
-        tok, ver, payload, next_offset = parsed
-        assert tok == _tokdec("GNFI")
-        assert payload == raw
+        parsed = HeaderMessage.parse(frame)
+        assert parsed.token == _tokdec("GNFI")
+        assert bytes(parsed.raw_payload) == raw
 
 
 # ---------------------------------------------------------------------------
@@ -322,10 +321,21 @@ class TestDataMessageRoundTrip:
         """Build an (M data message."""
         return struct.pack("<HiHH", 0x4D28, timecode, channel_index, count) + data + b")"
 
+    def _parse_data_message(self, frame, channel_sizes, group_sizes):
+        """Parse a data message using Select(SMessage, GMessage, MMessage, cMessage)."""
+        try:
+            stream = io.BytesIO(frame)
+            dmsg = Select(SMessage, GMessage, MMessage, cMessage).parse_stream(
+                stream,
+                channel_sizes=channel_sizes,
+                group_sizes=group_sizes,
+            )
+            return dmsg.msg_type, _container_to_dict(dmsg), stream.tell()
+        except ConstructError:
+            return None
+
     def test_s_message_round_trip(self, sfj_parsed):
         """S message build -> parse should match."""
-        from spec.xrk_format import parse_data_message
-
         s_msgs = [m for m in sfj_parsed.data_messages() if m.msg_type == "S"]
         if not s_msgs:
             pytest.skip("No S messages")
@@ -336,7 +346,9 @@ class TestDataMessageRoundTrip:
             msg.parsed["channel_index"],
             msg.parsed["data"],
         )
-        result = parse_data_message(frame, 0, sfj_parsed.channel_sizes, sfj_parsed.group_sizes)
+        result = self._parse_data_message(
+            frame, sfj_parsed.channel_sizes, sfj_parsed.group_sizes
+        )
         assert result is not None
         msg_type, parsed, next_offset = result
         assert msg_type == "S"
@@ -347,8 +359,6 @@ class TestDataMessageRoundTrip:
 
     def test_g_message_round_trip(self, file_86_parsed):
         """G message build -> parse should match."""
-        from spec.xrk_format import parse_data_message
-
         g_msgs = [m for m in file_86_parsed.data_messages() if m.msg_type == "G"]
         if not g_msgs:
             pytest.skip("No G messages")
@@ -359,8 +369,8 @@ class TestDataMessageRoundTrip:
             msg.parsed["group_index"],
             msg.parsed["data"],
         )
-        result = parse_data_message(
-            frame, 0, file_86_parsed.channel_sizes, file_86_parsed.group_sizes
+        result = self._parse_data_message(
+            frame, file_86_parsed.channel_sizes, file_86_parsed.group_sizes
         )
         assert result is not None
         msg_type, parsed, next_offset = result
@@ -371,8 +381,6 @@ class TestDataMessageRoundTrip:
 
     def test_m_message_round_trip(self, sfj_parsed):
         """M message build -> parse should match."""
-        from spec.xrk_format import parse_data_message
-
         m_msgs = [m for m in sfj_parsed.data_messages() if m.msg_type == "M"]
         if not m_msgs:
             pytest.skip("No M messages")
@@ -384,7 +392,9 @@ class TestDataMessageRoundTrip:
             msg.parsed["count"],
             msg.parsed["data"],
         )
-        result = parse_data_message(frame, 0, sfj_parsed.channel_sizes, sfj_parsed.group_sizes)
+        result = self._parse_data_message(
+            frame, sfj_parsed.channel_sizes, sfj_parsed.group_sizes
+        )
         assert result is not None
         msg_type, parsed, next_offset = result
         assert msg_type == "M"

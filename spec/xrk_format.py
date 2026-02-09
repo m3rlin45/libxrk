@@ -26,6 +26,7 @@ from construct import (
     Adapter,
     Array,
     Bytes,
+    Check,
     Computed,
     Const,
     ConstructError,
@@ -38,6 +39,7 @@ from construct import (
     Int16ul,
     Int32sl,
     Int32ul,
+    Select,
     Struct,
     this,
 )
@@ -135,7 +137,7 @@ UNIT_MAP = {
     18: ("ms", 0),
     19: ("Nm", 0),
     20: ("km/h", 0),
-    21: ("V", 1),
+    21: ("mV", 1),
     22: ("l", 1),
     24: ("l/s", 0),
     26: ("time?", 0),
@@ -185,14 +187,6 @@ def _nullterm(data, encoding="ascii"):
     if zero >= 0:
         data = data[:zero]
     return data.decode(encoding, errors="replace")
-
-
-def _compute_checksum(payload_bytes):
-    """Compute the header message checksum (sum of bytes as uint16).
-
-    Matches aim_xrk.pyx:363-364 (std::accumulate).
-    """
-    return sum(payload_bytes) & 0xFFFF
 
 
 class _NullTermString(Adapter):
@@ -411,8 +405,26 @@ SRCPayload = Struct(
 )
 
 
+# RACM — Race Mode (string or flag byte)
+# Reference: aim_xrk.pyx race mode handling
+RACMStringPayload = Struct(
+    "value" / _NullTermString(GreedyBytes),
+    "mode" / Computed("string"),
+)
+
+RACMFlagPayload = Struct(
+    "value" / Int8ul,
+    "mode" / Computed("flag"),
+)
+
+# VET — Vehicle Electronics Type (single byte)
+VETPayload = Struct(
+    "value" / Int8ul,
+)
+
+
 # ---------------------------------------------------------------------------
-# Header Message Frame (declarative specification of message framing)
+# Header Message (self-validating Struct with inline checks)
 # ---------------------------------------------------------------------------
 
 # Reference: aim_xrk.pyx:215-226
@@ -426,7 +438,7 @@ SRCPayload = Struct(
 #   token         uint32 LE (must match header)
 #   checksum      uint16 LE (sum of payload bytes)
 #   '>'           footer close (0x3E)
-HeaderMessageFrame = Struct(
+HeaderMessage = Struct(
     Const(b"\x3c\x68"),  # opcode '<h'
     "wire_token" / Int32ul,  # token (may include trailing space)
     "payload_length" / Int32sl,  # payload byte count
@@ -437,44 +449,69 @@ HeaderMessageFrame = Struct(
     "_footer_token" / Int32ul,  # must match wire_token
     "checksum" / Int16ul,  # sum of payload bytes as uint16
     Const(b"\x3e"),  # footer '>'
+    # Inline validation (raises ConstructError on mismatch)
+    Check(lambda ctx: ctx._footer_token == ctx.wire_token),
+    Check(lambda ctx: ctx.checksum == (sum(ctx.raw_payload) & 0xFFFF)),
+    # Computed: strip trailing space from 3-char tokens
+    "token" / Computed(
+        lambda ctx: ctx.wire_token - (0x20 << 24)
+        if (ctx.wire_token >> 24) == 0x20
+        else ctx.wire_token
+    ),
 )
 
-
 # ---------------------------------------------------------------------------
-# Data Message Structs (declarative format specifications)
+# Data Message Structs (complete, self-contained with opcode + terminator)
 # ---------------------------------------------------------------------------
-
-# Data message payload sizes depend on CHS/GRP definitions (external state).
-# These Structs document the format; parsing uses _parse_data_message()
-# which passes channel_sizes/group_sizes via Construct's context keyword args.
 
 # (S — Single channel sample
 # Reference: aim_xrk.pyx data handling
-_SHeader = Struct(
+SMessage = Struct(
+    Const(b"\x28\x53"),  # '(S'
+    "msg_type" / Computed("S"),
     "timecode" / Int32sl,
     "channel_index" / Int16ul,
+    Check(lambda ctx: ctx.channel_index in ctx._params.channel_sizes),
+    "data" / Bytes(lambda ctx: ctx._params.channel_sizes[ctx.channel_index]),
+    Const(b"\x29"),  # ')'
 )
 
 # (G — Group data
-_GHeader = Struct(
+GMessage = Struct(
+    Const(b"\x28\x47"),  # '(G'
+    "msg_type" / Computed("G"),
     "timecode" / Int32sl,
     "group_index" / Int16ul,
+    Check(lambda ctx: ctx.group_index in ctx._params.group_sizes),
+    "data" / Bytes(lambda ctx: ctx._params.group_sizes[ctx.group_index]),
+    Const(b"\x29"),  # ')'
 )
 
 # (M — Multi-sample burst
-_MHeader = Struct(
+MMessage = Struct(
+    Const(b"\x28\x4D"),  # '(M'
+    "msg_type" / Computed("M"),
     "timecode" / Int32sl,
     "channel_index" / Int16ul,
     "count" / Int16ul,
+    Check(lambda ctx: ctx.channel_index in ctx._params.channel_sizes),
+    "data" / Bytes(lambda ctx: ctx._params.channel_sizes[ctx.channel_index] * ctx.count),
+    Const(b"\x29"),  # ')'
 )
 
 # (c — Expansion device channel data
-_cHeader = Struct(
-    "unk1" / Int8ul,  # 0x00
+cMessage = Struct(
+    Const(b"\x28\x63"),  # '(c'
+    "msg_type" / Computed("c"),
+    "unk1" / Int8ul,
     "channel_field" / Int16ul,
-    "unk3" / Int8ul,  # 0x84
-    "unk4" / Int8ul,  # 0x06
+    "unk3" / Int8ul,
+    "unk4" / Int8ul,
     "timecode" / Int32sl,
+    "channel_index" / Computed(lambda ctx: ctx.channel_field >> 3),
+    Check(lambda ctx: (ctx.channel_field >> 3) in ctx._params.channel_sizes),
+    "data" / Bytes(lambda ctx: ctx._params.channel_sizes[ctx.channel_field >> 3]),
+    Const(b"\x29"),  # ')'
 )
 
 
@@ -484,70 +521,25 @@ _cHeader = Struct(
 
 # Maps token int -> Construct Struct for payloads that can be parsed directly.
 # Tokens not in this table have special handling (GPS raw storage, CNF/ENF
-# recursion, string messages, ODO array, RACM/VET simple extraction).
-_PAYLOAD_STRUCTS = None  # Initialized after all Structs are defined
-
-
-def _init_payload_structs():
-    global _PAYLOAD_STRUCTS
-    _PAYLOAD_STRUCTS = {
-        TOK_CHS: CHSPayload,
-        TOK_GRP: GRPPayload,
-        TOK_LAP: LAPPayload,
-        TOK_CDE: CDEPayload,
-        TOK_CAL: CALPayload,
-        TOK_IDN: IDNPayload,
-        TOK_TRK: TRKPayload,
-        TOK_GPSR: GPSRPayload,
-        TOK_ISLV: ISLVPayload,
-        TOK_SRC: SRCPayload,
-    }
-
-
-_init_payload_structs()
+# recursion, string messages, ODO array).
+_PAYLOAD_STRUCTS = {
+    TOK_CHS: CHSPayload,
+    TOK_GRP: GRPPayload,
+    TOK_LAP: LAPPayload,
+    TOK_CDE: CDEPayload,
+    TOK_CAL: CALPayload,
+    TOK_IDN: IDNPayload,
+    TOK_TRK: TRKPayload,
+    TOK_GPSR: GPSRPayload,
+    TOK_ISLV: ISLVPayload,
+    TOK_SRC: SRCPayload,
+    TOK_VET: VETPayload,
+}
 
 
 # ---------------------------------------------------------------------------
-# Parsing Functions
+# Parsing
 # ---------------------------------------------------------------------------
-
-
-def parse_header_message(data, offset):
-    """Parse a single header message starting at offset.
-
-    Uses the HeaderMessageFrame Construct Struct for all binary interpretation.
-    Returns (token_int, version, payload_bytes, next_offset) or None if invalid.
-    """
-    if offset + 12 > len(data):
-        return None
-
-    # Quick opcode check before invoking Construct
-    if data[offset] != 0x3C or data[offset + 1] != 0x68:
-        return None
-
-    try:
-        stream = io.BytesIO(data)
-        stream.seek(offset)
-        frame = HeaderMessageFrame.parse_stream(stream)
-    except ConstructError:
-        return None
-
-    # Validate footer token matches header token
-    if frame._footer_token != frame.wire_token:
-        return None
-
-    # Validate checksum
-    actual_checksum = sum(frame.raw_payload) & 0xFFFF
-    if actual_checksum != frame.checksum:
-        return None
-
-    # Strip trailing space from 3-char tokens
-    tok = frame.wire_token
-    if (tok >> 24) == 0x20:
-        tok -= 0x20 << 24
-
-    consumed = stream.tell() - offset
-    return tok, frame.version, bytes(frame.raw_payload), offset + consumed
 
 
 def _parse_payload(struct_def, payload):
@@ -573,131 +565,96 @@ def _parse_odo(payload):
 
 
 def _parse_racm(payload):
-    """Parse a RACM payload (flag byte or string).
-
-    RACM has two modes distinguished by payload length — too simple for a Struct.
-    """
+    """Parse a RACM payload using RACMStringPayload or RACMFlagPayload."""
     if len(payload) > 1:
-        return Container(mode="string", value=_nullterm(payload))
+        return _parse_payload(RACMStringPayload, payload)
     elif len(payload) == 1:
-        return Container(mode="flag", value=payload[0])
+        return _parse_payload(RACMFlagPayload, payload)
     return None
 
 
-def _parse_vet(payload):
-    """Parse a VET payload (single byte). Returns int."""
-    if len(payload) >= 1:
-        return payload[0]
-    return None
+def _container_to_dict(container):
+    """Convert a Construct Container to a plain dict for data messages."""
+    d = {}
+    for key in ("msg_type", "timecode", "channel_index", "group_index", "count",
+                "data", "channel_field", "unk1", "unk3", "unk4"):
+        if hasattr(container, key):
+            val = getattr(container, key)
+            if isinstance(val, memoryview):
+                val = bytes(val)
+            d[key] = val
+    return d
 
 
-# ---------------------------------------------------------------------------
-# Data Message Parsing
-# ---------------------------------------------------------------------------
+def _dispatch_payload(token, raw_payload, result, _depth):
+    """Dispatch a header message payload to the appropriate parser.
 
-
-def parse_data_message(data, offset, channel_sizes, group_sizes):
-    """Parse a single data message at offset.
-
-    Uses Construct Structs (_SHeader, _GHeader, _MHeader, _cHeader) for all
-    binary interpretation. Returns (msg_type, parsed_dict, next_offset) or None.
+    Handles state-updating side effects (registering channel/group sizes,
+    CNF/ENF recursion). All binary interpretation is via Construct Structs.
     """
-    if offset + 3 > len(data):
+    # 1. Raw storage (GPS, GNFI — stored for batch processing)
+    if token in (TOK_GPS, TOK_GPS1):
+        result.gps_payloads.append(raw_payload)
         return None
 
-    op = data[offset] | (data[offset + 1] << 8)
-
-    try:
-        if op == 0x5328:  # '(S'
-            if offset + 8 > len(data):
-                return None
-            h = _SHeader.parse(data[offset + 2 : offset + 8])
-            if h.channel_index not in channel_sizes:
-                return None
-            ps = channel_sizes[h.channel_index]
-            end = offset + 8 + ps + 1
-            if end > len(data) or data[end - 1] != 0x29:
-                return None
-            return (
-                "S",
-                {
-                    "timecode": h.timecode,
-                    "channel_index": h.channel_index,
-                    "data": bytes(data[offset + 8 : end - 1]),
-                },
-                end,
-            )
-
-        elif op == 0x4728:  # '(G'
-            if offset + 8 > len(data):
-                return None
-            h = _GHeader.parse(data[offset + 2 : offset + 8])
-            if h.group_index not in group_sizes:
-                return None
-            ps = group_sizes[h.group_index]
-            end = offset + 8 + ps + 1
-            if end > len(data) or data[end - 1] != 0x29:
-                return None
-            return (
-                "G",
-                {
-                    "timecode": h.timecode,
-                    "group_index": h.group_index,
-                    "data": bytes(data[offset + 8 : end - 1]),
-                },
-                end,
-            )
-
-        elif op == 0x4D28:  # '(M'
-            if offset + 10 > len(data):
-                return None
-            h = _MHeader.parse(data[offset + 2 : offset + 10])
-            if h.channel_index not in channel_sizes:
-                return None
-            ps = channel_sizes[h.channel_index] * h.count
-            end = offset + 10 + ps + 1
-            if end > len(data) or data[end - 1] != 0x29:
-                return None
-            return (
-                "M",
-                {
-                    "timecode": h.timecode,
-                    "channel_index": h.channel_index,
-                    "count": h.count,
-                    "data": bytes(data[offset + 10 : end - 1]),
-                },
-                end,
-            )
-
-        elif op == 0x6328:  # '(c'
-            if offset + 11 > len(data):
-                return None
-            h = _cHeader.parse(data[offset + 2 : offset + 11])
-            ch_idx = h.channel_field >> 3
-            if ch_idx not in channel_sizes:
-                return None
-            ps = channel_sizes[ch_idx]
-            end = offset + 11 + ps + 1
-            if end > len(data) or data[end - 1] != 0x29:
-                return None
-            return (
-                "c",
-                {
-                    "timecode": h.timecode,
-                    "channel_index": ch_idx,
-                    "channel_field": h.channel_field,
-                    "unk1": h.unk1,
-                    "unk3": h.unk3,
-                    "unk4": h.unk4,
-                    "data": bytes(data[offset + 11 : end - 1]),
-                },
-                end,
-            )
-
-    except ConstructError:
+    if token == TOK_GNFI:
+        result.gnfi_payloads.append(raw_payload)
         return None
 
-    return None
+    # 2. State-updating payloads (CHS, GRP — register sizes)
+    if token == TOK_CHS:
+        parsed = _parse_payload(CHSPayload, raw_payload)
+        if parsed:
+            idx = parsed.index
+            result.channels[idx] = parsed
+            result.channel_sizes[idx] = parsed.data_size
+            result.channel_mms[idx] = parsed.sample_period_us // 1000
+        return parsed
+
+    if token == TOK_GRP:
+        parsed = _parse_payload(GRPPayload, raw_payload)
+        if parsed:
+            idx = parsed.index
+            result.groups[idx] = parsed
+            grp_size = sum(result.channel_sizes.get(ch, 0) for ch in parsed.channel_indices)
+            result.group_sizes[idx] = grp_size
+        return parsed
+
+    # 3. Recursive parsing (CNF, ENF — embedded header sections)
+    if token in (TOK_CNF, TOK_ENF):
+        sub = _parse_sequence(raw_payload, include_data_messages=False, _depth=_depth + 1)
+        if token == TOK_CNF:
+            for idx, ch in sub.channels.items():
+                if idx not in result.channels:
+                    result.channels[idx] = ch
+                    result.channel_sizes[idx] = ch.data_size
+                    result.channel_mms[idx] = ch.sample_period_us // 1000
+            for idx, grp in sub.groups.items():
+                if idx not in result.groups:
+                    result.groups[idx] = grp
+                    grp_size = sum(
+                        result.channel_sizes.get(ch, 0) for ch in grp.channel_indices
+                    )
+                    result.group_sizes[idx] = grp_size
+        return sub
+
+    # 4. Declarative Construct payloads (dispatch table)
+    if token in _PAYLOAD_STRUCTS:
+        return _parse_payload(_PAYLOAD_STRUCTS[token], raw_payload)
+
+    # 5. Non-Struct payloads (ODO array, RACM)
+    if token == TOK_ODO:
+        return _parse_odo(raw_payload)
+
+    if token == TOK_RACM:
+        return _parse_racm(raw_payload)
+
+    # 6. String messages
+    if token in _STRING_TOKENS:
+        return _nullterm(raw_payload)
+
+    # 7. Unknown token — return raw payload
+    return raw_payload
 
 
 # ---------------------------------------------------------------------------
@@ -846,98 +803,49 @@ class ParseResult:
 def _parse_sequence(data, include_data_messages=True, _depth=0):
     """Internal recursive parser for XRK byte sequences.
 
-    Handles both top-level files and embedded CNF/ENF sections.
+    Uses stream-based parsing with declarative Construct Structs:
+    - HeaderMessage (self-validating with inline Check)
+    - Select(SMessage, GMessage, MMessage, cMessage) for data messages
     """
     result = ParseResult()
-    pos = 0
+    stream = io.BytesIO(data)
     data_len = len(data)
 
-    while pos < data_len:
-        # Try header message first
-        hdr = parse_header_message(data, pos)
-        if hdr is not None:
-            tok, ver, payload, next_pos = hdr
-            msg = ParsedMessage("header", token=tok, version=ver, raw_payload=payload)
+    while stream.tell() < data_len:
+        pos = stream.tell()
 
-            # --- Payload dispatch ---
-            # 1. Raw storage (GPS, GNFI — stored for batch processing)
-            if tok in (TOK_GPS, TOK_GPS1):
-                result.gps_payloads.append(payload)
-            elif tok == TOK_GNFI:
-                result.gnfi_payloads.append(payload)
-
-            # 2. State-updating payloads (CHS, GRP — register sizes)
-            elif tok == TOK_CHS:
-                parsed = _parse_payload(CHSPayload, payload)
-                msg.payload = parsed
-                if parsed:
-                    idx = parsed.index
-                    result.channels[idx] = parsed
-                    result.channel_sizes[idx] = parsed.data_size
-                    result.channel_mms[idx] = parsed.sample_period_us // 1000
-            elif tok == TOK_GRP:
-                parsed = _parse_payload(GRPPayload, payload)
-                msg.payload = parsed
-                if parsed:
-                    idx = parsed.index
-                    result.groups[idx] = parsed
-                    grp_size = sum(result.channel_sizes.get(ch, 0) for ch in parsed.channel_indices)
-                    result.group_sizes[idx] = grp_size
-
-            # 3. Recursive parsing (CNF, ENF — embedded header sections)
-            elif tok in (TOK_CNF, TOK_ENF):
-                sub = _parse_sequence(payload, include_data_messages=False, _depth=_depth + 1)
-                msg.payload = sub
-                if tok == TOK_CNF:
-                    for idx, ch in sub.channels.items():
-                        if idx not in result.channels:
-                            result.channels[idx] = ch
-                            result.channel_sizes[idx] = ch.data_size
-                            result.channel_mms[idx] = ch.sample_period_us // 1000
-                    for idx, grp in sub.groups.items():
-                        if idx not in result.groups:
-                            result.groups[idx] = grp
-                            grp_size = sum(
-                                result.channel_sizes.get(ch, 0) for ch in grp.channel_indices
-                            )
-                            result.group_sizes[idx] = grp_size
-
-            # 4. Declarative Construct payloads (dispatch table)
-            elif tok in _PAYLOAD_STRUCTS:
-                msg.payload = _parse_payload(_PAYLOAD_STRUCTS[tok], payload)
-
-            # 5. Non-Struct payloads (ODO array, RACM/VET trivial)
-            elif tok == TOK_ODO:
-                msg.payload = _parse_odo(payload)
-            elif tok == TOK_RACM:
-                msg.payload = _parse_racm(payload)
-            elif tok == TOK_VET:
-                msg.payload = _parse_vet(payload)
-
-            # 6. String messages
-            elif tok in _STRING_TOKENS:
-                msg.payload = _nullterm(payload)
-
-            # 7. Unknown token
-            else:
-                msg.payload = payload
-
+        # Try header message (self-validating Struct with inline Check)
+        try:
+            frame = HeaderMessage.parse_stream(stream)
+            msg = ParsedMessage(
+                "header",
+                token=frame.token,
+                version=frame.version,
+                raw_payload=bytes(frame.raw_payload),
+            )
+            msg.payload = _dispatch_payload(frame.token, bytes(frame.raw_payload), result, _depth)
             result.messages.append(msg)
-            pos = next_pos
             continue
+        except ConstructError:
+            stream.seek(pos)
 
-        # Try data message
+        # Try data messages via Select
         if include_data_messages:
-            dmsg = parse_data_message(data, pos, result.channel_sizes, result.group_sizes)
-            if dmsg is not None:
-                msg_type, parsed_dict, next_pos = dmsg
-                msg = ParsedMessage(msg_type, parsed=parsed_dict)
+            try:
+                dmsg = Select(SMessage, GMessage, MMessage, cMessage).parse_stream(
+                    stream,
+                    channel_sizes=result.channel_sizes,
+                    group_sizes=result.group_sizes,
+                )
+                parsed_dict = _container_to_dict(dmsg)
+                msg = ParsedMessage(dmsg.msg_type, parsed=parsed_dict)
                 result.messages.append(msg)
-                pos = next_pos
                 continue
+            except ConstructError:
+                stream.seek(pos)
 
         # Unknown byte — skip (matches Cython parser's error recovery)
-        pos += 1
+        stream.seek(pos + 1)
         result.leftover_bytes += 1
 
     return result
@@ -949,7 +857,7 @@ def _parse_sequence(data, include_data_messages=True, _depth=0):
 
 
 def build_header_frame(token_str, payload, version=0):
-    """Build a complete header message frame using HeaderMessageFrame Struct.
+    """Build a complete header message frame using HeaderMessage Struct.
 
     Returns the complete framed message bytes including header, payload,
     and footer with checksum.
@@ -962,7 +870,7 @@ def build_header_frame(token_str, payload, version=0):
         wire_tok = tok_int
 
     checksum = sum(payload) & 0xFFFF
-    return HeaderMessageFrame.build(
+    return HeaderMessage.build(
         Container(
             wire_token=wire_tok,
             payload_length=len(payload),
@@ -970,6 +878,7 @@ def build_header_frame(token_str, payload, version=0):
             raw_payload=payload,
             _footer_token=wire_tok,
             checksum=checksum,
+            token=tok_int,
         )
     )
 
@@ -1028,7 +937,10 @@ def chs_units(chs):
     """Derive the unit string from a CHS Container."""
     unit_key = chs.unit_type_byte & 127
     if unit_key in UNIT_MAP:
-        return UNIT_MAP[unit_key][0]
+        units = UNIT_MAP[unit_key][0]
+        if chs.unit_type_byte & 0x80 and units == "mV":
+            return "V"
+        return units
     return ""
 
 
