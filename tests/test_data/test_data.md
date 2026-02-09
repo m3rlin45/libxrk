@@ -27,7 +27,7 @@ The SFJ Folder contains data from a run by a beginner in a Super FJ Junior formu
 | Channel Name | Rows | First Value | Last Value | Units | Dec Pts | Interpolate |
 |--------------|------|-------------|------------|-------|---------|-------------|
 | ACCEL | 33930 | 2.318 | 0.636 | mm | 0 | True |
-| ADC Voffset | 1696 | 0.198 | 0.198 | V | 1 | True |
+| ADC Voffset | 1696 | 198.0 | 198.0 | mV | 1 | True |
 | BRK | 84825 | -0.115 | -0.166 | bar | 2 | True |
 | Best Run Diff | 724 | -12290 | 10232 | ms | 0 | False |
 | Best Today Diff | 12 | -12290 | -12290 | ms | 0 | False |
@@ -200,10 +200,10 @@ Contains data from a run by an intermediate driver in a Toyota 86.
 | TPMS_Temp_LR | 10807 | 49.000 | 52.000 | C | 1 | True |
 | TPMS_Temp_RF | 10807 | 59.000 | 51.000 | C | 1 | True |
 | TPMS_Temp_RR | 10807 | 48.000 | 51.000 | C | 1 | True |
-| TPMS_Volt_LF | 10807 | 2.900 | 3.000 | V | 1 | True |
-| TPMS_Volt_LR | 10807 | 2.900 | 3.000 | V | 1 | True |
-| TPMS_Volt_RF | 10807 | 2.900 | 3.000 | V | 1 | True |
-| TPMS_Volt_RR | 10807 | 2.900 | 3.000 | V | 1 | True |
+| TPMS_Volt_LF | 10807 | 2900.0 | 3000.0 | mV | 1 | True |
+| TPMS_Volt_LR | 10807 | 2900.0 | 3000.0 | mV | 1 | True |
+| TPMS_Volt_RF | 10807 | 2900.0 | 3000.0 | mV | 1 | True |
+| TPMS_Volt_RR | 10807 | 2900.0 | 3000.0 | mV | 1 | True |
 | TPS | 100396 | 16.450 | 15.980 | % | 2 | True |
 | VerticalAcc | 108060 | -1.000 | -1.001 | G | 2 | True |
 | WheelSpdFL | 36024 | 0.000 | 0.000 | km/h | 0 | True |
