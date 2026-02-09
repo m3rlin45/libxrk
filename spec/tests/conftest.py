@@ -1,11 +1,14 @@
 """Shared fixtures and path constants for spec tests."""
 
+import json
+import subprocess
 from pathlib import Path
 
 import pytest
 
 # Test data paths
 TEST_DATA_DIR = Path(__file__).parent.parent.parent / "tests" / "test_data"
+REFERENCE_DLL_DIR = Path(__file__).parent.parent.parent / "tests" / "reference_dll"
 
 SFJ_XRK = TEST_DATA_DIR / "SFJ" / "CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrk"
 SFJ_XRZ = TEST_DATA_DIR / "SFJ" / "CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrz"
@@ -57,3 +60,57 @@ def file_86_cython():
     from libxrk import aim_xrk
 
     return aim_xrk(str(FILE_86_XRK))
+
+
+def _dll_available():
+    """Check if Wine and the AIM DLL are available."""
+    dll_path = REFERENCE_DLL_DIR / "MatLabXRK-2017-64-ReleaseU.dll"
+    wine_path = Path("/usr/lib/wine/wine64")
+    python_path = REFERENCE_DLL_DIR / ".setup" / "python-embed" / "python.exe"
+    return dll_path.exists() and wine_path.exists() and python_path.exists()
+
+
+def _dll_extract(xrk_path):
+    """Extract channel data from the official AIM DLL via Wine.
+
+    Returns a dict with 'channels' (list of {name, units, sample_count, ...}),
+    'laps', and 'metadata'.
+    """
+    wine_path = "/usr/lib/wine/wine64"
+    python_path = str(REFERENCE_DLL_DIR / ".setup" / "python-embed" / "python.exe")
+    script_path = "Z:" + str(REFERENCE_DLL_DIR / "wine_full_extract.py").replace("/", "/")
+    xrk_wine_path = "Z:" + str(xrk_path)
+
+    env = {
+        "WINELOADER": wine_path,
+        "WINEDEBUG": "-all",
+        "HOME": str(Path.home()),
+        "PATH": "/usr/bin:/bin",
+    }
+    result = subprocess.run(
+        [wine_path, python_path, script_path, xrk_wine_path],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+    # Wine may return nonzero exit even on success; check stdout for JSON
+    if not result.stdout.strip():
+        raise RuntimeError(f"DLL extraction failed: {result.stderr}")
+    return json.loads(result.stdout)
+
+
+@pytest.fixture(scope="session")
+def sfj_dll():
+    """Extract SFJ data from the official AIM DLL."""
+    if not _dll_available():
+        pytest.skip("AIM DLL or Wine not available")
+    return _dll_extract(SFJ_XRK)
+
+
+@pytest.fixture(scope="session")
+def file_86_dll():
+    """Extract 86 data from the official AIM DLL."""
+    if not _dll_available():
+        pytest.skip("AIM DLL or Wine not available")
+    return _dll_extract(FILE_86_XRK)
