@@ -453,10 +453,11 @@ HeaderMessage = Struct(
     Check(lambda ctx: ctx._footer_token == ctx.wire_token),
     Check(lambda ctx: ctx.checksum == (sum(ctx.raw_payload) & 0xFFFF)),
     # Computed: strip trailing space from 3-char tokens
-    "token" / Computed(
-        lambda ctx: ctx.wire_token - (0x20 << 24)
-        if (ctx.wire_token >> 24) == 0x20
-        else ctx.wire_token
+    "token"
+    / Computed(
+        lambda ctx: (
+            ctx.wire_token - (0x20 << 24) if (ctx.wire_token >> 24) == 0x20 else ctx.wire_token
+        )
     ),
 )
 
@@ -489,7 +490,7 @@ GMessage = Struct(
 
 # (M — Multi-sample burst
 MMessage = Struct(
-    Const(b"\x28\x4D"),  # '(M'
+    Const(b"\x28\x4d"),  # '(M'
     "msg_type" / Computed("M"),
     "timecode" / Int32sl,
     "channel_index" / Int16ul,
@@ -576,8 +577,18 @@ def _parse_racm(payload):
 def _container_to_dict(container):
     """Convert a Construct Container to a plain dict for data messages."""
     d = {}
-    for key in ("msg_type", "timecode", "channel_index", "group_index", "count",
-                "data", "channel_field", "unk1", "unk3", "unk4"):
+    for key in (
+        "msg_type",
+        "timecode",
+        "channel_index",
+        "group_index",
+        "count",
+        "data",
+        "channel_field",
+        "unk1",
+        "unk3",
+        "unk4",
+    ):
         if hasattr(container, key):
             val = getattr(container, key)
             if isinstance(val, memoryview):
@@ -632,9 +643,7 @@ def _dispatch_payload(token, raw_payload, result, _depth):
             for idx, grp in sub.groups.items():
                 if idx not in result.groups:
                     result.groups[idx] = grp
-                    grp_size = sum(
-                        result.channel_sizes.get(ch, 0) for ch in grp.channel_indices
-                    )
+                    grp_size = sum(result.channel_sizes.get(ch, 0) for ch in grp.channel_indices)
                     result.group_sizes[idx] = grp_size
         return sub
 
