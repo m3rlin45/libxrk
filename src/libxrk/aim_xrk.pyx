@@ -110,9 +110,7 @@ _gear_table[ord('6')] = 6
 
 _decoders = {
     0:  Decoder('i'), # Master Clock on M4GT4?
-    1:  Decoder('H', interpolate=True,
-                fixup=lambda a: np.ndarray(buffer=a, shape=(len(a),),
-                                           dtype=np.float16).astype(np.float32).data),
+    1:  Decoder('H', interpolate=True),  # uint16 integer (e.g. StartRec)
     3:  Decoder('i'), # Master Clock on ScottE46?
     4:  Decoder('h'),
     6:  Decoder('f', interpolate=True),
