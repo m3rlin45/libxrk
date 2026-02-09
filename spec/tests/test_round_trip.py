@@ -346,9 +346,7 @@ class TestDataMessageRoundTrip:
             msg.parsed["channel_index"],
             msg.parsed["data"],
         )
-        result = self._parse_data_message(
-            frame, sfj_parsed.channel_sizes, sfj_parsed.group_sizes
-        )
+        result = self._parse_data_message(frame, sfj_parsed.channel_sizes, sfj_parsed.group_sizes)
         assert result is not None
         msg_type, parsed, next_offset = result
         assert msg_type == "S"
@@ -392,9 +390,7 @@ class TestDataMessageRoundTrip:
             msg.parsed["count"],
             msg.parsed["data"],
         )
-        result = self._parse_data_message(
-            frame, sfj_parsed.channel_sizes, sfj_parsed.group_sizes
-        )
+        result = self._parse_data_message(frame, sfj_parsed.channel_sizes, sfj_parsed.group_sizes)
         assert result is not None
         msg_type, parsed, next_offset = result
         assert msg_type == "M"

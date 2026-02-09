@@ -65,7 +65,7 @@ class TestParseAllFiles:
         """All header message checksums should match."""
         result = parse_xrk_file(str(filepath), include_data_messages=False)
         # If we got here without exceptions, all checksums passed
-        # (parse_header_message validates checksum and returns None on mismatch)
+        # (HeaderMessage's inline Check validates checksum and raises on mismatch)
         header_count = len(result.header_messages())
         assert header_count > 0
 
@@ -525,7 +525,7 @@ class TestMetadataCrossValidation:
         """VET should match for SFJ."""
         vet_msgs = sfj_parsed.messages_by_token("VET")
         assert len(vet_msgs) > 0
-        assert vet_msgs[-1].payload == sfj_cython.metadata["Vehicle Electronics Type"]
+        assert vet_msgs[-1].payload.value == sfj_cython.metadata["Vehicle Electronics Type"]
 
     def test_sfj_trk(self, sfj_parsed, sfj_cython):
         """Track info should match for SFJ."""
@@ -897,3 +897,380 @@ class TestDataMessageCrossValidation:
                 checked += 1
 
         assert checked > 0, "No G-message channels were cross-validated"
+
+
+# ---------------------------------------------------------------------------
+# Exhaustive cross-validation: every sample of every channel
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+class TestExhaustiveChannelValues:
+    """Compare EVERY decoded channel value against Cython output.
+
+    Unlike TestDataMessageCrossValidation which only checks first/last samples,
+    this class builds complete channel arrays from ALL data messages and compares
+    every single value against the Cython parser's output.
+    """
+
+    def _build_channel_arrays(self, result):
+        """Build {channel_index: [raw_bytes, ...]} from all data messages.
+
+        Matches Cython deduplication: only accepts messages whose timecode is
+        strictly greater than the last seen timecode for that accumulator.
+        The Cython parser (aim_xrk.pyx:303,320,343) uses separate accumulators
+        per message type, but since a channel is delivered by exactly one type
+        (G xor S/c xor M), we track last_timecode per (msg_type_bucket, index).
+        """
+        arrays = {}  # channel_index -> list of raw data bytes
+        # Separate last_timecode trackers per accumulator, matching Cython's gc_data[0..3]
+        last_tc_g = {}  # group_index -> last timecode (G messages)
+        last_tc_s = {}  # channel_index -> last timecode (S messages)
+        last_tc_c = {}  # channel_index -> last timecode (c messages)
+        last_tc_m = {}  # channel_index -> last timecode (M messages)
+
+        for m in result.data_messages():
+            if m.msg_type == "S":
+                idx = m.parsed["channel_index"]
+                tc = m.parsed["timecode"]
+                if tc <= last_tc_s.get(idx, -1):
+                    continue
+                last_tc_s[idx] = tc
+                if idx not in arrays:
+                    arrays[idx] = []
+                arrays[idx].append(m.parsed["data"])
+
+            elif m.msg_type == "c":
+                idx = m.parsed["channel_index"]
+                tc = m.parsed["timecode"]
+                if tc <= last_tc_c.get(idx, -1):
+                    continue
+                last_tc_c[idx] = tc
+                if idx not in arrays:
+                    arrays[idx] = []
+                arrays[idx].append(m.parsed["data"])
+
+            elif m.msg_type == "M":
+                idx = m.parsed["channel_index"]
+                if idx not in result.channels:
+                    continue
+                tc = m.parsed["timecode"]
+                if tc <= last_tc_m.get(idx, -1):
+                    continue
+                ch_size = result.channel_sizes[idx]
+                data = m.parsed["data"]
+                count = m.parsed["count"]
+                mms = result.channel_mms.get(idx, 0)
+                last_tc_m[idx] = tc + (count - 1) * mms
+                if idx not in arrays:
+                    arrays[idx] = []
+                for i in range(count):
+                    sample = data[i * ch_size : (i + 1) * ch_size]
+                    if len(sample) == ch_size:
+                        arrays[idx].append(sample)
+
+            elif m.msg_type == "G":
+                grp_idx = m.parsed["group_index"]
+                if grp_idx not in result.groups:
+                    continue
+                tc = m.parsed["timecode"]
+                if tc <= last_tc_g.get(grp_idx, -1):
+                    continue
+                last_tc_g[grp_idx] = tc
+                grp = result.groups[grp_idx]
+                data = m.parsed["data"]
+                offset = 0
+                for ch_idx in grp.channel_indices:
+                    if ch_idx not in result.channel_sizes:
+                        continue
+                    ch_size = result.channel_sizes[ch_idx]
+                    sample = data[offset : offset + ch_size]
+                    if len(sample) == ch_size:
+                        if ch_idx not in arrays:
+                            arrays[ch_idx] = []
+                        arrays[ch_idx].append(sample)
+                    offset += ch_size
+
+        return arrays
+
+    def _decode_sample(self, data_bytes, decoder_type):
+        """Decode raw data bytes using the decoder type's struct format."""
+        if decoder_type not in DECODER_TABLE:
+            return None
+        fmt = DECODER_TABLE[decoder_type][0]
+        size = struct.calcsize(fmt)
+        if len(data_bytes) < size:
+            return None
+        return struct.unpack_from("<" + fmt, data_bytes, 0)[0]
+
+    def _apply_fixup(self, raw_value, decoder_type):
+        """Apply decoder fixup to get the final value."""
+        import numpy as np
+
+        if decoder_type in (1, 20):
+            # float16 encoded as uint16
+            arr = np.array([raw_value], dtype=np.uint16)
+            return float(np.frombuffer(arr.tobytes(), dtype=np.float16)[0])
+        elif decoder_type == 15:
+            # Gear lookup
+            table = {
+                ord("N"): 0,
+                ord("1"): 1,
+                ord("2"): 2,
+                ord("3"): 3,
+                ord("4"): 4,
+                ord("5"): 5,
+                ord("6"): 6,
+            }
+            return table.get(raw_value, raw_value)
+        return raw_value
+
+    def _decode_channel_array(self, raw_samples, ch):
+        """Decode a list of raw byte samples into float values."""
+        values = []
+        is_voltage = chs_units(ch) == "V"
+        for sample_bytes in raw_samples:
+            raw = self._decode_sample(sample_bytes, ch.decoder_type)
+            if raw is None:
+                return None
+            value = self._apply_fixup(raw, ch.decoder_type)
+            if is_voltage:
+                value = value / 1000.0
+            values.append(float(value))
+        return values
+
+    def _compare_all_values(self, result, cython_log):
+        """Compare every sample of every channel. Returns (checked_channels, errors)."""
+        import math
+
+        arrays = self._build_channel_arrays(result)
+        checked = 0
+        errors = []
+
+        for idx, ch in result.channels.items():
+            name = chs_long_name(ch)
+            if name not in cython_log.channels:
+                continue
+            if idx not in arrays:
+                continue
+            if ch.decoder_type not in DECODER_TABLE:
+                continue
+
+            spec_values = self._decode_channel_array(arrays[idx], ch)
+            if spec_values is None:
+                continue
+
+            cython_col = cython_log.channels[name].column(name)
+            cython_values = cython_col.to_pylist()
+
+            if len(spec_values) != len(cython_values):
+                errors.append(
+                    f"Ch {name!r}: length mismatch spec={len(spec_values)} "
+                    f"cython={len(cython_values)}"
+                )
+                continue
+
+            for i, (sv, cv) in enumerate(zip(spec_values, cython_values)):
+                cv = float(cv)
+                # Handle NaN
+                if math.isnan(sv) and math.isnan(cv):
+                    continue
+                if math.isnan(sv) or math.isnan(cv):
+                    errors.append(f"Ch {name!r} sample {i}: NaN mismatch " f"spec={sv} cython={cv}")
+                    break
+                if abs(sv - cv) >= 0.01:
+                    errors.append(
+                        f"Ch {name!r} sample {i}/{len(spec_values)}: "
+                        f"spec={sv} cython={cv} diff={abs(sv - cv)}"
+                    )
+                    break  # One error per channel is enough for diagnostics
+
+            checked += 1
+
+        return checked, errors
+
+    def test_sfj_every_value(self, sfj_parsed, sfj_cython):
+        """Every sample of every SFJ channel must match Cython."""
+        checked, errors = self._compare_all_values(sfj_parsed, sfj_cython)
+        assert checked > 0, "No channels were cross-validated"
+        assert not errors, f"Value mismatches:\n" + "\n".join(errors)
+
+    def test_86_every_value(self, file_86_parsed, file_86_cython):
+        """Every sample of every 86 channel must match Cython."""
+        checked, errors = self._compare_all_values(file_86_parsed, file_86_cython)
+        assert checked > 0, "No channels were cross-validated"
+        assert not errors, f"Value mismatches:\n" + "\n".join(errors)
+
+
+# ---------------------------------------------------------------------------
+# Cross-validation: Official AIM DLL
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+class TestDLLCrossValidation:
+    """Compare spec parser against the official AIM MatLabXRK DLL.
+
+    Uses Wine to call the proprietary DLL and compares channel sample counts
+    and values. Tests are skipped if Wine or the DLL are not available.
+    """
+
+    def _dll_channels_by_name(self, dll_data):
+        """Build {name: channel_dict} from DLL extract data."""
+        return {ch["name"]: ch for ch in dll_data["channels"]}
+
+    def test_sfj_channel_sample_counts(self, sfj_parsed, sfj_dll):
+        """Every channel's sample count should match the DLL for SFJ."""
+        dll_channels = self._dll_channels_by_name(sfj_dll)
+        arrays = TestExhaustiveChannelValues()._build_channel_arrays(sfj_parsed)
+        errors = []
+
+        for idx, ch in sfj_parsed.channels.items():
+            name = chs_long_name(ch)
+            if name not in dll_channels:
+                continue
+            if idx not in arrays:
+                continue
+            dll_count = dll_channels[name]["sample_count"]
+            if dll_count == 0:
+                continue
+            spec_count = len(arrays[idx])
+            if spec_count != dll_count:
+                errors.append(f"Ch {name!r}: spec={spec_count} dll={dll_count}")
+
+        assert not errors, "Sample count mismatches vs DLL:\n" + "\n".join(errors)
+
+    def test_86_channel_sample_counts(self, file_86_parsed, file_86_dll):
+        """Every channel's sample count should match the DLL for 86."""
+        dll_channels = self._dll_channels_by_name(file_86_dll)
+        arrays = TestExhaustiveChannelValues()._build_channel_arrays(file_86_parsed)
+        errors = []
+
+        for idx, ch in file_86_parsed.channels.items():
+            name = chs_long_name(ch)
+            if name not in dll_channels:
+                continue
+            if idx not in arrays:
+                continue
+            dll_count = dll_channels[name]["sample_count"]
+            if dll_count == 0:
+                continue
+            spec_count = len(arrays[idx])
+            if spec_count != dll_count:
+                errors.append(f"Ch {name!r}: spec={spec_count} dll={dll_count}")
+
+        assert not errors, "Sample count mismatches vs DLL:\n" + "\n".join(errors)
+
+    # Known DLL vs spec/Cython differences:
+    # - StartRec: DLL returns 1.0, Cython/spec returns 2^-24 (decoder type mismatch
+    #   for this internal flag channel — not real telemetry data)
+    _DLL_SKIP_CHANNELS = {
+        "StartRec",
+    }
+
+    def _compare_spot_values(self, parsed, dll_data):
+        """Compare first/last values for all channels. Returns (checked, errors)."""
+        dll_channels = self._dll_channels_by_name(dll_data)
+        arrays = TestExhaustiveChannelValues()._build_channel_arrays(parsed)
+        exhaustive = TestExhaustiveChannelValues()
+        errors = []
+        checked = 0
+
+        for idx, ch in parsed.channels.items():
+            name = chs_long_name(ch)
+            if name in self._DLL_SKIP_CHANNELS:
+                continue
+            if name not in dll_channels:
+                continue
+            dll_ch = dll_channels[name]
+            if dll_ch["sample_count"] == 0 or "first_samples" not in dll_ch:
+                continue
+            if idx not in arrays or not arrays[idx]:
+                continue
+            if ch.decoder_type not in DECODER_TABLE:
+                continue
+
+            spec_values = exhaustive._decode_channel_array(arrays[idx], ch)
+            if spec_values is None:
+                continue
+
+            dll_first = dll_ch["first_samples"]["values"][0]
+            spec_first = spec_values[0]
+            if abs(spec_first - dll_first) >= 0.01:
+                errors.append(f"Ch {name!r} first: spec={spec_first} dll={dll_first}")
+
+            dll_last = dll_ch["last_samples"]["values"][-1]
+            spec_last = spec_values[-1]
+            if abs(spec_last - dll_last) >= 0.01:
+                errors.append(f"Ch {name!r} last: spec={spec_last} dll={dll_last}")
+
+            checked += 1
+
+        return checked, errors
+
+    def test_sfj_channel_values_spot_check(self, sfj_parsed, sfj_dll):
+        """First and last sample values should match DLL for SFJ."""
+        checked, errors = self._compare_spot_values(sfj_parsed, sfj_dll)
+        assert checked > 0, "No channels were spot-checked against DLL"
+        assert not errors, "Value mismatches vs DLL:\n" + "\n".join(errors)
+
+    def test_86_channel_values_spot_check(self, file_86_parsed, file_86_dll):
+        """First and last sample values should match DLL for 86."""
+        checked, errors = self._compare_spot_values(file_86_parsed, file_86_dll)
+        assert checked > 0, "No channels were spot-checked against DLL"
+        assert not errors, "Value mismatches vs DLL:\n" + "\n".join(errors)
+
+    def test_sfj_lap_count(self, sfj_parsed, sfj_dll):
+        """Lap count should match DLL for SFJ."""
+        dll_lap_count = len(sfj_dll["laps"])
+        spec_laps = sfj_parsed.get_laps()
+        seg0 = [l for l in spec_laps if l["segment"] == 0]
+        seen = set()
+        unique = []
+        for l in seg0:
+            if l["lap_num"] not in seen:
+                seen.add(l["lap_num"])
+                unique.append(l)
+        assert len(unique) == dll_lap_count, f"Lap count: spec={len(unique)} dll={dll_lap_count}"
+
+    def test_86_lap_count(self, file_86_parsed, file_86_dll):
+        """Lap count should match DLL for 86."""
+        dll_lap_count = len(file_86_dll["laps"])
+        spec_laps = file_86_parsed.get_laps()
+        seg0 = [l for l in spec_laps if l["segment"] == 0]
+        seen = set()
+        unique = []
+        for l in seg0:
+            if l["lap_num"] not in seen:
+                seen.add(l["lap_num"])
+                unique.append(l)
+        assert len(unique) == dll_lap_count, f"Lap count: spec={len(unique)} dll={dll_lap_count}"
+
+    def test_sfj_metadata(self, sfj_parsed, sfj_dll):
+        """Metadata should match DLL for SFJ."""
+        dll_meta = sfj_dll["metadata"]
+        # Vehicle
+        veh_msgs = sfj_parsed.messages_by_token("VEH")
+        if veh_msgs:
+            assert veh_msgs[-1].payload == dll_meta["vehicle"]
+        # Track
+        trk_msgs = sfj_parsed.messages_by_token("TRK")
+        if trk_msgs and trk_msgs[-1].payload:
+            assert trk_msgs[-1].payload["name"] == dll_meta["track"]
+        # Racer
+        rcr_msgs = sfj_parsed.messages_by_token("RCR")
+        if rcr_msgs:
+            assert rcr_msgs[-1].payload == dll_meta["racer"]
+
+    def test_86_metadata(self, file_86_parsed, file_86_dll):
+        """Metadata should match DLL for 86."""
+        dll_meta = file_86_dll["metadata"]
+        veh_msgs = file_86_parsed.messages_by_token("VEH")
+        if veh_msgs:
+            assert veh_msgs[-1].payload == dll_meta["vehicle"]
+        trk_msgs = file_86_parsed.messages_by_token("TRK")
+        if trk_msgs and trk_msgs[-1].payload:
+            assert trk_msgs[-1].payload["name"] == dll_meta["track"]
+        rcr_msgs = file_86_parsed.messages_by_token("RCR")
+        if rcr_msgs:
+            assert rcr_msgs[-1].payload == dll_meta["racer"]
