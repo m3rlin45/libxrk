@@ -42,7 +42,6 @@ from spec.tests.conftest import (
 class TestParseAllFiles:
     """Verify that all test files parse successfully."""
 
-    @pytest.mark.slow
     @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
     def test_parse_without_errors(self, filepath):
         """Each file should parse without raising exceptions."""
@@ -50,7 +49,6 @@ class TestParseAllFiles:
         assert isinstance(result, ParseResult)
         assert len(result.messages) > 0
 
-    @pytest.mark.slow
     @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
     def test_minimal_leftover_bytes(self, filepath):
         """Leftover bytes should be zero or negligible (< 20)."""
@@ -131,7 +129,6 @@ class TestCHSCrossValidation:
             "display_range_max": md.get(b"display_range_max", b"").decode(),
         }
 
-    @pytest.mark.slow
     def test_sfj_channel_names(self, sfj_parsed, sfj_cython):
         """All CHS long_names should match channels known to Cython parser."""
         spec_names = {chs_long_name(ch) for ch in sfj_parsed.channels.values()}
@@ -143,7 +140,6 @@ class TestCHSCrossValidation:
                 continue
             assert name in spec_names, f"Cython channel {name!r} not in spec CHS definitions"
 
-    @pytest.mark.slow
     def test_86_channel_names(self, file_86_parsed, file_86_cython):
         """All CHS long_names should match channels known to Cython parser."""
         spec_names = {chs_long_name(ch) for ch in file_86_parsed.channels.values()}
@@ -169,7 +165,6 @@ class TestCHSCrossValidation:
         "GPS_Yaw_Rate",
     }
 
-    @pytest.mark.slow
     def test_sfj_channel_metadata(self, sfj_parsed, sfj_cython):
         """Every CHS metadata field should match the Cython parser for SFJ."""
         for idx, ch in sfj_parsed.channels.items():
@@ -220,7 +215,6 @@ class TestCHSCrossValidation:
                 str(ch.display_range_max) == md["display_range_max"]
             ), f"Ch {name!r}: display_range_max mismatch"
 
-    @pytest.mark.slow
     def test_86_channel_metadata(self, file_86_parsed, file_86_cython):
         """Every CHS metadata field should match the Cython parser for 86."""
         for idx, ch in file_86_parsed.channels.items():
@@ -289,7 +283,6 @@ class TestCHSCrossValidation:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.slow
 class TestGRPCrossValidation:
     """Verify group definitions are consistent."""
 
@@ -318,7 +311,6 @@ class TestGRPCrossValidation:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.slow
 class TestGPSCrossValidation:
     """Verify GPS message parsing matches Cython output."""
 
@@ -387,7 +379,6 @@ class TestGPSCrossValidation:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.slow
 class TestLAPCrossValidation:
     """Verify LAP messages match Cython laps table."""
 
@@ -447,7 +438,6 @@ class TestLAPCrossValidation:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.slow
 class TestMetadataCrossValidation:
     """Verify metadata from string and structured messages."""
 
@@ -600,7 +590,6 @@ class TestCDECrossValidation:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.slow
 class TestDataMessageCrossValidation:
     """Verify data messages decode to the same values as Cython parser.
 
@@ -904,7 +893,6 @@ class TestDataMessageCrossValidation:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.slow
 class TestExhaustiveChannelValues:
     """Compare EVERY decoded channel value against Cython output.
 
@@ -1117,7 +1105,6 @@ class TestExhaustiveChannelValues:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.slow
 class TestDLLCrossValidation:
     """Compare spec parser against the official AIM MatLabXRK DLL.
 

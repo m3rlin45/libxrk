@@ -9,9 +9,8 @@ import struct
 
 import pytest
 
-pytestmark = pytest.mark.slow
 
-from construct import ConstructError, Select
+from construct import ConstructError
 
 from spec.xrk_format import (
     CHSPayload,
@@ -22,10 +21,7 @@ from spec.xrk_format import (
     CDEPayload,
     GPSRPayload,
     HeaderMessage,
-    SMessage,
-    GMessage,
-    MMessage,
-    cMessage,
+    _DATA_MSG_STRUCTS,
     _container_to_dict,
     build_chs,
     build_grp,
@@ -322,16 +318,20 @@ class TestDataMessageRoundTrip:
         return struct.pack("<HiHH", 0x4D28, timecode, channel_index, count) + data + b")"
 
     def _parse_data_message(self, frame, channel_sizes, group_sizes):
-        """Parse a data message using Select(SMessage, GMessage, MMessage, cMessage)."""
+        """Parse a data message using compiled opcode dispatch."""
+        opcode = frame[:2]
+        struct_def = _DATA_MSG_STRUCTS.get(opcode)
+        if struct_def is None:
+            return None
         try:
             stream = io.BytesIO(frame)
-            dmsg = Select(SMessage, GMessage, MMessage, cMessage).parse_stream(
+            dmsg = struct_def.parse_stream(
                 stream,
                 channel_sizes=channel_sizes,
                 group_sizes=group_sizes,
             )
             return dmsg.msg_type, _container_to_dict(dmsg), stream.tell()
-        except ConstructError:
+        except (ConstructError, KeyError):
             return None
 
     def test_s_message_round_trip(self, sfj_parsed):

@@ -1,3 +1,6 @@
+# File locks (pytest-xdist)
+*.wine_extract.lock
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
