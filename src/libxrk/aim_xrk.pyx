@@ -275,6 +275,7 @@ def _decode_sequence(s, progress=None):
     t1 = time.perf_counter()
     cdef vaccum * data_cat
     cdef accum * data_p
+    cdef cython.int * tc_ptr
     gpsmsg: vector[cython.uchar]
     gnfimsg: vector[cython.uchar]
     show_all: cython.int = 0
@@ -315,13 +316,18 @@ def _decode_sequence(s, progress=None):
                     if show_all:
                         print('tc=%d M idx=%d cnt=%d ms=%d' %
                               (msg.s.timecode, msg.s.index, msg.s.count, data_p.Mms))
-                    if msg.s.timecode > data_p.last_timecode:
+                    # Compute how many samples to skip (overlap with already-accepted data)
+                    m_skip: cython.int = 0
+                    if msg.s.timecode <= data_p.last_timecode and data_p.Mms > 0:
+                        m_skip = (data_p.last_timecode - msg.s.timecode) // data_p.Mms + 1
+                    if m_skip < msg.s.count:
                         data_p.last_timecode = msg.s.timecode + (msg.s.count-1) * data_p.Mms
                         m_tc : cython.int
-                        for m_tc in range(msg.s.count):
+                        for m_tc in range(m_skip, msg.s.count):
                             data_p.timecodes.push_back(msg.s.timecode + m_tc * data_p.Mms)
                         data_p.data.insert(data_p.data.end(),
-                                           &sv[oldpos+10], &sv[pos])
+                                           &sv[oldpos+10 + m_skip * data_p.add_helper],
+                                           &sv[pos])
                     pos += 1
                 elif typ == ord_op_c:
                     assert msg.c.unk1 == 0, '%x' % msg.c.unk1
@@ -381,6 +387,12 @@ def _decode_sequence(s, progress=None):
                     else:
                         data = s[oldpos + 12 : pos - 8]
                         if tok == _tokdec('CNF'):
+                            # Reset last_timecode so data from new CNF sections
+                            # is not dropped by the dedup check (timecodes may
+                            # restart or overlap across CNF boundaries).
+                            for cat_idx in range(4):
+                                for acc_idx in range(gc_data[cat_idx].size()):
+                                    gc_data[cat_idx][acc_idx].last_timecode = -1
                             data = _decode_sequence(data).messages
                             #channels = {} # Replays don't necessarily contain all the original channels
                             for m in data[_tokdec('CHS')]:
@@ -647,21 +659,35 @@ def _decode_sequence(s, progress=None):
                   )
         badbytes = 0
     assert pos == len(s)
-    # quick scan through all the groups/channels for the first used timecode
+    # Compute time_offset and last_time from raw gc_data buffers and GPS data.
+    # Channel timecodes are not yet populated (process_channel runs later), so we
+    # scan the accumulated raw data vectors directly.
     if channels:
-        # int(min(time_offset, time_offset,
-        time_offset = int(min(
-            ([time_offset] if time_offset is not None else [])
-            #XXX*[s2mv[l[0]] for l in g_indices if l.size()],
-            #XXX*[s2mv[l[0]] for l in ch_indices if l.size()],
-            + [c.timecodes[0] for c in channels if c and len(c.timecodes)],
-            default=0))
-        last_time = int(max(
-            ([last_time] if last_time is not None else [])
-            #XXX*[s2mv[l[l.size()-1]] for l in g_indices if l.size()],
-            #XXX*[s2mv[l[l.size()-1]] for l in ch_indices if l.size()],
-            + [c.timecodes[len(c.timecodes)-1] for c in channels if c and len(c.timecodes)],
-            default=0))
+        tc_min_candidates = [time_offset] if time_offset is not None else []
+        tc_max_candidates = [last_time] if last_time is not None else []
+        # gc_data[0..2]: first/last 4 bytes of .data are int32 timecodes
+        for cat_idx in range(3):
+            for acc_idx in range(gc_data[cat_idx].size()):
+                if gc_data[cat_idx][acc_idx].data.size():
+                    tc_ptr = <cython.int *>&gc_data[cat_idx][acc_idx].data[0]
+                    tc_min_candidates.append(tc_ptr[0])
+                    stride = gc_data[cat_idx][acc_idx].add_helper - (3 if cat_idx < 2 else 8)
+                    n_rows = gc_data[cat_idx][acc_idx].data.size() // stride
+                    tc_ptr = <cython.int *>&gc_data[cat_idx][acc_idx].data[(n_rows - 1) * stride]
+                    tc_max_candidates.append(tc_ptr[0])
+        # gc_data[3] (M messages): timecodes stored in separate vector
+        for acc_idx in range(gc_data[3].size()):
+            if gc_data[3][acc_idx].timecodes.size():
+                tc_min_candidates.append(gc_data[3][acc_idx].timecodes[0])
+                tc_max_candidates.append(gc_data[3][acc_idx].timecodes[gc_data[3][acc_idx].timecodes.size() - 1])
+        # GPS messages: 56-byte records, first 4 bytes = int32 timecode
+        if gpsmsg.size():
+            tc_ptr = <cython.int *>&gpsmsg[0]
+            tc_min_candidates.append(tc_ptr[0])
+            tc_ptr = <cython.int *>&gpsmsg[gpsmsg.size() - 56]
+            tc_max_candidates.append(tc_ptr[0])
+        time_offset = int(min(tc_min_candidates, default=0))
+        last_time = int(max(tc_max_candidates, default=0))
     def process_group(g):
         g.samples = np.array([], dtype=np.int32)
         g.timecodes = g.samples.data
@@ -1080,7 +1106,7 @@ def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
         # Only add session boundaries if we have detected lap crossings
         # This creates laps from each crossing to the next
         if lap_markers:
-            lap_markers = [0] + lap_markers + [session_end]
+            lap_markers = lap_markers + [session_end]
             for lap, (start_time, end_time) in enumerate(zip(lap_markers[:-1], lap_markers[1:])):
                 lap_nums.append(lap)
                 start_times.append(start_time)

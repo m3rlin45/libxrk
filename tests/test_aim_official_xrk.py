@@ -44,7 +44,8 @@ class TestAIMOfficialXRK(unittest.TestCase):
         """
         log = aim_xrk(str(AIM_OFFICIAL_XRK_FILE), progress=None)
 
-        # Should have laps detected via GPS
+        # Should have laps detected via GPS (DLL reports 11 laps)
+        self.assertEqual(log.laps.num_rows, 11, "Expected 11 laps (matching DLL)")
         self.assertGreater(log.laps.num_rows, 0, "Expected at least one lap")
 
         # Get lap data as Python lists for easier assertions
