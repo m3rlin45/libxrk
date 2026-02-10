@@ -15,7 +15,7 @@ decompressed result is a standard XRK byte stream. Some XRZ files may be
 truncated (incomplete logging sessions); use `decompressobj()` with `flush()`
 to recover partial data.
 
-Reference: `aim_xrk.pyx:1139-1160` (`_decompress_if_zlib`)
+Reference: `aim_xrk.pyx:1165-1186` (`_decompress_if_zlib`)
 
 ## 2. Time Offset Computation
 
@@ -32,7 +32,7 @@ milliseconds since session start.
 If no LAP messages exist, `time_offset` is the minimum of the first timecodes
 across all channels.
 
-Reference: `aim_xrk.pyx:519-521`, `aim_xrk.pyx:652-658`
+Reference: `aim_xrk.pyx:530-533`, `aim_xrk.pyx:662-690`
 
 ## 3. Decoder Dispatch Table
 
@@ -42,7 +42,7 @@ This determines how to interpret the raw data bytes:
 | decoder_type | struct fmt | Size | Interpolate | Notes |
 |-------------|-----------|------|-------------|-------|
 | 0  | `i` (int32)   | 4 | No  | Master Clock on M4GT4 |
-| 1  | `H` (uint16)  | 2 | Yes | **float16 encoded** — decode uint16 as IEEE 754 half-precision |
+| 1  | `H` (uint16)  | 2 | Yes | Plain uint16 (e.g. StartRec) |
 | 3  | `i` (int32)   | 4 | No  | Master Clock on ScottE46 |
 | 4  | `h` (int16)   | 2 | No  | |
 | 6  | `f` (float32) | 4 | Yes | Standard float |
@@ -51,7 +51,7 @@ This determines how to interpret the raw data bytes:
 | 12 | `i` (int32)   | 4 | No  | Predictive Time |
 | 13 | `B` (uint8)   | 1 | No  | Status field |
 | 15 | `H` (uint16)  | 2 | No  | **Gear lookup** — map ASCII 'N'→0, '1'→1, ..., '6'→6 |
-| 20 | `H` (uint16)  | 2 | Yes | **float16 encoded** — same as decoder 1 |
+| 20 | `H` (uint16)  | 2 | Yes | **float16 encoded** — decode uint16 as IEEE 754 half-precision |
 | 22 | `i` (int32)   | 4 | No  | Lap Time (variant) |
 | 24 | `i` (int32)   | 4 | No  | Best Run Diff |
 | 26 | `i` (int32)   | 4 | No  | Total Odometer |
@@ -63,7 +63,7 @@ This determines how to interpret the raw data bytes:
 | 38 | `i` (int32)   | 4 | No  | GPS_Date |
 | 39 | `i` (int32)   | 4 | No  | GPS_Time |
 
-**Float16 encoding (decoders 1, 20):** The raw uint16 value is reinterpreted as
+**Float16 encoding (decoder 20):** The raw uint16 value is reinterpreted as
 IEEE 754 half-precision (binary16) and promoted to float32. This is the most
 common encoding for analog sensor channels.
 
@@ -73,7 +73,8 @@ Map `'N'`(0x4E)→0, `'1'`(0x31)→1, ..., `'6'`(0x36)→6.
 **Special fixups:**
 - Channels named `Calculated_Gear` or `PreCalcGear` use decoder `Q` (uint64)
   with bit extraction: `(value >> 16) & 7` (returns 0 if bit 19 is set).
-- Channels with units `V` (Volts): divide by 1000 (hardware reports millivolts).
+- Unit type 21 (`mV`): when the calibrated flag (high bit of `unit_type_byte`) is set,
+  the display unit becomes `V` and values are divided by 1000.
 
 Reference: `aim_xrk.pyx:95-137`
 
@@ -105,7 +106,7 @@ The ECEF (Earth-Centered, Earth-Fixed) coordinates from NAV-SOL are converted
 to latitude/longitude/altitude using the **Vermeille 2003** algorithm, which
 provides high accuracy without iteration.
 
-Reference: `gps.py:62-123` (`ecef2lla`)
+Reference: `gps.py:230-255` (`ecef2lla_vermeille2003`, aliased as `ecef2lla` at line 383)
 
 ### Computed GPS Channels
 
@@ -121,14 +122,15 @@ From the raw NAV-SOL fields, the following channels are derived:
 
 ### Derived Acceleration/Yaw Channels
 
-These require velocity transformation to ENU (East-North-Up) coordinates:
+These require velocity transformation to ENU (East-North-Up) coordinates.
+An intermediate `heading = atan2(V_east, V_north)` is computed but not emitted
+as a channel.
 
 - **GPS_InlineAcc** = `d(speed)/dt / 9.81` [g]
-- **GPS Heading** = `atan2(V_east, V_north)` [deg]
 - **GPS_Yaw_Rate** = `d(heading)/dt` [deg/s] (with ±180° wrap handling)
 - **GPS_LateralAcc** = `speed × yaw_rate × π/180 / 9.81` [g]
 
-Reference: `aim_xrk.pyx:884-1010`, `gps.py`
+Reference: `aim_xrk.pyx:910-1036`, `gps.py`
 
 ## 6. GPS Timing Bug
 
@@ -147,7 +149,7 @@ the upper 16 bits are assumed to be unreliable.
 2. Add the base offset: `tc += timecodes[0] - (timecodes[0] & 0xFFFF)`
 3. Fix wrap-arounds: accumulate +65536 whenever `tc[i+1] < tc[i]`
 
-Reference: `aim_xrk.pyx:920-922`
+Reference: `aim_xrk.pyx:946-948`
 
 ### GNFI-Based Detection
 
@@ -156,7 +158,7 @@ truth. GNFI runs on the logger's internal clock, not GPS, so it's immune to
 the GPS timing bug. Large discrepancies between GNFI and GPS timecodes indicate
 the bug is present.
 
-Reference: `gps.py:131-214` (`fix_gps_timing_gaps`)
+Reference: `gps.py:513+` (`fix_gps_timing_gaps`)
 
 ## 7. Lap Detection
 
@@ -178,7 +180,7 @@ cross-track distance to the start/finish line:
 3. Find positions closest to the S/F line (minimum cross-track distance)
 4. Use these crossing points as lap boundaries
 
-Reference: `aim_xrk.pyx:1038-1099`, `gps.py:216-290` (`find_laps`)
+Reference: `aim_xrk.pyx:1064-1125` (`_get_laps`), `gps.py:309-380` (`find_laps`)
 
 ## 8. Channel Merging
 
@@ -213,7 +215,7 @@ decimal precision. The high bit indicates whether the channel has been calibrate
 | 18 | ms     | 0 |
 | 19 | Nm     | 0 |
 | 20 | km/h   | 0 |
-| 21 | V      | 1 |
+| 21 | mV     | 1 |
 | 22 | l      | 1 |
 | 24 | l/s    | 0 |
 | 26 | time?  | 0 |
@@ -223,4 +225,4 @@ decimal precision. The high bit indicates whether the channel has been calibrate
 | 33 | %      | 2 |
 | 43 | kg     | 3 |
 
-Reference: `aim_xrk.pyx:146-171`
+Reference: `aim_xrk.pyx:144-169`
