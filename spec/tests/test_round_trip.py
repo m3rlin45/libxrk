@@ -23,35 +23,9 @@ from spec.xrk_format import (
     HeaderMessage,
     _DATA_MSG_STRUCTS,
     _container_to_dict,
-    build_chs,
-    build_grp,
-    build_gps,
-    build_lap,
-    build_cde,
-    build_gnfi,
-    build_gpsr,
     build_header_frame,
-    parse_xrk_file,
-    chs_long_name,
     _tokdec,
-    _tokenc,
 )
-from spec.tests.conftest import SFJ_XRK, FILE_86_XRK
-
-
-def _find_nested_messages(result, token_str):
-    """Find messages by token, including inside CNF/ENF sub-results."""
-    from spec.xrk_format import ParseResult, _tokdec
-
-    tok = _tokdec(token_str)
-    found = []
-    for m in result.messages:
-        if m.msg_type == "header" and m.token == tok:
-            found.append(m)
-        # Recurse into CNF/ENF sub-results
-        if m.msg_type == "header" and isinstance(m.payload, ParseResult):
-            found.extend(_find_nested_messages(m.payload, token_str))
-    return found
 
 
 # ---------------------------------------------------------------------------
@@ -62,27 +36,16 @@ def _find_nested_messages(result, token_str):
 class TestCHSRoundTrip:
     """CHS payloads should survive parse -> build round-trip."""
 
-    def test_sfj_chs_round_trip(self, sfj_parsed):
-        """Every CHS payload from SFJ should round-trip exactly."""
-        chs_msgs = _find_nested_messages(sfj_parsed, "CHS")
+    def test_chs_round_trip(self, parsed_only):
+        """Every CHS payload should round-trip exactly."""
+        chs_msgs = parsed_only.find_nested_messages("CHS")
         assert len(chs_msgs) > 0
         for msg in chs_msgs:
             raw = msg.raw_payload
             assert len(raw) == 112
             parsed = CHSPayload.parse(raw)
-            rebuilt = build_chs(parsed)
-            assert rebuilt == raw, f"CHS round-trip failed for {chs_long_name(parsed)!r}"
-
-    def test_86_chs_round_trip(self, file_86_parsed):
-        """Every CHS payload from 86 should round-trip exactly."""
-        chs_msgs = _find_nested_messages(file_86_parsed, "CHS")
-        assert len(chs_msgs) > 0
-        for msg in chs_msgs:
-            raw = msg.raw_payload
-            assert len(raw) == 112
-            parsed = CHSPayload.parse(raw)
-            rebuilt = build_chs(parsed)
-            assert rebuilt == raw, f"CHS round-trip failed for {chs_long_name(parsed)!r}"
+            rebuilt = CHSPayload.build(parsed)
+            assert rebuilt == raw, f"CHS round-trip failed for {parsed.name!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -95,12 +58,12 @@ class TestGRPRoundTrip:
 
     def test_86_grp_round_trip(self, file_86_parsed):
         """Every GRP payload from 86 should round-trip exactly."""
-        grp_msgs = _find_nested_messages(file_86_parsed, "GRP")
+        grp_msgs = file_86_parsed.find_nested_messages("GRP")
         assert len(grp_msgs) > 0
         for msg in grp_msgs:
             raw = msg.raw_payload
             parsed = GRPPayload.parse(raw)
-            rebuilt = build_grp(parsed)
+            rebuilt = GRPPayload.build(parsed)
             assert rebuilt == raw, f"GRP round-trip failed for index {parsed.index}"
 
 
@@ -112,20 +75,12 @@ class TestGRPRoundTrip:
 class TestGPSRoundTrip:
     """GPS payloads should survive parse -> build round-trip."""
 
-    def test_sfj_gps_round_trip(self, sfj_parsed):
-        """First 10 GPS payloads from SFJ should round-trip."""
-        for raw in sfj_parsed.gps_payloads[:10]:
+    def test_gps_round_trip(self, parsed_only):
+        """First 10 GPS payloads should round-trip."""
+        for raw in parsed_only.gps_payloads[:10]:
             assert len(raw) == 56
             parsed = GPSPayload.parse(raw)
-            rebuilt = build_gps(parsed)
-            assert rebuilt == raw
-
-    def test_86_gps_round_trip(self, file_86_parsed):
-        """First 10 GPS payloads from 86 should round-trip."""
-        for raw in file_86_parsed.gps_payloads[:10]:
-            assert len(raw) == 56
-            parsed = GPSPayload.parse(raw)
-            rebuilt = build_gps(parsed)
+            rebuilt = GPSPayload.build(parsed)
             assert rebuilt == raw
 
 
@@ -137,26 +92,15 @@ class TestGPSRoundTrip:
 class TestLAPRoundTrip:
     """LAP payloads should survive parse -> build round-trip."""
 
-    def test_sfj_lap_round_trip(self, sfj_parsed):
-        """Every LAP payload from SFJ should round-trip."""
-        lap_msgs = sfj_parsed.messages_by_token("LAP")
+    def test_lap_round_trip(self, parsed_only):
+        """Every LAP payload should round-trip."""
+        lap_msgs = parsed_only.messages_by_token("LAP")
         assert len(lap_msgs) > 0
         for msg in lap_msgs:
             raw = msg.raw_payload
             assert len(raw) == 20
             parsed = LAPPayload.parse(raw)
-            rebuilt = build_lap(parsed)
-            assert rebuilt == raw
-
-    def test_86_lap_round_trip(self, file_86_parsed):
-        """Every LAP payload from 86 should round-trip."""
-        lap_msgs = file_86_parsed.messages_by_token("LAP")
-        assert len(lap_msgs) > 0
-        for msg in lap_msgs:
-            raw = msg.raw_payload
-            assert len(raw) == 20
-            parsed = LAPPayload.parse(raw)
-            rebuilt = build_lap(parsed)
+            rebuilt = LAPPayload.build(parsed)
             assert rebuilt == raw
 
 
@@ -177,7 +121,7 @@ class TestCDERoundTrip:
             raw = msg.raw_payload
             assert len(raw) == 6
             parsed = CDEPayload.parse(raw)
-            rebuilt = build_cde(parsed)
+            rebuilt = CDEPayload.build(parsed)
             assert rebuilt == raw
 
 
@@ -196,7 +140,7 @@ class TestGNFIRoundTrip:
         for raw in sfj_parsed.gnfi_payloads[:10]:
             assert len(raw) == 32
             parsed = GNFIPayload.parse(raw)
-            rebuilt = build_gnfi(parsed)
+            rebuilt = GNFIPayload.build(parsed)
             assert rebuilt == raw
 
 
@@ -216,7 +160,7 @@ class TestGPSRRoundTrip:
             raw = msg.raw_payload
             assert len(raw) == 36
             parsed = GPSRPayload.parse(raw)
-            rebuilt = build_gpsr(parsed)
+            rebuilt = GPSRPayload.build(parsed)
             assert rebuilt == raw
 
 
@@ -258,7 +202,7 @@ class TestHeaderFrameRoundTrip:
 
     def test_build_parse_chs_frame(self, sfj_parsed):
         """Build a CHS header frame and parse it back."""
-        chs_msgs = _find_nested_messages(sfj_parsed, "CHS")
+        chs_msgs = sfj_parsed.find_nested_messages("CHS")
         msg = chs_msgs[0]
         # Build a complete framed message
         frame = build_header_frame("CHS", msg.raw_payload, version=msg.version)

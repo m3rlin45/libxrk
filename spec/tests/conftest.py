@@ -1,6 +1,5 @@
 """Shared fixtures and path constants for spec tests."""
 
-import filelock
 import json
 import subprocess
 from pathlib import Path
@@ -79,15 +78,36 @@ def aim_official_cython():
     return aim_xrk(str(AIM_OFFICIAL_XRK))
 
 
+@pytest.fixture(scope="session", params=["sfj", "86"], ids=["sfj", "86"])
+def parsed_and_cython(request, sfj_parsed, sfj_cython, file_86_parsed, file_86_cython):
+    """Yield (parsed, cython) pairs for both SFJ and 86 datasets."""
+    if request.param == "sfj":
+        return sfj_parsed, sfj_cython
+    return file_86_parsed, file_86_cython
+
+
+@pytest.fixture(scope="session", params=["sfj", "86"], ids=["sfj", "86"])
+def parsed_only(request, sfj_parsed, file_86_parsed):
+    """Yield parsed result for both SFJ and 86 datasets."""
+    if request.param == "sfj":
+        return sfj_parsed
+    return file_86_parsed
+
+
+@pytest.fixture(scope="session", params=["sfj", "86"], ids=["sfj", "86"])
+def parsed_and_dll(request, sfj_parsed, sfj_dll, file_86_parsed, file_86_dll):
+    """Yield (parsed, dll_data) pairs for both SFJ and 86 datasets."""
+    if request.param == "sfj":
+        return sfj_parsed, sfj_dll
+    return file_86_parsed, file_86_dll
+
+
 def _dll_available():
     """Check if Wine and the AIM DLL are available."""
     dll_path = REFERENCE_DLL_DIR / "MatLabXRK-2017-64-ReleaseU.dll"
     wine_path = Path("/usr/lib/wine/wine64")
     python_path = REFERENCE_DLL_DIR / ".setup" / "python-embed" / "python.exe"
     return dll_path.exists() and wine_path.exists() and python_path.exists()
-
-
-_WINE_LOCK = filelock.FileLock(Path(__file__).parent / ".wine_extract.lock")
 
 
 def _dll_extract(xrk_path):
@@ -108,7 +128,10 @@ def _dll_extract(xrk_path):
         "HOME": str(Path.home()),
         "PATH": "/usr/bin:/bin",
     }
-    with _WINE_LOCK:
+    import filelock
+
+    lock = filelock.FileLock(Path(__file__).parent / ".wine_extract.lock")
+    with lock:
         result = subprocess.run(
             [wine_path, python_path, script_path, xrk_wine_path],
             capture_output=True,
