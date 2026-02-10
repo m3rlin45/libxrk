@@ -621,6 +621,8 @@ XRKMessage = Struct(
     ),
 )
 
+XRKStream = GreedyRange(XRKMessage, discard=True)
+
 # ---------------------------------------------------------------------------
 # Payload Dispatch Table
 # ---------------------------------------------------------------------------
@@ -880,24 +882,19 @@ class ParseResult:
 def _parse_sequence(data, _depth=0):
     """Internal recursive parser for XRK byte sequences.
 
-    Iterates XRKMessage (declarative Switch + Peek) over the stream. Each
-    successful parse triggers side-effect hooks (_on_header, _on_data) that
-    populate the result. Results are not accumulated to avoid O(n) memory.
+    Uses XRKStream (GreedyRange with discard=True) to iterate XRKMessage over
+    the stream. Side-effect hooks (_on_header, _on_data) populate the result;
+    parsed values are discarded to avoid O(n) memory accumulation.
     """
     result = ParseResult()
     stream = io.BytesIO(data)
-    data_len = len(data)
-    while stream.tell() < data_len:
-        try:
-            XRKMessage.parse_stream(
-                stream,
-                result=result,
-                channel_sizes=result.channel_sizes,
-                group_sizes=result.group_sizes,
-                depth=_depth,
-            )
-        except ConstructError:
-            break
+    XRKStream.parse_stream(
+        stream,
+        result=result,
+        channel_sizes=result.channel_sizes,
+        group_sizes=result.group_sizes,
+        depth=_depth,
+    )
     result.leftover_bytes = len(data) - stream.tell()
     return result
 
