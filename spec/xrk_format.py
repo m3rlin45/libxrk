@@ -550,22 +550,57 @@ _DATA_MSG_STRUCTS = {
 # Payload Dispatch Table
 # ---------------------------------------------------------------------------
 
-# Maps token int -> Construct Struct for payloads that can be parsed directly.
-# Tokens not in this table have special handling (GPS raw storage, CNF/ENF
-# recursion, string messages, ODO array).
-_PAYLOAD_STRUCTS = {
-    TOK_CHS: CHSPayload,
-    TOK_GRP: GRPPayload,
-    TOK_LAP: LAPPayload,
-    TOK_CDE: CDEPayload,
-    TOK_CAL: CALPayload,
-    TOK_IDN: IDNPayload,
-    TOK_TRK: TRKPayload,
-    TOK_GPSR: GPSRPayload,
-    TOK_ISLV: ISLVPayload,
-    TOK_SRC: SRCPayload,
-    TOK_VET: VETPayload,
-    TOK_RACM: RACMPayload,
+# --- Side-effect helpers for dispatch table ---
+
+
+def _register_chs(parsed, result):
+    idx = parsed.index
+    result.channels[idx] = parsed
+    result.channel_sizes[idx] = parsed.data_size
+    result.channel_mms[idx] = parsed.sample_period_us // 1000
+
+
+def _register_grp(parsed, result):
+    idx = parsed.index
+    result.groups[idx] = parsed
+    result.group_sizes[idx] = sum(result.channel_sizes.get(ch, 0) for ch in parsed.channel_indices)
+
+
+def _merge_cnf_result(sub, result):
+    for idx, ch in sub.channels.items():
+        if idx not in result.channels:
+            _register_chs(ch, result)
+    for idx, grp in sub.groups.items():
+        if idx not in result.groups:
+            _register_grp(grp, result)
+
+
+# Dispatch table: token -> handler descriptor tuple
+# Formats:
+#   ("raw", attr_name)                    — append raw bytes to result.attr
+#   ("parse", struct)                     — parse with Construct struct
+#   ("parse", struct, post_fn)            — parse + call post_fn(parsed, result)
+#   ("parse", struct, post_fn, attr)      — parse + post_fn + return getattr(parsed, attr)
+#   ("recurse", "merge" | None)           — recursive _parse_sequence
+_DISPATCH_TABLE = {
+    TOK_GPS: ("raw", "gps_payloads"),
+    TOK_GPS1: ("raw", "gps_payloads"),
+    TOK_GNFI: ("raw", "gnfi_payloads"),
+    TOK_CHS: ("parse", CHSPayload, _register_chs),
+    TOK_GRP: ("parse", GRPPayload, _register_grp),
+    TOK_CNF: ("recurse", "merge"),
+    TOK_ENF: ("recurse", None),
+    TOK_ODO: ("parse", ODOPayload, None, "records"),
+    TOK_LAP: ("parse", LAPPayload),
+    TOK_CDE: ("parse", CDEPayload),
+    TOK_CAL: ("parse", CALPayload),
+    TOK_IDN: ("parse", IDNPayload),
+    TOK_TRK: ("parse", TRKPayload),
+    TOK_GPSR: ("parse", GPSRPayload),
+    TOK_ISLV: ("parse", ISLVPayload),
+    TOK_SRC: ("parse", SRCPayload),
+    TOK_VET: ("parse", VETPayload),
+    TOK_RACM: ("parse", RACMPayload),
 }
 
 
@@ -605,73 +640,38 @@ def _container_to_dict(container):
     return d
 
 
-_RAW_STORAGE_TOKENS = {
-    TOK_GPS: "gps_payloads",
-    TOK_GPS1: "gps_payloads",
-    TOK_GNFI: "gnfi_payloads",
-}
-
-
 def _dispatch_payload(token, raw_payload, result, _depth):
     """Dispatch a header message payload to the appropriate parser.
 
-    Handles state-updating side effects (registering channel/group sizes,
-    CNF/ENF recursion). All binary interpretation is via Construct Structs.
+    Uses _DISPATCH_TABLE for declarative routing. Handles raw storage, Construct
+    parsing with optional side effects, and CNF/ENF recursion.
     """
-    # 1. Raw storage (GPS, GNFI — stored for batch processing)
-    storage_attr = _RAW_STORAGE_TOKENS.get(token)
-    if storage_attr is not None:
-        getattr(result, storage_attr).append(raw_payload)
-        return None
+    entry = _DISPATCH_TABLE.get(token)
+    if entry is not None:
+        action = entry[0]
+        if action == "raw":
+            getattr(result, entry[1]).append(raw_payload)
+            return None
+        if action == "parse":
+            parsed = _parse_payload(entry[1], raw_payload)
+            if parsed is None:
+                return None
+            if len(entry) > 2 and entry[2] is not None:
+                entry[2](parsed, result)
+            if len(entry) > 3:
+                return getattr(parsed, entry[3])
+            return parsed
+        if action == "recurse":
+            sub = _parse_sequence(raw_payload, include_data_messages=False, _depth=_depth + 1)
+            if entry[1] == "merge":
+                _merge_cnf_result(sub, result)
+            return sub
 
-    # 2. State-updating payloads (CHS, GRP — register sizes)
-    if token == TOK_CHS:
-        parsed = _parse_payload(CHSPayload, raw_payload)
-        if parsed:
-            idx = parsed.index
-            result.channels[idx] = parsed
-            result.channel_sizes[idx] = parsed.data_size
-            result.channel_mms[idx] = parsed.sample_period_us // 1000
-        return parsed
-
-    if token == TOK_GRP:
-        parsed = _parse_payload(GRPPayload, raw_payload)
-        if parsed:
-            idx = parsed.index
-            result.groups[idx] = parsed
-            grp_size = sum(result.channel_sizes.get(ch, 0) for ch in parsed.channel_indices)
-            result.group_sizes[idx] = grp_size
-        return parsed
-
-    # 3. Recursive parsing (CNF, ENF — embedded header sections)
-    if token in (TOK_CNF, TOK_ENF):
-        sub = _parse_sequence(raw_payload, include_data_messages=False, _depth=_depth + 1)
-        if token == TOK_CNF:
-            for idx, ch in sub.channels.items():
-                if idx not in result.channels:
-                    result.channels[idx] = ch
-                    result.channel_sizes[idx] = ch.data_size
-                    result.channel_mms[idx] = ch.sample_period_us // 1000
-            for idx, grp in sub.groups.items():
-                if idx not in result.groups:
-                    result.groups[idx] = grp
-                    grp_size = sum(result.channel_sizes.get(ch, 0) for ch in grp.channel_indices)
-                    result.group_sizes[idx] = grp_size
-        return sub
-
-    # 4. Declarative Construct payloads (dispatch table)
-    if token == TOK_ODO:
-        parsed = _parse_payload(ODOPayload, raw_payload)
-        return parsed.records if parsed else None
-
-    if token in _PAYLOAD_STRUCTS:
-        return _parse_payload(_PAYLOAD_STRUCTS[token], raw_payload)
-
-    # 5. String messages
+    # String messages
     if token in _STRING_TOKENS:
         return _nullterm(raw_payload)
 
-    # 7. Unknown token — return raw payload
+    # Unknown token — return raw payload
     return raw_payload
 
 
