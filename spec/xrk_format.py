@@ -19,11 +19,9 @@ Usage:
 """
 
 import io
-import struct as _struct
 import zlib
+from dataclasses import dataclass, field
 from pathlib import Path
-
-from typing import NamedTuple
 
 from construct import (
     Array,
@@ -43,8 +41,11 @@ from construct import (
     Int32sl,
     Int32ul,
     PaddedString,
+    Peek,
     Rebuild,
+    Select,
     Struct,
+    Switch,
     this,
 )
 
@@ -101,28 +102,56 @@ TOK_ENF = _tokdec("ENF")
 # --- Dispatch action types ---
 
 
-class _RawAction(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class _RawAction:
     """Append raw payload bytes to a result attribute."""
 
     attr: str
 
+    def execute(self, raw_payload, result, _depth):
+        getattr(result, self.attr).append(raw_payload)
+        return None
 
-class _ParseAction(NamedTuple):
+
+@dataclass(frozen=True, slots=True)
+class _ParseAction:
     """Parse with a Construct struct, optional side-effect and attribute extraction."""
 
     struct: object
     post_fn: object = None
     result_attr: str | None = None
 
+    def execute(self, raw_payload, result, _depth):
+        parsed = _parse_payload(self.struct, raw_payload)
+        if parsed is None:
+            return None
+        if self.post_fn is not None:
+            self.post_fn(parsed, result)
+        if self.result_attr is not None:
+            return getattr(parsed, self.result_attr)
+        return parsed
 
-class _RecurseAction(NamedTuple):
+
+@dataclass(frozen=True, slots=True)
+class _RecurseAction:
     """Recursive _parse_sequence for CNF/ENF containers."""
 
     merge: bool
 
+    def execute(self, raw_payload, result, _depth):
+        sub = _parse_sequence(raw_payload, _depth=_depth + 1)
+        if self.merge:
+            _merge_cnf_result(sub, result)
+        return sub
 
-class _StringAction(NamedTuple):
+
+@dataclass(frozen=True, slots=True)
+class _StringAction:
     """Null-terminated string decode."""
+
+    def execute(self, raw_payload, result, _depth):
+        return _nullterm(raw_payload)
+
 
 # Unit type map: unit_type_byte -> (unit_string, decimal_points)
 # From aim_xrk.pyx:146-171
@@ -540,14 +569,57 @@ cMessage = Struct(
 )
 cMessageCompiled = cMessage.compile()
 
-
-# Data message opcode dispatch (compiled structs, avoids Select try-all-four overhead)
+# Data message opcode -> compiled struct (used by round-trip tests)
 _DATA_MSG_STRUCTS = {
     b"\x28\x53": SMessageCompiled,  # '(S'
     b"\x28\x47": GMessageCompiled,  # '(G'
     b"\x28\x4d": MMessageCompiled,  # '(M'
     b"\x28\x63": cMessageCompiled,  # '(c'
 }
+
+
+# ---------------------------------------------------------------------------
+# Hooks: post-parse actions for GreedyRange-based stream parser
+# ---------------------------------------------------------------------------
+
+
+def _on_header(obj, ctx):
+    """Post-parse hook: dispatch header payload, append to result."""
+    result = ctx._params.result
+    raw = bytes(obj.raw_payload)
+    payload = _dispatch_payload(obj.token, raw, result, ctx._params.depth)
+    result.messages.append(
+        ParsedMessage(
+            "header", token=obj.token, version=obj.version, payload=payload, raw_payload=raw
+        )
+    )
+
+
+def _on_data(obj, ctx):
+    """Post-parse hook: collect data message into result."""
+    result = ctx._params.result
+    result.messages.append(ParsedMessage(obj.msg_type, parsed=_container_to_dict(obj)))
+
+
+# ---------------------------------------------------------------------------
+# Declarative protocol: opcode-dispatched Switch with side-effect hooks
+# ---------------------------------------------------------------------------
+
+XRKMessage = Struct(
+    "_opcode" / Peek(Bytes(2)),
+    "body"
+    / Switch(
+        this._opcode,
+        {
+            b"\x3c\x68": Select(HeaderMessage * _on_header, Bytes(1)),
+            b"\x28\x53": Select(SMessageCompiled * _on_data, Bytes(1)),
+            b"\x28\x47": Select(GMessageCompiled * _on_data, Bytes(1)),
+            b"\x28\x4d": Select(MMessageCompiled * _on_data, Bytes(1)),
+            b"\x28\x63": Select(cMessageCompiled * _on_data, Bytes(1)),
+        },
+        default=Bytes(1),
+    ),
+)
 
 # ---------------------------------------------------------------------------
 # Payload Dispatch Table
@@ -603,10 +675,28 @@ _DISPATCH_TABLE = {
     TOK_CNF: _RecurseAction(merge=True),
     TOK_ENF: _RecurseAction(merge=False),
     # String messages (null-terminated ASCII)
-    **{_tokdec(t): _StringAction() for t in (
-        "RCR", "VEH", "CMP", "VTY", "NDV", "TMD", "TMT", "DBUN", "DBUT",
-        "DVER", "MANL", "MODL", "MANI", "MODI", "HWNF", "PDLT", "NTE",
-    )},
+    **{
+        _tokdec(t): _StringAction()
+        for t in (
+            "RCR",
+            "VEH",
+            "CMP",
+            "VTY",
+            "NDV",
+            "TMD",
+            "TMT",
+            "DBUN",
+            "DBUT",
+            "DVER",
+            "MANL",
+            "MODL",
+            "MANI",
+            "MODI",
+            "HWNF",
+            "PDLT",
+            "NTE",
+        )
+    },
 }
 
 
@@ -623,23 +713,26 @@ def _parse_payload(struct_def, payload):
         return None
 
 
+_DATA_MSG_KEYS = (
+    "msg_type",
+    "timecode",
+    "channel_index",
+    "group_index",
+    "count",
+    "data",
+    "channel_field",
+    "unk1",
+    "unk3",
+    "unk4",
+)
+
+
 def _container_to_dict(container):
     """Convert a Construct Container to a plain dict for data messages."""
     # Use direct dict access (container is dict-like) to avoid slow
     # hasattr/getattr on Container objects (Container.__getattr__ is expensive).
     d = {}
-    for key in (
-        "msg_type",
-        "timecode",
-        "channel_index",
-        "group_index",
-        "count",
-        "data",
-        "channel_field",
-        "unk1",
-        "unk3",
-        "unk4",
-    ):
+    for key in _DATA_MSG_KEYS:
         val = container.get(key)
         if val is not None:
             d[key] = bytes(val) if isinstance(val, memoryview) else val
@@ -649,37 +742,13 @@ def _container_to_dict(container):
 def _dispatch_payload(token, raw_payload, result, _depth):
     """Dispatch a header message payload to the appropriate parser.
 
-    Uses _DISPATCH_TABLE for declarative routing. Handles raw storage, Construct
-    parsing with optional side effects, string decoding, and CNF/ENF recursion.
+    Uses _DISPATCH_TABLE for declarative routing. Each action type implements
+    execute() for polymorphic dispatch.
     """
     entry = _DISPATCH_TABLE.get(token)
     if entry is None:
         return raw_payload
-
-    if isinstance(entry, _RawAction):
-        getattr(result, entry.attr).append(raw_payload)
-        return None
-
-    if isinstance(entry, _ParseAction):
-        parsed = _parse_payload(entry.struct, raw_payload)
-        if parsed is None:
-            return None
-        if entry.post_fn is not None:
-            entry.post_fn(parsed, result)
-        if entry.result_attr is not None:
-            return getattr(parsed, entry.result_attr)
-        return parsed
-
-    if isinstance(entry, _RecurseAction):
-        sub = _parse_sequence(raw_payload, include_data_messages=False, _depth=_depth + 1)
-        if entry.merge:
-            _merge_cnf_result(sub, result)
-        return sub
-
-    if isinstance(entry, _StringAction):
-        return _nullterm(raw_payload)
-
-    return raw_payload
+    return entry.execute(raw_payload, result, _depth)
 
 
 # ---------------------------------------------------------------------------
@@ -687,20 +756,16 @@ def _dispatch_payload(token, raw_payload, result, _depth):
 # ---------------------------------------------------------------------------
 
 
+@dataclass(slots=True)
 class ParsedMessage:
     """A parsed message from an XRK file."""
 
-    __slots__ = ("msg_type", "token", "version", "payload", "parsed", "raw_payload")
-
-    def __init__(
-        self, msg_type, token=None, version=None, payload=None, parsed=None, raw_payload=None
-    ):
-        self.msg_type = msg_type  # "header", "G", "S", "M", "c"
-        self.token = token  # token int (header messages only)
-        self.version = version  # version byte (header messages only)
-        self.payload = payload  # parsed payload (varies by type)
-        self.parsed = parsed  # data message parsed dict
-        self.raw_payload = raw_payload  # raw payload bytes
+    msg_type: str  # "header", "G", "S", "M", "c"
+    token: int | None = None  # token int (header messages only)
+    version: int | None = None  # version byte (header messages only)
+    payload: object = None  # parsed payload (varies by type)
+    parsed: dict | None = None  # data message parsed dict
+    raw_payload: bytes | None = None  # raw payload bytes
 
     def token_str(self):
         """Return the token as a string."""
@@ -727,17 +792,16 @@ def _decompress_if_zlib(data):
     return data
 
 
-def parse_xrk_bytes(data, include_data_messages=True):
+def parse_xrk_bytes(data):
     """Parse an XRK byte stream into a list of ParsedMessage objects.
 
     This is the main entry point for parsing XRK data. It handles:
       - Header messages (CHS, GRP, GPS, LAP, etc.)
-      - Data messages (G, S, M, c) if include_data_messages=True
+      - Data messages (G, S, M, c)
       - Recursive parsing of CNF/ENF embedded header sections
 
     Args:
         data: Raw XRK file bytes (or XRZ, auto-decompressed)
-        include_data_messages: If True, also parse G/S/M/c data messages
 
     Returns:
         ParseResult with messages, channel_sizes, group_sizes, etc.
@@ -745,10 +809,10 @@ def parse_xrk_bytes(data, include_data_messages=True):
     data = _decompress_if_zlib(data)
     if isinstance(data, memoryview):
         data = bytes(data)
-    return _parse_sequence(data, include_data_messages=include_data_messages)
+    return _parse_sequence(data)
 
 
-def parse_xrk_file(filepath, include_data_messages=True):
+def parse_xrk_file(filepath):
     """Parse an XRK/XRZ file.
 
     Args:
@@ -760,22 +824,22 @@ def parse_xrk_file(filepath, include_data_messages=True):
     filepath = Path(filepath)
     with open(filepath, "rb") as f:
         data = f.read()
-    return parse_xrk_bytes(data, include_data_messages=include_data_messages)
+    return parse_xrk_bytes(data)
 
 
+@dataclass
 class ParseResult:
     """Result of parsing an XRK file."""
 
-    def __init__(self):
-        self.messages = []  # List[ParsedMessage]
-        self.channel_sizes = {}  # {channel_index: data_size}
-        self.group_sizes = {}  # {group_index: payload_size}
-        self.channels = {}  # {channel_index: CHS Container}
-        self.groups = {}  # {group_index: GRP Container}
-        self.channel_mms = {}  # {channel_index: Mms value}
-        self.gps_payloads = []  # List of raw GPS payload bytes (56B each)
-        self.gnfi_payloads = []  # List of raw GNFI payload bytes (32B each)
-        self.leftover_bytes = 0  # Non-zero means unparsed trailing data
+    messages: list = field(default_factory=list)  # List[ParsedMessage]
+    channel_sizes: dict = field(default_factory=dict)  # {channel_index: data_size}
+    group_sizes: dict = field(default_factory=dict)  # {group_index: payload_size}
+    channels: dict = field(default_factory=dict)  # {channel_index: CHS Container}
+    groups: dict = field(default_factory=dict)  # {group_index: GRP Container}
+    channel_mms: dict = field(default_factory=dict)  # {channel_index: Mms value}
+    gps_payloads: list = field(default_factory=list)  # List of raw GPS payload bytes (56B each)
+    gnfi_payloads: list = field(default_factory=list)  # List of raw GNFI payload bytes (32B each)
+    leftover_bytes: int = 0  # Non-zero means unparsed trailing data
 
     def header_messages(self):
         """Return only header messages."""
@@ -813,98 +877,28 @@ class ParseResult:
         return [p for raw in self.gnfi_payloads if (p := _parse_payload(GNFIPayload, raw))]
 
 
-_HEADER_OPCODE = b"\x3c\x68"  # '<h'
-
-
-def _parse_sequence(data, include_data_messages=True, _depth=0):
+def _parse_sequence(data, _depth=0):
     """Internal recursive parser for XRK byte sequences.
 
-    Uses stream-based parsing with declarative Construct Structs:
-    - HeaderMessage (self-validating with inline Check)
-    - Compiled data message structs with opcode dispatch
+    Iterates XRKMessage (declarative Switch + Peek) over the stream. Each
+    successful parse triggers side-effect hooks (_on_header, _on_data) that
+    populate the result. Results are not accumulated to avoid O(n) memory.
     """
     result = ParseResult()
     stream = io.BytesIO(data)
     data_len = len(data)
-
-    if not include_data_messages:
-        # Fast path: scan for header opcode using bytes.find() (C-implemented)
-        # instead of trying HeaderMessage.parse_stream() at every byte position.
-        pos = data.find(_HEADER_OPCODE, 0)
-        while pos != -1:
-            stream.seek(pos)
-            try:
-                frame = HeaderMessage.parse_stream(stream)
-                msg = ParsedMessage(
-                    "header",
-                    token=frame.token,
-                    version=frame.version,
-                    raw_payload=bytes(frame.raw_payload),
-                )
-                msg.payload = _dispatch_payload(
-                    frame.token, bytes(frame.raw_payload), result, _depth
-                )
-                result.messages.append(msg)
-                pos = data.find(_HEADER_OPCODE, stream.tell())
-            except ConstructError:
-                pos = data.find(_HEADER_OPCODE, pos + 1)
-        return result
-
-    # Full parse: headers + data messages.
-    # Pre-build a reusable context for compiled data message parsers to avoid
-    # creating a new Container per call. The channel_sizes/group_sizes dicts are
-    # shared by reference so updates from header messages are visible immediately.
-    data_ctx = Container(
-        _parsing=True,
-        _building=False,
-        _sizing=False,
-        channel_sizes=result.channel_sizes,
-        group_sizes=result.group_sizes,
-    )
-    data_ctx["_params"] = data_ctx
-    messages_append = result.messages.append
-
     while stream.tell() < data_len:
-        pos = stream.tell()
-
-        # Check 2-byte opcode to dispatch without unnecessary parse attempts
-        opcode = data[pos : pos + 2]
-
-        # Header message
-        if opcode == _HEADER_OPCODE:
-            try:
-                frame = HeaderMessage.parse_stream(stream)
-                msg = ParsedMessage(
-                    "header",
-                    token=frame.token,
-                    version=frame.version,
-                    raw_payload=bytes(frame.raw_payload),
-                )
-                msg.payload = _dispatch_payload(
-                    frame.token, bytes(frame.raw_payload), result, _depth
-                )
-                messages_append(msg)
-                continue
-            except ConstructError:
-                stream.seek(pos)
-
-        # Data messages via opcode dispatch (compiled structs).
-        # Call parsefunc directly to bypass parse_stream/Container overhead.
-        struct_def = _DATA_MSG_STRUCTS.get(opcode)
-        if struct_def is not None:
-            try:
-                dmsg = struct_def.parsefunc(stream, data_ctx)
-                parsed_dict = _container_to_dict(dmsg)
-                msg = ParsedMessage(dmsg.msg_type, parsed=parsed_dict)
-                messages_append(msg)
-                continue
-            except (ConstructError, KeyError, _struct.error):
-                stream.seek(pos)
-
-        # Unknown byte — skip (matches Cython parser's error recovery)
-        stream.seek(pos + 1)
-        result.leftover_bytes += 1
-
+        try:
+            XRKMessage.parse_stream(
+                stream,
+                result=result,
+                channel_sizes=result.channel_sizes,
+                group_sizes=result.group_sizes,
+                depth=_depth,
+            )
+        except ConstructError:
+            break
+    result.leftover_bytes = len(data) - stream.tell()
     return result
 
 
