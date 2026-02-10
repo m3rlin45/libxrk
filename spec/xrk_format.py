@@ -24,7 +24,6 @@ import zlib
 from pathlib import Path
 
 from construct import (
-    Adapter,
     Array,
     Bytes,
     Check,
@@ -32,6 +31,7 @@ from construct import (
     Const,
     ConstructError,
     Container,
+    ExprAdapter,
     Float32l,
     GreedyBytes,
     GreedyRange,
@@ -40,6 +40,7 @@ from construct import (
     Int16ul,
     Int32sl,
     Int32ul,
+    PaddedString,
     Rebuild,
     Struct,
     this,
@@ -190,32 +191,6 @@ def _nullterm(data, encoding="ascii"):
     return data.decode(encoding, errors="replace")
 
 
-class _NullTermString(Adapter):
-    """Fixed-size null-terminated ASCII string adapter for Construct."""
-
-    def _decode(self, obj, context, path):
-        zero = obj.find(0)
-        return (obj[:zero] if zero >= 0 else obj).decode("ascii", errors="replace")
-
-    def _encode(self, obj, context, path):
-        size = self.subcon.length
-        return obj.encode("ascii").ljust(size, b"\x00")[:size]
-
-
-class _ScaledInt(Adapter):
-    """Integer scaled by a fixed factor on decode/encode."""
-
-    def __init__(self, subcon, scale):
-        super().__init__(subcon)
-        self._scale = scale
-
-    def _decode(self, obj, context, path):
-        return obj / self._scale
-
-    def _encode(self, obj, context, path):
-        return int(round(obj * self._scale))
-
-
 # ---------------------------------------------------------------------------
 # Header Message Payloads
 # ---------------------------------------------------------------------------
@@ -272,6 +247,15 @@ CHSPayload = Struct(
     ),
     "dec_pts" / Computed(lambda ctx: UNIT_MAP.get(ctx.unit_type_byte & 127, ("", 0))[1]),
     "interpolate" / Computed(lambda ctx: DECODER_TABLE.get(ctx.decoder_type, ("", False))[1]),
+    "short_name_str" / Computed(lambda ctx: _nullterm(ctx.short_name)),
+    "device_tag_str"
+    / Computed(
+        lambda ctx: (
+            ctx.device_tag.rstrip(b"\x00").decode("ascii", errors="replace")
+            if any(ctx.device_tag)
+            else ""
+        )
+    ),
 )
 
 
@@ -365,10 +349,16 @@ IDNPayload = Struct(
 # TRK — Track Info (min 44 bytes)
 # Reference: aim_xrk.pyx:606-609
 TRKPayload = Struct(
-    "name" / _NullTermString(Bytes(32)),  # [0:32]  track name, null-terminated ASCII
+    "name" / PaddedString(32, "ascii"),  # [0:32]  track name, null-terminated ASCII
     "_pad" / Bytes(4),  # [32:36] unknown
-    "sf_lat" / _ScaledInt(Int32sl, 1e7),  # [36:40] start/finish latitude (degrees)
-    "sf_long" / _ScaledInt(Int32sl, 1e7),  # [40:44] start/finish longitude (degrees)
+    "sf_lat"
+    / ExprAdapter(
+        Int32sl, lambda obj, ctx: obj / 1e7, lambda obj, ctx: int(round(obj * 1e7))
+    ),  # [36:40] start/finish latitude (degrees)
+    "sf_long"
+    / ExprAdapter(
+        Int32sl, lambda obj, ctx: obj / 1e7, lambda obj, ctx: int(round(obj * 1e7))
+    ),  # [40:44] start/finish longitude (degrees)
     "_rest" / GreedyBytes,  # remaining bytes (variable)
 )
 
@@ -377,7 +367,7 @@ TRKPayload = Struct(
 # Reference: aim_xrk.pyx:548-558
 GPSRPayload = Struct(
     "_prefix" / Bytes(4),  # [0:4]   unknown
-    "type" / _NullTermString(Bytes(4)),  # [4:8]   GPS type string
+    "type" / PaddedString(4, "ascii"),  # [4:8]   GPS type string
     "_mid" / Bytes(14),  # [8:22]  unknown
     "channel_index" / Int16ul,  # [22:24] GPS channel index
     "_post" / Bytes(8),  # [24:32] unknown
@@ -388,29 +378,18 @@ GPSRPayload = Struct(
 # ODO — Odometer Record (64 bytes per record)
 # Reference: aim_xrk.pyx:610-619
 ODORecord = Struct(
-    "name" / _NullTermString(Bytes(16)),  # [0:16]  record name, null-terminated ASCII
+    "name" / PaddedString(16, "ascii"),  # [0:16]  record name, null-terminated ASCII
     "time" / Int32ul,  # [16:20] time value
     "dist" / Int32ul,  # [20:24] distance value
     "_pad" / Bytes(40),  # [24:64] remaining bytes
 )
 
 # ODO — Odometer array (N * 64-byte records)
-# Raw record array (used internally by adapter)
-_ODORawPayload = GreedyRange(ODORecord)
-
-
-class _ODOAdapter(Adapter):
-    """Parses ODO records and converts to {name: {time, dist}} dict."""
-
-    def _decode(self, obj, context, path):
-        return {r.name: {"time": r.time, "dist": r.dist} for r in obj}
-
-    def _encode(self, obj, context, path):
-        # Not needed for round-trip (ODO uses raw payload rebuild)
-        raise NotImplementedError
-
-
-ODOPayload = _ODOAdapter(_ODORawPayload)
+ODOPayload = Struct(
+    "_records" / GreedyRange(ODORecord),
+    "records"
+    / Computed(lambda ctx: {r.name: {"time": r.time, "dist": r.dist} for r in ctx._records}),
+)
 
 
 # iSLV — Expansion Device Identity (embedded idn at offset 6)
@@ -438,36 +417,21 @@ SRCPayload = Struct(
 
 # RACM — Race Mode (string or flag byte)
 # Reference: aim_xrk.pyx race mode handling
-RACMStringPayload = Struct(
-    "value" / _NullTermString(GreedyBytes),
-    "mode" / Computed("string"),
+RACMPayload = Struct(
+    "_raw" / GreedyBytes,
+    "mode"
+    / Computed(
+        lambda ctx: "string" if len(ctx._raw) > 1 else ("flag" if len(ctx._raw) == 1 else None)
+    ),
+    "value"
+    / Computed(
+        lambda ctx: (
+            _nullterm(ctx._raw)
+            if len(ctx._raw) > 1
+            else (ctx._raw[0] if len(ctx._raw) == 1 else None)
+        )
+    ),
 )
-
-RACMFlagPayload = Struct(
-    "value" / Int8ul,
-    "mode" / Computed("flag"),
-)
-
-
-class _RACMAdapter(Adapter):
-    """Dispatches RACM payload to string or flag struct based on length."""
-
-    def _decode(self, obj, context, path):
-        if len(obj) > 1:
-            return RACMStringPayload.parse(obj)
-        elif len(obj) == 1:
-            return RACMFlagPayload.parse(obj)
-        return None
-
-    def _encode(self, obj, context, path):
-        if obj is None:
-            return b""
-        if hasattr(obj, "mode") and obj.mode == "flag":
-            return RACMFlagPayload.build(obj)
-        return RACMStringPayload.build(obj)
-
-
-RACMPayload = _RACMAdapter(GreedyBytes)
 
 # VET — Vehicle Electronics Type (single byte)
 VETPayload = Struct(
@@ -602,7 +566,6 @@ _PAYLOAD_STRUCTS = {
     TOK_SRC: SRCPayload,
     TOK_VET: VETPayload,
     TOK_RACM: RACMPayload,
-    TOK_ODO: ODOPayload,
 }
 
 
@@ -642,6 +605,13 @@ def _container_to_dict(container):
     return d
 
 
+_RAW_STORAGE_TOKENS = {
+    TOK_GPS: "gps_payloads",
+    TOK_GPS1: "gps_payloads",
+    TOK_GNFI: "gnfi_payloads",
+}
+
+
 def _dispatch_payload(token, raw_payload, result, _depth):
     """Dispatch a header message payload to the appropriate parser.
 
@@ -649,12 +619,9 @@ def _dispatch_payload(token, raw_payload, result, _depth):
     CNF/ENF recursion). All binary interpretation is via Construct Structs.
     """
     # 1. Raw storage (GPS, GNFI — stored for batch processing)
-    if token in (TOK_GPS, TOK_GPS1):
-        result.gps_payloads.append(raw_payload)
-        return None
-
-    if token == TOK_GNFI:
-        result.gnfi_payloads.append(raw_payload)
+    storage_attr = _RAW_STORAGE_TOKENS.get(token)
+    if storage_attr is not None:
+        getattr(result, storage_attr).append(raw_payload)
         return None
 
     # 2. State-updating payloads (CHS, GRP — register sizes)
@@ -693,6 +660,10 @@ def _dispatch_payload(token, raw_payload, result, _depth):
         return sub
 
     # 4. Declarative Construct payloads (dispatch table)
+    if token == TOK_ODO:
+        parsed = _parse_payload(ODOPayload, raw_payload)
+        return parsed.records if parsed else None
+
     if token in _PAYLOAD_STRUCTS:
         return _parse_payload(_PAYLOAD_STRUCTS[token], raw_payload)
 
@@ -815,36 +786,24 @@ class ParseResult:
 
     def get_laps(self):
         """Return parsed LAP messages as list of dicts."""
-        result = []
-        for m in self.messages_by_token("LAP"):
-            if m.payload is not None:
-                result.append(
-                    {
-                        "segment": m.payload.segment,
-                        "lap_num": m.payload.lap_num,
-                        "duration": m.payload.duration,
-                        "end_time": m.payload.end_time,
-                    }
-                )
-        return result
+        return [
+            {
+                "segment": m.payload.segment,
+                "lap_num": m.payload.lap_num,
+                "duration": m.payload.duration,
+                "end_time": m.payload.end_time,
+            }
+            for m in self.messages_by_token("LAP")
+            if m.payload is not None
+        ]
 
     def get_gps_samples(self):
         """Return parsed GPS samples as list of Containers."""
-        result = []
-        for raw in self.gps_payloads:
-            parsed = _parse_payload(GPSPayload, raw)
-            if parsed:
-                result.append(parsed)
-        return result
+        return [p for raw in self.gps_payloads if (p := _parse_payload(GPSPayload, raw))]
 
     def get_gnfi_samples(self):
         """Return parsed GNFI samples as list of Containers."""
-        result = []
-        for raw in self.gnfi_payloads:
-            parsed = _parse_payload(GNFIPayload, raw)
-            if parsed:
-                result.append(parsed)
-        return result
+        return [p for raw in self.gnfi_payloads if (p := _parse_payload(GNFIPayload, raw))]
 
 
 _HEADER_OPCODE = b"\x3c\x68"  # '<h'
@@ -1005,7 +964,7 @@ def build_gpsr(container):
 
 def chs_short_name(chs):
     """Extract the short_name string from a CHS Container."""
-    return _nullterm(chs.short_name)
+    return chs.short_name_str
 
 
 def chs_long_name(chs):
@@ -1030,10 +989,7 @@ def chs_interpolate(chs):
 
 def chs_device_tag(chs):
     """Extract the device tag string from a CHS Container."""
-    tag = chs.device_tag
-    if any(tag):
-        return tag.rstrip(b"\x00").decode("ascii", errors="replace")
-    return ""
+    return chs.device_tag_str
 
 
 def chs_padding_bytes(chs):
