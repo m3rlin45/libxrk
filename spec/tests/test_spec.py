@@ -43,57 +43,27 @@ class TestParseAllFiles:
     """Verify that all test files parse successfully."""
 
     @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
-    def test_parse_without_errors(self, filepath):
-        """Each file should parse without raising exceptions."""
+    def test_parse_validates(self, filepath):
+        """Each file should parse completely and contain expected message types."""
         result = parse_xrk_file(str(filepath))
         assert isinstance(result, ParseResult)
         assert len(result.messages) > 0
-
-    @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
-    def test_minimal_leftover_bytes(self, filepath):
-        """Leftover bytes should be zero or negligible (< 20)."""
-        result = parse_xrk_file(str(filepath))
-        # A few files have 3-13 leftover bytes from edge cases; zero is ideal
         assert (
             result.leftover_bytes < 20
         ), f"{filepath.name}: {result.leftover_bytes} leftover bytes"
-
-    @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
-    def test_header_checksums_valid(self, filepath):
-        """All header message checksums should match."""
-        result = parse_xrk_file(str(filepath), include_data_messages=False)
-        # If we got here without exceptions, all checksums passed
-        # (HeaderMessage's inline Check validates checksum and raises on mismatch)
-        header_count = len(result.header_messages())
-        assert header_count > 0
-
-    @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
-    def test_has_channels(self, filepath):
-        """Each file should have at least one channel definition."""
-        result = parse_xrk_file(str(filepath), include_data_messages=False)
+        assert len(result.header_messages()) > 0
         assert len(result.channels) > 0
-
-    @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
-    def test_has_laps(self, filepath):
-        """Each file should have LAP messages."""
-        result = parse_xrk_file(str(filepath), include_data_messages=False)
-        laps = result.messages_by_token("LAP")
-        assert len(laps) > 0
-
-    @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
-    def test_has_gps(self, filepath):
-        """Each file should have GPS messages."""
-        result = parse_xrk_file(str(filepath), include_data_messages=False)
+        assert len(result.messages_by_token("LAP")) > 0
         assert len(result.gps_payloads) > 0
 
-    @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
+    @pytest.mark.parametrize("filepath", ALL_XRK_FILES, ids=lambda p: p.name)
     def test_xrk_xrz_equivalence(self, filepath):
         """XRK and XRZ variants should produce the same channel definitions."""
         xrz = filepath.with_suffix(".xrz")
         if not xrz.exists():
             pytest.skip(f"No XRZ counterpart for {filepath.name}")
-        result_xrk = parse_xrk_file(str(filepath), include_data_messages=False)
-        result_xrz = parse_xrk_file(str(xrz), include_data_messages=False)
+        result_xrk = parse_xrk_file(str(filepath))
+        result_xrz = parse_xrk_file(str(xrz))
         assert set(result_xrk.channels.keys()) == set(result_xrz.channels.keys())
         for idx in result_xrk.channels:
             assert chs_long_name(result_xrk.channels[idx]) == chs_long_name(
@@ -252,7 +222,7 @@ class TestCHSCrossValidation:
         """All CHS padding fields should be zero across all test files."""
         from spec.xrk_format import chs_padding_bytes
 
-        result = parse_xrk_file(str(filepath), include_data_messages=False)
+        result = parse_xrk_file(str(filepath))
         for idx, ch in result.channels.items():
             padding = chs_padding_bytes(ch)
             if any(padding):
@@ -263,7 +233,7 @@ class TestCHSCrossValidation:
     @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
     def test_chs_data_size_consistent(self, filepath):
         """CHS data_size should match decoder_type expectations."""
-        result = parse_xrk_file(str(filepath), include_data_messages=False)
+        result = parse_xrk_file(str(filepath))
         for idx, ch in result.channels.items():
             dt = ch.decoder_type
             if dt in DECODER_TABLE:
@@ -566,7 +536,7 @@ class TestCDECrossValidation:
     @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
     def test_cde_channel_indices_valid(self, filepath):
         """CDE channel_index should reference a valid CHS channel."""
-        result = parse_xrk_file(str(filepath), include_data_messages=False)
+        result = parse_xrk_file(str(filepath))
         cde_msgs = result.messages_by_token("CDE")
         for m in cde_msgs:
             if m.payload is not None:
@@ -577,7 +547,7 @@ class TestCDECrossValidation:
     @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
     def test_cde_session_uid_consistent(self, filepath):
         """All CDE messages in a file should have the same session_uid."""
-        result = parse_xrk_file(str(filepath), include_data_messages=False)
+        result = parse_xrk_file(str(filepath))
         cde_msgs = result.messages_by_token("CDE")
         if not cde_msgs:
             pytest.skip("No CDE messages")
