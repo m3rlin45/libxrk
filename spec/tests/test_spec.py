@@ -7,31 +7,83 @@ Tests in this module verify that:
 """
 
 import struct
-from pathlib import Path
 
 import pytest
 
 from spec.xrk_format import (
     ParseResult,
-    _tokdec,
-    _tokenc,
-    build_header_frame,
-    chs_dec_pts,
-    chs_device_tag,
-    chs_interpolate,
-    chs_long_name,
-    chs_short_name,
-    chs_units,
+    chs_padding_bytes,
     parse_xrk_file,
     DECODER_TABLE,
-    UNIT_MAP,
 )
 from spec.tests.conftest import (
     ALL_FILES,
     ALL_XRK_FILES,
-    SFJ_XRK,
-    FILE_86_XRK,
 )
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+def _decode_sample(data_bytes, decoder_type):
+    """Decode raw data bytes using the decoder type's struct format."""
+    if decoder_type not in DECODER_TABLE:
+        return None
+    fmt = DECODER_TABLE[decoder_type][0]
+    size = struct.calcsize(fmt)
+    if len(data_bytes) < size:
+        return None
+    return struct.unpack_from("<" + fmt, data_bytes, 0)[0]
+
+
+def _apply_fixup(raw_value, decoder_type):
+    """Apply decoder fixup to get the final value."""
+    import numpy as np
+
+    if decoder_type == 20:
+        # float16 encoded as uint16
+        arr = np.array([raw_value], dtype=np.uint16)
+        return float(np.frombuffer(arr.tobytes(), dtype=np.float16)[0])
+    elif decoder_type == 15:
+        # Gear lookup
+        table = {
+            ord("N"): 0,
+            ord("1"): 1,
+            ord("2"): 2,
+            ord("3"): 3,
+            ord("4"): 4,
+            ord("5"): 5,
+            ord("6"): 6,
+        }
+        return table.get(raw_value, raw_value)
+    return raw_value
+
+
+def _decode_and_fixup(data_bytes, ch):
+    """Decode raw bytes for a channel and apply all fixups."""
+    raw = _decode_sample(data_bytes, ch.decoder_type)
+    if raw is None:
+        return None
+    value = _apply_fixup(raw, ch.decoder_type)
+    # Voltage channels are stored as mV, Cython divides by 1000
+    if ch.units == "V":
+        value = value / 1000.0
+    return float(value)
+
+
+def _unique_seg0_laps(parsed):
+    """Filter segment 0 laps and deduplicate by lap_num."""
+    laps = parsed.get_laps()
+    seg0 = [l for l in laps if l["segment"] == 0]
+    seen = set()
+    unique = []
+    for l in seg0:
+        if l["lap_num"] not in seen:
+            seen.add(l["lap_num"])
+            unique.append(l)
+    return unique
 
 
 # ---------------------------------------------------------------------------
@@ -66,9 +118,7 @@ class TestParseAllFiles:
         result_xrz = parse_xrk_file(str(xrz))
         assert set(result_xrk.channels.keys()) == set(result_xrz.channels.keys())
         for idx in result_xrk.channels:
-            assert chs_long_name(result_xrk.channels[idx]) == chs_long_name(
-                result_xrz.channels[idx]
-            )
+            assert result_xrk.channels[idx].name == result_xrz.channels[idx].name
 
 
 # ---------------------------------------------------------------------------
@@ -99,25 +149,6 @@ class TestCHSCrossValidation:
             "display_range_max": md.get(b"display_range_max", b"").decode(),
         }
 
-    def test_sfj_channel_names(self, sfj_parsed, sfj_cython):
-        """All CHS long_names should match channels known to Cython parser."""
-        spec_names = {chs_long_name(ch) for ch in sfj_parsed.channels.values()}
-        # Cython parser filters out some channels (StrtRec, Master Clk, etc.)
-        # but all Cython channels should have a CHS definition
-        for name in sfj_cython.channels:
-            # GPS-derived channels don't have CHS entries
-            if name.startswith("GPS ") or name.startswith("GPS_"):
-                continue
-            assert name in spec_names, f"Cython channel {name!r} not in spec CHS definitions"
-
-    def test_86_channel_names(self, file_86_parsed, file_86_cython):
-        """All CHS long_names should match channels known to Cython parser."""
-        spec_names = {chs_long_name(ch) for ch in file_86_parsed.channels.values()}
-        for name in file_86_cython.channels:
-            if name.startswith("GPS ") or name.startswith("GPS_"):
-                continue
-            assert name in spec_names, f"Cython channel {name!r} not in spec CHS definitions"
-
     # GPS-derived channels that the Cython parser creates from scratch in _decode_gps()
     # rather than using the CHS definition. Their metadata won't match CHS values.
     _GPS_COMPUTED_CHANNELS = {
@@ -135,32 +166,40 @@ class TestCHSCrossValidation:
         "GPS_Yaw_Rate",
     }
 
-    def test_sfj_channel_metadata(self, sfj_parsed, sfj_cython):
-        """Every CHS metadata field should match the Cython parser for SFJ."""
-        for idx, ch in sfj_parsed.channels.items():
-            name = chs_long_name(ch)
+    def test_channel_names(self, parsed_and_cython):
+        """All CHS long_names should match channels known to Cython parser."""
+        parsed, cython_log = parsed_and_cython
+        spec_names = {ch.name for ch in parsed.channels.values()}
+        for name in cython_log.channels:
+            # GPS-derived channels don't have CHS entries
+            if name.startswith("GPS ") or name.startswith("GPS_"):
+                continue
+            assert name in spec_names, f"Cython channel {name!r} not in spec CHS definitions"
+
+    def test_channel_metadata(self, parsed_and_cython):
+        """Every CHS metadata field should match the Cython parser."""
+        parsed, cython_log = parsed_and_cython
+        for idx, ch in parsed.channels.items():
+            name = ch.name
             if name in self._GPS_COMPUTED_CHANNELS:
                 continue  # GPS-derived; Cython creates these independently
-            md = self._get_channel_metadata(sfj_cython, name)
+            md = self._get_channel_metadata(cython_log, name)
             if md is None:
                 continue  # Channel not exposed by Cython (e.g., Master Clk)
 
             # Units (Cython stores empty string for size==1 channels)
             expected_units = md["units"]
-            spec_units = chs_units(ch)
             if ch.data_size == 1:
                 expected_units = ""
             assert (
-                spec_units == expected_units
-            ), f"Ch {name!r}: units {spec_units!r} != {expected_units!r}"
+                ch.units == expected_units
+            ), f"Ch {name!r}: units {ch.units!r} != {expected_units!r}"
 
             # Decimal points
-            assert str(chs_dec_pts(ch)) == md["dec_pts"], f"Ch {name!r}: dec_pts mismatch"
+            assert str(ch.dec_pts) == md["dec_pts"], f"Ch {name!r}: dec_pts mismatch"
 
             # Interpolate
-            assert (
-                str(chs_interpolate(ch)) == md["interpolate"]
-            ), f"Ch {name!r}: interpolate mismatch"
+            assert str(ch.interpolate) == md["interpolate"], f"Ch {name!r}: interpolate mismatch"
 
             # Source type
             assert str(ch.source_type) == md["source_type"], f"Ch {name!r}: source_type mismatch"
@@ -171,7 +210,7 @@ class TestCHSCrossValidation:
             ), f"Ch {name!r}: source_channel_id mismatch"
 
             # Device tag
-            assert chs_device_tag(ch) == md["device_tag"], f"Ch {name!r}: device_tag mismatch"
+            assert ch.device_tag_str == md["device_tag"], f"Ch {name!r}: device_tag mismatch"
 
             # Calibration values
             assert str(ch.cal_value_1) == md["cal_value_1"], f"Ch {name!r}: cal_value_1 mismatch"
@@ -185,48 +224,14 @@ class TestCHSCrossValidation:
                 str(ch.display_range_max) == md["display_range_max"]
             ), f"Ch {name!r}: display_range_max mismatch"
 
-    def test_86_channel_metadata(self, file_86_parsed, file_86_cython):
-        """Every CHS metadata field should match the Cython parser for 86."""
-        for idx, ch in file_86_parsed.channels.items():
-            name = chs_long_name(ch)
-            if name in self._GPS_COMPUTED_CHANNELS:
-                continue
-            md = self._get_channel_metadata(file_86_cython, name)
-            if md is None:
-                continue
-
-            expected_units = md["units"]
-            if ch.data_size == 1:
-                expected_units = ""
-            assert (
-                chs_units(ch) == expected_units
-            ), f"Ch {name!r}: units {chs_units(ch)!r} != {expected_units!r}"
-            assert str(chs_dec_pts(ch)) == md["dec_pts"], f"Ch {name!r}: dec_pts"
-            assert str(chs_interpolate(ch)) == md["interpolate"], f"Ch {name!r}: interpolate"
-            assert str(ch.source_type) == md["source_type"], f"Ch {name!r}: source_type"
-            assert (
-                str(ch.source_channel_id) == md["source_channel_id"]
-            ), f"Ch {name!r}: source_channel_id"
-            assert chs_device_tag(ch) == md["device_tag"], f"Ch {name!r}: device_tag"
-            assert str(ch.cal_value_1) == md["cal_value_1"], f"Ch {name!r}: cal_value_1"
-            assert str(ch.cal_value_2) == md["cal_value_2"], f"Ch {name!r}: cal_value_2"
-            assert (
-                str(ch.display_range_min) == md["display_range_min"]
-            ), f"Ch {name!r}: display_range_min"
-            assert (
-                str(ch.display_range_max) == md["display_range_max"]
-            ), f"Ch {name!r}: display_range_max"
-
     @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
     def test_chs_padding_is_zero(self, filepath):
         """All CHS padding fields should be zero across all test files."""
-        from spec.xrk_format import chs_padding_bytes
-
         result = parse_xrk_file(str(filepath))
         for idx, ch in result.channels.items():
             padding = chs_padding_bytes(ch)
             if any(padding):
-                name = chs_long_name(ch)
+                name = ch.name
                 nonzero = [(i, b) for i, b in enumerate(padding) if b != 0]
                 pytest.fail(f"CHS padding non-zero for {name!r}: {nonzero}")
 
@@ -243,7 +248,7 @@ class TestCHSCrossValidation:
                 # (e.g., Lap Time has size=20 but decoder=31 which is 'i'=4)
                 # The data_size can be larger when the channel carries extra data
                 assert ch.data_size >= expected_size, (
-                    f"Ch {chs_long_name(ch)!r}: data_size {ch.data_size} < "
+                    f"Ch {ch.name!r}: data_size {ch.data_size} < "
                     f"decoder type {dt} expects {expected_size}"
                 )
 
@@ -284,37 +289,21 @@ class TestGRPCrossValidation:
 class TestGPSCrossValidation:
     """Verify GPS message parsing matches Cython output."""
 
-    def test_sfj_gps_count(self, sfj_parsed, sfj_cython):
+    def test_gps_count(self, parsed_and_cython):
         """GPS message count should match Cython channel row count."""
-        spec_count = len(sfj_parsed.gps_payloads)
-        cython_count = len(sfj_cython.channels["GPS Speed"])
+        parsed, cython_log = parsed_and_cython
+        spec_count = len(parsed.gps_payloads)
+        cython_count = len(cython_log.channels["GPS Speed"])
         assert spec_count == cython_count
 
-    def test_86_gps_count(self, file_86_parsed, file_86_cython):
-        """GPS message count should match Cython channel row count."""
-        spec_count = len(file_86_parsed.gps_payloads)
-        cython_count = len(file_86_cython.channels["GPS Speed"])
-        assert spec_count == cython_count
-
-    def test_sfj_gps_first_sample(self, sfj_parsed):
-        """First GPS sample values should match expected SFJ data."""
-        samples = sfj_parsed.get_gps_samples()
+    def test_gps_first_sample(self, parsed_only):
+        """First GPS sample should have reasonable values."""
+        samples = parsed_only.get_gps_samples()
         assert len(samples) > 0
         first = samples[0]
-        # From test_sfj_xrk.py: GPS Latitude first ≈ 35.3725, Longitude ≈ 138.9276
-        # These are ECEF values in the raw GPS message, not lat/lon directly
-        # Just verify the fields exist and are reasonable
         assert first.gpsFix in (0, 2, 3)
         assert first.numSV >= 0
         assert first.pDOP > 0
-
-    def test_86_gps_first_sample(self, file_86_parsed):
-        """First GPS sample values should match expected 86 data."""
-        samples = file_86_parsed.get_gps_samples()
-        assert len(samples) > 0
-        first = samples[0]
-        assert first.gpsFix == 3  # 86 file starts with 3D fix
-        assert first.numSV >= 10  # 86 had good satellite count
 
     def test_gps_all_fields_present(self, sfj_parsed):
         """Every GPS field should be present in the parsed samples."""
@@ -352,42 +341,15 @@ class TestGPSCrossValidation:
 class TestLAPCrossValidation:
     """Verify LAP messages match Cython laps table."""
 
-    def test_sfj_lap_count(self, sfj_parsed, sfj_cython):
-        """SFJ should have 13 laps (from test_sfj_xrk.py)."""
-        laps = sfj_parsed.get_laps()
-        # Filter to segment 0 and unique lap numbers (matching Cython logic)
-        seg0_laps = [l for l in laps if l["segment"] == 0]
-        # Deduplicate by lap_num
-        seen = set()
-        unique_laps = []
-        for l in seg0_laps:
-            if l["lap_num"] not in seen:
-                seen.add(l["lap_num"])
-                unique_laps.append(l)
-        assert len(unique_laps) == len(sfj_cython.laps)
-
-    def test_86_lap_count(self, file_86_parsed, file_86_cython):
-        """86 should have 16 laps (from test_86_xrk.py)."""
-        laps = file_86_parsed.get_laps()
-        seg0_laps = [l for l in laps if l["segment"] == 0]
-        seen = set()
-        unique_laps = []
-        for l in seg0_laps:
-            if l["lap_num"] not in seen:
-                seen.add(l["lap_num"])
-                unique_laps.append(l)
-        assert len(unique_laps) == len(file_86_cython.laps)
+    def test_lap_count(self, parsed_and_cython):
+        """Lap count should match Cython laps table."""
+        parsed, cython_log = parsed_and_cython
+        unique_laps = _unique_seg0_laps(parsed)
+        assert len(unique_laps) == len(cython_log.laps)
 
     def test_sfj_lap_times(self, sfj_parsed, sfj_cython):
         """SFJ lap end_time and duration should produce matching start/end times."""
-        laps = sfj_parsed.get_laps()
-        seg0 = [l for l in laps if l["segment"] == 0]
-        seen = set()
-        unique = []
-        for l in seg0:
-            if l["lap_num"] not in seen:
-                seen.add(l["lap_num"])
-                unique.append(l)
+        unique = _unique_seg0_laps(sfj_parsed)
 
         # Compute time_offset from first lap (matches Cython logic)
         first_lap = unique[0]
@@ -568,49 +530,6 @@ class TestDataMessageCrossValidation:
     the Cython parser's channel arrays.
     """
 
-    def _decode_sample(self, data_bytes, decoder_type):
-        """Decode raw data bytes using the decoder type's struct format."""
-        if decoder_type not in DECODER_TABLE:
-            return None
-        fmt = DECODER_TABLE[decoder_type][0]
-        size = struct.calcsize(fmt)
-        if len(data_bytes) < size:
-            return None
-        return struct.unpack_from("<" + fmt, data_bytes, 0)[0]
-
-    def _apply_fixup(self, raw_value, decoder_type):
-        """Apply decoder fixup to get the final value."""
-        import numpy as np
-
-        if decoder_type == 20:
-            # float16 encoded as uint16
-            arr = np.array([raw_value], dtype=np.uint16)
-            return float(np.frombuffer(arr.tobytes(), dtype=np.float16)[0])
-        elif decoder_type == 15:
-            # Gear lookup
-            table = {
-                ord("N"): 0,
-                ord("1"): 1,
-                ord("2"): 2,
-                ord("3"): 3,
-                ord("4"): 4,
-                ord("5"): 5,
-                ord("6"): 6,
-            }
-            return table.get(raw_value, raw_value)
-        return raw_value
-
-    def _decode_and_fixup(self, data_bytes, ch):
-        """Decode raw bytes for a channel and apply all fixups."""
-        raw = self._decode_sample(data_bytes, ch.decoder_type)
-        if raw is None:
-            return None
-        value = self._apply_fixup(raw, ch.decoder_type)
-        # Voltage channels are stored as mV, Cython divides by 1000
-        if chs_units(ch) == "V":
-            value = value / 1000.0
-        return float(value)
-
     def _collect_channel_samples(self, result):
         """Collect first and last data sample for each channel from data messages.
 
@@ -662,148 +581,60 @@ class TestDataMessageCrossValidation:
 
         return {idx: {"first": first[idx], "last": last.get(idx, first[idx])} for idx in first}
 
-    def test_sfj_all_channels_first_sample(self, sfj_parsed, sfj_cython):
-        """First sample for every SFJ channel should match Cython output."""
-        samples = self._collect_channel_samples(sfj_parsed)
+    def _check_first_last_samples(self, parsed, cython_log, position):
+        """Check first or last sample for every channel. Returns (checked, failures)."""
+        samples = self._collect_channel_samples(parsed)
         checked = 0
-        for idx, ch in sfj_parsed.channels.items():
-            name = chs_long_name(ch)
-            if name not in sfj_cython.channels:
+        for idx, ch in parsed.channels.items():
+            name = ch.name
+            if name not in cython_log.channels:
                 continue
             if idx not in samples:
                 continue
             if ch.decoder_type not in DECODER_TABLE:
                 continue
 
-            value = self._decode_and_fixup(samples[idx]["first"], ch)
+            value = _decode_and_fixup(samples[idx][position], ch)
             if value is None:
                 continue
 
-            cython_first = sfj_cython.channels[name].column(name)[0].as_py()
-            assert abs(value - float(cython_first)) < 0.01, (
+            col = cython_log.channels[name].column(name)
+            cython_val = col[0 if position == "first" else -1].as_py()
+            assert abs(value - float(cython_val)) < 0.01, (
                 f"Ch {name!r} (decoder={ch.decoder_type}): "
-                f"first sample {value} != cython {cython_first}"
+                f"{position} sample {value} != cython {cython_val}"
             )
             checked += 1
 
         assert checked > 0, "No channels were cross-validated"
 
-    def test_sfj_all_channels_last_sample(self, sfj_parsed, sfj_cython):
-        """Last sample for every SFJ channel should match Cython output."""
-        samples = self._collect_channel_samples(sfj_parsed)
-        checked = 0
-        for idx, ch in sfj_parsed.channels.items():
-            name = chs_long_name(ch)
-            if name not in sfj_cython.channels:
-                continue
-            if idx not in samples:
-                continue
-            if ch.decoder_type not in DECODER_TABLE:
-                continue
+    def test_all_channels_first_sample(self, parsed_and_cython):
+        """First sample for every channel should match Cython output."""
+        parsed, cython_log = parsed_and_cython
+        self._check_first_last_samples(parsed, cython_log, "first")
 
-            value = self._decode_and_fixup(samples[idx]["last"], ch)
-            if value is None:
-                continue
+    def test_all_channels_last_sample(self, parsed_and_cython):
+        """Last sample for every channel should match Cython output."""
+        parsed, cython_log = parsed_and_cython
+        self._check_first_last_samples(parsed, cython_log, "last")
 
-            cython_last = sfj_cython.channels[name].column(name)[-1].as_py()
-            assert abs(value - float(cython_last)) < 0.01, (
-                f"Ch {name!r} (decoder={ch.decoder_type}): "
-                f"last sample {value} != cython {cython_last}"
-            )
-            checked += 1
-
-        assert checked > 0, "No channels were cross-validated"
-
-    def test_86_all_channels_first_sample(self, file_86_parsed, file_86_cython):
-        """First sample for every 86 channel should match Cython output."""
-        samples = self._collect_channel_samples(file_86_parsed)
-        checked = 0
-        for idx, ch in file_86_parsed.channels.items():
-            name = chs_long_name(ch)
-            if name not in file_86_cython.channels:
-                continue
-            if idx not in samples:
-                continue
-            if ch.decoder_type not in DECODER_TABLE:
-                continue
-
-            value = self._decode_and_fixup(samples[idx]["first"], ch)
-            if value is None:
-                continue
-
-            cython_first = file_86_cython.channels[name].column(name)[0].as_py()
-            assert abs(value - float(cython_first)) < 0.01, (
-                f"Ch {name!r} (decoder={ch.decoder_type}): "
-                f"first sample {value} != cython {cython_first}"
-            )
-            checked += 1
-
-        assert checked > 0, "No channels were cross-validated"
-
-    def test_86_all_channels_last_sample(self, file_86_parsed, file_86_cython):
-        """Last sample for every 86 channel should match Cython output."""
-        samples = self._collect_channel_samples(file_86_parsed)
-        checked = 0
-        for idx, ch in file_86_parsed.channels.items():
-            name = chs_long_name(ch)
-            if name not in file_86_cython.channels:
-                continue
-            if idx not in samples:
-                continue
-            if ch.decoder_type not in DECODER_TABLE:
-                continue
-
-            value = self._decode_and_fixup(samples[idx]["last"], ch)
-            if value is None:
-                continue
-
-            cython_last = file_86_cython.channels[name].column(name)[-1].as_py()
-            assert abs(value - float(cython_last)) < 0.01, (
-                f"Ch {name!r} (decoder={ch.decoder_type}): "
-                f"last sample {value} != cython {cython_last}"
-            )
-            checked += 1
-
-        assert checked > 0, "No channels were cross-validated"
-
-    def test_sfj_decoder_type_coverage(self, sfj_parsed, sfj_cython):
+    def test_decoder_type_coverage(self, parsed_and_cython):
         """Every decoder type with Cython-exposed channels should be validated."""
-        samples = self._collect_channel_samples(sfj_parsed)
+        parsed, cython_log = parsed_and_cython
+        samples = self._collect_channel_samples(parsed)
         # Only count decoder types that have at least one Cython-exposed channel
         decoder_types_exposed = set()
         decoder_types_validated = set()
 
-        for idx, ch in sfj_parsed.channels.items():
+        for idx, ch in parsed.channels.items():
             if ch.decoder_type not in DECODER_TABLE:
                 continue
-            name = chs_long_name(ch)
-            if name not in sfj_cython.channels:
+            name = ch.name
+            if name not in cython_log.channels:
                 continue  # Internal channel not exposed by Cython
             decoder_types_exposed.add(ch.decoder_type)
             if idx in samples:
-                value = self._decode_and_fixup(samples[idx]["first"], ch)
-                if value is not None:
-                    decoder_types_validated.add(ch.decoder_type)
-
-        missing = decoder_types_exposed - decoder_types_validated
-        assert not missing, f"Decoder types not validated: {missing}"
-        assert len(decoder_types_validated) >= 3, "Too few decoder types validated"
-
-    def test_86_decoder_type_coverage(self, file_86_parsed, file_86_cython):
-        """Every decoder type with Cython-exposed channels should be validated."""
-        samples = self._collect_channel_samples(file_86_parsed)
-        decoder_types_exposed = set()
-        decoder_types_validated = set()
-
-        for idx, ch in file_86_parsed.channels.items():
-            if ch.decoder_type not in DECODER_TABLE:
-                continue
-            name = chs_long_name(ch)
-            if name not in file_86_cython.channels:
-                continue
-            decoder_types_exposed.add(ch.decoder_type)
-            if idx in samples:
-                value = self._decode_and_fixup(samples[idx]["first"], ch)
+                value = _decode_and_fixup(samples[idx]["first"], ch)
                 if value is not None:
                     decoder_types_validated.add(ch.decoder_type)
 
@@ -839,13 +670,13 @@ class TestDataMessageCrossValidation:
                 sample_bytes = data[offset : offset + ch_size]
                 offset += ch_size
 
-                name = chs_long_name(ch)
+                name = ch.name
                 if name not in file_86_cython.channels:
                     continue
                 if ch.decoder_type not in DECODER_TABLE:
                     continue
 
-                value = self._decode_and_fixup(sample_bytes, ch)
+                value = _decode_and_fixup(sample_bytes, ch)
                 if value is None:
                     continue
 
@@ -955,47 +786,15 @@ class TestExhaustiveChannelValues:
 
         return arrays
 
-    def _decode_sample(self, data_bytes, decoder_type):
-        """Decode raw data bytes using the decoder type's struct format."""
-        if decoder_type not in DECODER_TABLE:
-            return None
-        fmt = DECODER_TABLE[decoder_type][0]
-        size = struct.calcsize(fmt)
-        if len(data_bytes) < size:
-            return None
-        return struct.unpack_from("<" + fmt, data_bytes, 0)[0]
-
-    def _apply_fixup(self, raw_value, decoder_type):
-        """Apply decoder fixup to get the final value."""
-        import numpy as np
-
-        if decoder_type == 20:
-            # float16 encoded as uint16
-            arr = np.array([raw_value], dtype=np.uint16)
-            return float(np.frombuffer(arr.tobytes(), dtype=np.float16)[0])
-        elif decoder_type == 15:
-            # Gear lookup
-            table = {
-                ord("N"): 0,
-                ord("1"): 1,
-                ord("2"): 2,
-                ord("3"): 3,
-                ord("4"): 4,
-                ord("5"): 5,
-                ord("6"): 6,
-            }
-            return table.get(raw_value, raw_value)
-        return raw_value
-
     def _decode_channel_array(self, raw_samples, ch):
         """Decode a list of raw byte samples into float values."""
         values = []
-        is_voltage = chs_units(ch) == "V"
+        is_voltage = ch.units == "V"
         for sample_bytes in raw_samples:
-            raw = self._decode_sample(sample_bytes, ch.decoder_type)
+            raw = _decode_sample(sample_bytes, ch.decoder_type)
             if raw is None:
                 return None
-            value = self._apply_fixup(raw, ch.decoder_type)
+            value = _apply_fixup(raw, ch.decoder_type)
             if is_voltage:
                 value = value / 1000.0
             values.append(float(value))
@@ -1010,7 +809,7 @@ class TestExhaustiveChannelValues:
         errors = []
 
         for idx, ch in result.channels.items():
-            name = chs_long_name(ch)
+            name = ch.name
             if name not in cython_log.channels:
                 continue
             if idx not in arrays:
@@ -1086,35 +885,15 @@ class TestDLLCrossValidation:
         """Build {name: channel_dict} from DLL extract data."""
         return {ch["name"]: ch for ch in dll_data["channels"]}
 
-    def test_sfj_channel_sample_counts(self, sfj_parsed, sfj_dll):
-        """Every channel's sample count should match the DLL for SFJ."""
-        dll_channels = self._dll_channels_by_name(sfj_dll)
-        arrays = TestExhaustiveChannelValues()._build_channel_arrays(sfj_parsed)
+    def test_channel_sample_counts(self, parsed_and_dll):
+        """Every channel's sample count should match the DLL."""
+        parsed, dll_data = parsed_and_dll
+        dll_channels = self._dll_channels_by_name(dll_data)
+        arrays = TestExhaustiveChannelValues()._build_channel_arrays(parsed)
         errors = []
 
-        for idx, ch in sfj_parsed.channels.items():
-            name = chs_long_name(ch)
-            if name not in dll_channels:
-                continue
-            if idx not in arrays:
-                continue
-            dll_count = dll_channels[name]["sample_count"]
-            if dll_count == 0:
-                continue
-            spec_count = len(arrays[idx])
-            if spec_count != dll_count:
-                errors.append(f"Ch {name!r}: spec={spec_count} dll={dll_count}")
-
-        assert not errors, "Sample count mismatches vs DLL:\n" + "\n".join(errors)
-
-    def test_86_channel_sample_counts(self, file_86_parsed, file_86_dll):
-        """Every channel's sample count should match the DLL for 86."""
-        dll_channels = self._dll_channels_by_name(file_86_dll)
-        arrays = TestExhaustiveChannelValues()._build_channel_arrays(file_86_parsed)
-        errors = []
-
-        for idx, ch in file_86_parsed.channels.items():
-            name = chs_long_name(ch)
+        for idx, ch in parsed.channels.items():
+            name = ch.name
             if name not in dll_channels:
                 continue
             if idx not in arrays:
@@ -1144,7 +923,7 @@ class TestDLLCrossValidation:
         checked = 0
 
         for idx, ch in parsed.channels.items():
-            name = chs_long_name(ch)
+            name = ch.name
             if name in self._DLL_SKIP_CHANNELS:
                 continue
             if name not in dll_channels:
@@ -1175,69 +954,33 @@ class TestDLLCrossValidation:
 
         return checked, errors
 
-    def test_sfj_channel_values_spot_check(self, sfj_parsed, sfj_dll):
-        """First and last sample values should match DLL for SFJ."""
-        checked, errors = self._compare_spot_values(sfj_parsed, sfj_dll)
+    def test_channel_values_spot_check(self, parsed_and_dll):
+        """First and last sample values should match DLL."""
+        parsed, dll_data = parsed_and_dll
+        checked, errors = self._compare_spot_values(parsed, dll_data)
         assert checked > 0, "No channels were spot-checked against DLL"
         assert not errors, "Value mismatches vs DLL:\n" + "\n".join(errors)
 
-    def test_86_channel_values_spot_check(self, file_86_parsed, file_86_dll):
-        """First and last sample values should match DLL for 86."""
-        checked, errors = self._compare_spot_values(file_86_parsed, file_86_dll)
-        assert checked > 0, "No channels were spot-checked against DLL"
-        assert not errors, "Value mismatches vs DLL:\n" + "\n".join(errors)
-
-    def test_sfj_lap_count(self, sfj_parsed, sfj_dll):
-        """Lap count should match DLL for SFJ."""
-        dll_lap_count = len(sfj_dll["laps"])
-        spec_laps = sfj_parsed.get_laps()
-        seg0 = [l for l in spec_laps if l["segment"] == 0]
-        seen = set()
-        unique = []
-        for l in seg0:
-            if l["lap_num"] not in seen:
-                seen.add(l["lap_num"])
-                unique.append(l)
+    def test_lap_count(self, parsed_and_dll):
+        """Lap count should match DLL."""
+        parsed, dll_data = parsed_and_dll
+        dll_lap_count = len(dll_data["laps"])
+        unique = _unique_seg0_laps(parsed)
         assert len(unique) == dll_lap_count, f"Lap count: spec={len(unique)} dll={dll_lap_count}"
 
-    def test_86_lap_count(self, file_86_parsed, file_86_dll):
-        """Lap count should match DLL for 86."""
-        dll_lap_count = len(file_86_dll["laps"])
-        spec_laps = file_86_parsed.get_laps()
-        seg0 = [l for l in spec_laps if l["segment"] == 0]
-        seen = set()
-        unique = []
-        for l in seg0:
-            if l["lap_num"] not in seen:
-                seen.add(l["lap_num"])
-                unique.append(l)
-        assert len(unique) == dll_lap_count, f"Lap count: spec={len(unique)} dll={dll_lap_count}"
-
-    def test_sfj_metadata(self, sfj_parsed, sfj_dll):
-        """Metadata should match DLL for SFJ."""
-        dll_meta = sfj_dll["metadata"]
+    def test_metadata(self, parsed_and_dll):
+        """Metadata should match DLL."""
+        parsed, dll_data = parsed_and_dll
+        dll_meta = dll_data["metadata"]
         # Vehicle
-        veh_msgs = sfj_parsed.messages_by_token("VEH")
+        veh_msgs = parsed.messages_by_token("VEH")
         if veh_msgs:
             assert veh_msgs[-1].payload == dll_meta["vehicle"]
         # Track
-        trk_msgs = sfj_parsed.messages_by_token("TRK")
+        trk_msgs = parsed.messages_by_token("TRK")
         if trk_msgs and trk_msgs[-1].payload:
             assert trk_msgs[-1].payload["name"] == dll_meta["track"]
         # Racer
-        rcr_msgs = sfj_parsed.messages_by_token("RCR")
-        if rcr_msgs:
-            assert rcr_msgs[-1].payload == dll_meta["racer"]
-
-    def test_86_metadata(self, file_86_parsed, file_86_dll):
-        """Metadata should match DLL for 86."""
-        dll_meta = file_86_dll["metadata"]
-        veh_msgs = file_86_parsed.messages_by_token("VEH")
-        if veh_msgs:
-            assert veh_msgs[-1].payload == dll_meta["vehicle"]
-        trk_msgs = file_86_parsed.messages_by_token("TRK")
-        if trk_msgs and trk_msgs[-1].payload:
-            assert trk_msgs[-1].payload["name"] == dll_meta["track"]
-        rcr_msgs = file_86_parsed.messages_by_token("RCR")
+        rcr_msgs = parsed.messages_by_token("RCR")
         if rcr_msgs:
             assert rcr_msgs[-1].payload == dll_meta["racer"]

@@ -11,7 +11,6 @@ Usage:
     poetry run python spec/test_vectors/generate_vectors.py
 """
 
-import struct
 import sys
 from pathlib import Path
 
@@ -23,16 +22,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from spec.xrk_format import (
     DECODER_TABLE,
-    UNIT_MAP,
-    ParseResult,
-    _tokdec,
-    _tokenc,
-    chs_dec_pts,
-    chs_device_tag,
-    chs_interpolate,
-    chs_long_name,
-    chs_short_name,
-    chs_units,
     parse_xrk_file,
 )
 
@@ -44,18 +33,6 @@ FILE_86_XRK = TEST_DATA_DIR / "86" / "CMD_Inferno 86_Fuji GP Sh_Generic testing_
 OUTPUT_DIR = Path(__file__).parent
 
 
-def _find_nested_messages(result, token_str):
-    """Find messages by token, recursing into CNF/ENF sub-results."""
-    tok = _tokdec(token_str)
-    found = []
-    for m in result.messages:
-        if m.msg_type == "header" and m.token == tok:
-            found.append(m)
-        if m.msg_type == "header" and isinstance(m.payload, ParseResult):
-            found.extend(_find_nested_messages(m.payload, token_str))
-    return found
-
-
 def generate_channel_defs(sfj_result, file_86_result):
     """Generate channel definition test vectors."""
     vectors = []
@@ -63,7 +40,7 @@ def generate_channel_defs(sfj_result, file_86_result):
     for label, result in [("sfj", sfj_result), ("86", file_86_result)]:
         for idx in sorted(result.channels.keys()):
             ch = result.channels[idx]
-            name = chs_long_name(ch)
+            name = ch.name
             decoder_type = ch.decoder_type
 
             # Get decoder info
@@ -77,19 +54,19 @@ def generate_channel_defs(sfj_result, file_86_result):
                 "description": f"{name} channel from {label.upper()}",
                 "file": label,
                 "raw_hex": (
-                    _find_nested_messages(result, "CHS")[idx].raw_payload.hex()
-                    if idx < len(_find_nested_messages(result, "CHS"))
+                    result.find_nested_messages("CHS")[idx].raw_payload.hex()
+                    if idx < len(result.find_nested_messages("CHS"))
                     else None
                 ),
                 "parsed": {
                     "index": ch.index,
-                    "short_name": chs_short_name(ch),
+                    "short_name": ch.short_name_str,
                     "long_name": name,
                     "data_size": ch.data_size,
                     "decoder_type": decoder_type,
                     "source_type": ch.source_type,
                     "source_channel_id": ch.source_channel_id,
-                    "device_tag": chs_device_tag(ch),
+                    "device_tag": ch.device_tag_str,
                     "sample_period_us": ch.sample_period_us,
                     "unit_type_byte": ch.unit_type_byte,
                     "cal_value_1": float(ch.cal_value_1),
@@ -98,9 +75,9 @@ def generate_channel_defs(sfj_result, file_86_result):
                     "display_range_max": float(ch.display_range_max),
                 },
                 "verification": {
-                    "units": chs_units(ch),
-                    "dec_pts": chs_dec_pts(ch),
-                    "interpolate": chs_interpolate(ch),
+                    "units": ch.units,
+                    "dec_pts": ch.dec_pts,
+                    "interpolate": ch.interpolate,
                     "sample_rate_hz": (
                         round(1_000_000 / ch.sample_period_us, 2) if ch.sample_period_us > 0 else 0
                     ),
@@ -312,7 +289,7 @@ def generate_data_messages(sfj_result, file_86_result):
                 if ch_idx in result.channels:
                     ch = result.channels[ch_idx]
                     vector["channel_info"] = {
-                        "name": chs_long_name(ch),
+                        "name": ch.name,
                         "data_size": ch.data_size,
                         "decoder_type": ch.decoder_type,
                     }

@@ -376,20 +376,9 @@ ODOPayload = Struct(
 )
 
 
-# iSLV — Expansion Device Identity (embedded idn at offset 6)
-# Reference: aim_xrk.pyx:535-545
-ISLVPayload = Struct(
-    "_idn_tag" / Const(b"idn"),  # [0:3]  "idn" ASCII marker
-    "_gap" / Bytes(3),  # [3:6]  gap
-    "model_id" / Int16ul,  # [6:8]  model ID
-    "_pad" / Bytes(4),  # [8:12] unknown
-    "logger_id" / Int32ul,  # [12:16] logger serial number
-    "_rest" / GreedyBytes,  # remaining bytes
-)
-
-# SRC — Source Device Identity (embedded idn at offset 6, 56 bytes of idn data)
-# Reference: aim_xrk.pyx:560-567
-SRCPayload = Struct(
+# EmbeddedIDNPayload — Shared by iSLV and SRC (embedded idn at offset 6)
+# Reference: aim_xrk.pyx:535-545 (iSLV), :560-567 (SRC)
+EmbeddedIDNPayload = Struct(
     "_idn_tag" / Const(b"idn"),  # [0:3]  "idn" ASCII marker
     "_gap" / Bytes(3),  # [3:6]  gap
     "model_id" / Int16ul,  # [6:8]  model ID
@@ -626,8 +615,8 @@ _DISPATCH_TABLE = _dispatch_table(
     ("idn", _Parse(IDNPayload)),
     ("TRK", _Parse(TRKPayload)),
     ("GPSR", _Parse(GPSRPayload)),
-    ("iSLV", _Parse(ISLVPayload)),
-    ("SRC", _Parse(SRCPayload)),
+    ("iSLV", _Parse(EmbeddedIDNPayload)),
+    ("SRC", _Parse(EmbeddedIDNPayload)),
     ("VET", _Parse(VETPayload)),
     ("RACM", _Parse(RACMPayload)),
     # Recursive containers
@@ -853,6 +842,17 @@ class ParseResult:
         """Return parsed GNFI samples as list of Containers."""
         return [p for raw in self.gnfi_payloads if (p := _parse_payload(GNFIPayload, raw))]
 
+    def find_nested_messages(self, token_str):
+        """Find messages by token, including inside CNF/ENF sub-results."""
+        tok = _tokdec(token_str)
+        found = []
+        for m in self.messages:
+            if m.msg_type == "header" and m.token == tok:
+                found.append(m)
+            if m.msg_type == "header" and isinstance(m.payload, ParseResult):
+                found.extend(m.payload.find_nested_messages(token_str))
+        return found
+
 
 def _parse_sequence(data, _depth=0):
     """Internal recursive parser for XRK byte sequences.
@@ -893,76 +893,6 @@ def build_header_frame(token_str, payload, version=0):
             raw_payload=payload,
         )
     )
-
-
-def build_chs(container):
-    """Build a CHS payload from a Container/dict."""
-    return CHSPayload.build(container)
-
-
-def build_grp(container):
-    """Build a GRP payload from a Container/dict."""
-    return GRPPayload.build(container)
-
-
-def build_gps(container):
-    """Build a GPS payload from a Container/dict."""
-    return GPSPayload.build(container)
-
-
-def build_lap(container):
-    """Build a LAP payload from a Container/dict."""
-    return LAPPayload.build(container)
-
-
-def build_cde(container):
-    """Build a CDE payload from a Container/dict."""
-    return CDEPayload.build(container)
-
-
-def build_gnfi(container):
-    """Build a GNFI payload from a Container/dict."""
-    return GNFIPayload.build(container)
-
-
-def build_gpsr(container):
-    """Build a GPSR payload from a Container/dict."""
-    return GPSRPayload.build(container)
-
-
-# ---------------------------------------------------------------------------
-# CHS Helpers
-# ---------------------------------------------------------------------------
-
-
-def chs_short_name(chs):
-    """Extract the short_name string from a CHS Container."""
-    return chs.short_name_str
-
-
-def chs_long_name(chs):
-    """Extract the long_name string from a CHS Container. Alias for chs.name."""
-    return chs.name
-
-
-def chs_units(chs):
-    """Derive the unit string from a CHS Container. Alias for chs.units."""
-    return chs.units
-
-
-def chs_dec_pts(chs):
-    """Derive the decimal points from a CHS Container. Alias for chs.dec_pts."""
-    return chs.dec_pts
-
-
-def chs_interpolate(chs):
-    """Derive the interpolate flag from a CHS Container. Alias for chs.interpolate."""
-    return chs.interpolate
-
-
-def chs_device_tag(chs):
-    """Extract the device tag string from a CHS Container."""
-    return chs.device_tag_str
 
 
 def chs_padding_bytes(chs):
