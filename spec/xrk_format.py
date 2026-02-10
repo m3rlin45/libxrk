@@ -23,6 +23,8 @@ import struct as _struct
 import zlib
 from pathlib import Path
 
+from typing import NamedTuple
+
 from construct import (
     Array,
     Bytes,
@@ -95,31 +97,32 @@ TOK_VET = _tokdec("VET")
 TOK_CNF = _tokdec("CNF")
 TOK_ENF = _tokdec("ENF")
 
-# String message tokens
-_STRING_TOKENS = frozenset(
-    [
-        _tokdec(t)
-        for t in (
-            "RCR",
-            "VEH",
-            "CMP",
-            "VTY",
-            "NDV",
-            "TMD",
-            "TMT",
-            "DBUN",
-            "DBUT",
-            "DVER",
-            "MANL",
-            "MODL",
-            "MANI",
-            "MODI",
-            "HWNF",
-            "PDLT",
-            "NTE",
-        )
-    ]
-)
+
+# --- Dispatch action types ---
+
+
+class _RawAction(NamedTuple):
+    """Append raw payload bytes to a result attribute."""
+
+    attr: str
+
+
+class _ParseAction(NamedTuple):
+    """Parse with a Construct struct, optional side-effect and attribute extraction."""
+
+    struct: object
+    post_fn: object = None
+    result_attr: str | None = None
+
+
+class _RecurseAction(NamedTuple):
+    """Recursive _parse_sequence for CNF/ENF containers."""
+
+    merge: bool
+
+
+class _StringAction(NamedTuple):
+    """Null-terminated string decode."""
 
 # Unit type map: unit_type_byte -> (unit_string, decimal_points)
 # From aim_xrk.pyx:146-171
@@ -575,32 +578,35 @@ def _merge_cnf_result(sub, result):
             _register_grp(grp, result)
 
 
-# Dispatch table: token -> handler descriptor tuple
-# Formats:
-#   ("raw", attr_name)                    — append raw bytes to result.attr
-#   ("parse", struct)                     — parse with Construct struct
-#   ("parse", struct, post_fn)            — parse + call post_fn(parsed, result)
-#   ("parse", struct, post_fn, attr)      — parse + post_fn + return getattr(parsed, attr)
-#   ("recurse", "merge" | None)           — recursive _parse_sequence
+# Dispatch table: token -> action descriptor (NamedTuple)
+# Single source of truth for all token handling.
 _DISPATCH_TABLE = {
-    TOK_GPS: ("raw", "gps_payloads"),
-    TOK_GPS1: ("raw", "gps_payloads"),
-    TOK_GNFI: ("raw", "gnfi_payloads"),
-    TOK_CHS: ("parse", CHSPayload, _register_chs),
-    TOK_GRP: ("parse", GRPPayload, _register_grp),
-    TOK_CNF: ("recurse", "merge"),
-    TOK_ENF: ("recurse", None),
-    TOK_ODO: ("parse", ODOPayload, None, "records"),
-    TOK_LAP: ("parse", LAPPayload),
-    TOK_CDE: ("parse", CDEPayload),
-    TOK_CAL: ("parse", CALPayload),
-    TOK_IDN: ("parse", IDNPayload),
-    TOK_TRK: ("parse", TRKPayload),
-    TOK_GPSR: ("parse", GPSRPayload),
-    TOK_ISLV: ("parse", ISLVPayload),
-    TOK_SRC: ("parse", SRCPayload),
-    TOK_VET: ("parse", VETPayload),
-    TOK_RACM: ("parse", RACMPayload),
+    # Raw payload storage
+    TOK_GPS: _RawAction("gps_payloads"),
+    TOK_GPS1: _RawAction("gps_payloads"),
+    TOK_GNFI: _RawAction("gnfi_payloads"),
+    # Struct parsing (with optional side-effects and attribute extraction)
+    TOK_CHS: _ParseAction(CHSPayload, _register_chs),
+    TOK_GRP: _ParseAction(GRPPayload, _register_grp),
+    TOK_ODO: _ParseAction(ODOPayload, result_attr="records"),
+    TOK_LAP: _ParseAction(LAPPayload),
+    TOK_CDE: _ParseAction(CDEPayload),
+    TOK_CAL: _ParseAction(CALPayload),
+    TOK_IDN: _ParseAction(IDNPayload),
+    TOK_TRK: _ParseAction(TRKPayload),
+    TOK_GPSR: _ParseAction(GPSRPayload),
+    TOK_ISLV: _ParseAction(ISLVPayload),
+    TOK_SRC: _ParseAction(SRCPayload),
+    TOK_VET: _ParseAction(VETPayload),
+    TOK_RACM: _ParseAction(RACMPayload),
+    # Recursive containers
+    TOK_CNF: _RecurseAction(merge=True),
+    TOK_ENF: _RecurseAction(merge=False),
+    # String messages (null-terminated ASCII)
+    **{_tokdec(t): _StringAction() for t in (
+        "RCR", "VEH", "CMP", "VTY", "NDV", "TMD", "TMT", "DBUN", "DBUT",
+        "DVER", "MANL", "MODL", "MANI", "MODI", "HWNF", "PDLT", "NTE",
+    )},
 }
 
 
@@ -644,34 +650,35 @@ def _dispatch_payload(token, raw_payload, result, _depth):
     """Dispatch a header message payload to the appropriate parser.
 
     Uses _DISPATCH_TABLE for declarative routing. Handles raw storage, Construct
-    parsing with optional side effects, and CNF/ENF recursion.
+    parsing with optional side effects, string decoding, and CNF/ENF recursion.
     """
     entry = _DISPATCH_TABLE.get(token)
-    if entry is not None:
-        action = entry[0]
-        if action == "raw":
-            getattr(result, entry[1]).append(raw_payload)
-            return None
-        if action == "parse":
-            parsed = _parse_payload(entry[1], raw_payload)
-            if parsed is None:
-                return None
-            if len(entry) > 2 and entry[2] is not None:
-                entry[2](parsed, result)
-            if len(entry) > 3:
-                return getattr(parsed, entry[3])
-            return parsed
-        if action == "recurse":
-            sub = _parse_sequence(raw_payload, include_data_messages=False, _depth=_depth + 1)
-            if entry[1] == "merge":
-                _merge_cnf_result(sub, result)
-            return sub
+    if entry is None:
+        return raw_payload
 
-    # String messages
-    if token in _STRING_TOKENS:
+    if isinstance(entry, _RawAction):
+        getattr(result, entry.attr).append(raw_payload)
+        return None
+
+    if isinstance(entry, _ParseAction):
+        parsed = _parse_payload(entry.struct, raw_payload)
+        if parsed is None:
+            return None
+        if entry.post_fn is not None:
+            entry.post_fn(parsed, result)
+        if entry.result_attr is not None:
+            return getattr(parsed, entry.result_attr)
+        return parsed
+
+    if isinstance(entry, _RecurseAction):
+        sub = _parse_sequence(raw_payload, include_data_messages=False, _depth=_depth + 1)
+        if entry.merge:
+            _merge_cnf_result(sub, result)
+        return sub
+
+    if isinstance(entry, _StringAction):
         return _nullterm(raw_payload)
 
-    # Unknown token — return raw payload
     return raw_payload
 
 
