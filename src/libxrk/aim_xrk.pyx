@@ -789,10 +789,6 @@ def _decode_sequence(s, progress=None):
             messages, time_offset, last_time)
         channels.extend(gps_ch)
 
-    t3 = time.perf_counter()
-    if t3-t1 > 0.1:
-        print('division: scan=%f, gps=%f, group/ch=%f more' % (t2-t1, t4-t2, t3-t4))
-
     return DataStream(
         channels={ch.long_name: ch for ch in channels
                   if ch and len(ch.sampledata)

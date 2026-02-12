@@ -15,9 +15,21 @@ Main Components:
     aim_xrk: Function to load XRK/XRZ files, returns a LogFile object
     LogFile: Dataclass containing channels, laps, and metadata
     GPS_CHANNEL_NAMES: List of standard GPS channel names
+
+Backend Selection:
+    Set LIBXRK_BACKEND=rust to use the Rust parser (preview).
+    Default is Cython.
 """
 
-from .aim_xrk import aim_xrk, aim_track_dbg
+import os as _os
+
+_backend = _os.environ.get("LIBXRK_BACKEND", "").lower()
+
+if _backend == "rust":
+    from ._aim_xrk_rs import aim_xrk, aim_track_dbg
+else:
+    from .aim_xrk import aim_xrk, aim_track_dbg
+
 from .base import LogFile
 from .gps import GPS_CHANNEL_NAMES
 

@@ -93,3 +93,7 @@ node_modules/
 
 # Generated test vectors (spec/test_vectors/*.yaml)
 spec/test_vectors/*.yaml
+
+# Rust / Cargo
+target/
+Cargo.lock

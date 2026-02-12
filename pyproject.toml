@@ -85,6 +85,7 @@ py-spy = "^0.4.1"
 construct = "^2.10.0"
 pyyaml = "^6.0"
 pytest-xdist = "^3.8.0"
+maturin = "^1.11.5"
 
 [tool.black]
 line-length = 100
@@ -158,6 +159,11 @@ ignore_missing_imports = true
 module = "yaml.*"
 ignore_missing_imports = true
 
+[tool.maturin]
+python-source = "src"
+module-name = "libxrk._aim_xrk_rs"
+features = ["pyo3/extension-module"]
+
 [tool.poe.tasks]
 format = "black ."
 lint = "black --check ."
@@ -166,7 +172,18 @@ test = "pytest tests/ -v -n auto"
 check = ["lint", "typecheck", "test", "spec-test"]
 spec-test = "pytest spec/tests/ -v -n auto"
 spec-vectors = "python spec/test_vectors/generate_vectors.py"
-repl = "python -i -c \"from libxrk import aim_xrk; log = aim_xrk('tests/test_data/SFJ/CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrk'); print('XRK file loaded as: log'); print(f'Channels: {len(log.channels)}'); print(f'Laps: {len(log.laps)}'); print(f'Metadata keys: {list(log.metadata.keys())}')\"" 
+repl = "python -i -c \"from libxrk import aim_xrk; log = aim_xrk('tests/test_data/SFJ/CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrk'); print('XRK file loaded as: log'); print(f'Channels: {len(log.channels)}'); print(f'Laps: {len(log.laps)}'); print(f'Metadata keys: {list(log.metadata.keys())}')\""
+benchmark = "python scripts/benchmark.py"
+[tool.poe.tasks.rust-build]
+shell = "source $HOME/.cargo/env && maturin develop --release"
+interpreter = "bash"
+help = "Build Rust extension module (development)"
+
+[tool.poe.tasks.rust-build-debug]
+shell = "source $HOME/.cargo/env && maturin develop"
+interpreter = "bash"
+help = "Build Rust extension module (debug, faster compile)"
+
 [tool.poe.tasks.pyodide-build]
 shell = "source ./build/emsdk/emsdk_env.sh && pyodide build --exports whole_archive"
 interpreter = "bash"
