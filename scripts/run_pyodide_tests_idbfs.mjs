@@ -64,6 +64,7 @@ function parseArgs() {
   const args = {
     distDir: path.join(projectRoot, "dist"),
     pyodideVersion: "0.27",
+    backend: "",
   };
 
   for (const arg of process.argv.slice(2)) {
@@ -71,6 +72,8 @@ function parseArgs() {
       args.distDir = arg.split("=")[1];
     } else if (arg.startsWith("--pyodide-version=")) {
       args.pyodideVersion = arg.split("=")[1];
+    } else if (arg.startsWith("--backend=")) {
+      args.backend = arg.split("=")[1];
     }
   }
 
@@ -127,8 +130,12 @@ async function main() {
   const testRunnerCode = fs.readFileSync(testRunnerPath, "utf-8");
   pyodide.FS.writeFile("/pyodide_tests/test_bytes_input.py", testRunnerCode);
 
+  const backendSetup = args.backend
+    ? `import os; os.environ['LIBXRK_BACKEND'] = '${args.backend}'\n`
+    : "";
+
   const testResult = await pyodide.runPythonAsync(`
-import sys
+${backendSetup}import sys
 sys.path.insert(0, '/pyodide_tests')
 from test_bytes_input import run_bytes_input_tests
 run_bytes_input_tests(js_file_bytes)

@@ -35,7 +35,9 @@ class build_ext(_build_ext):
         cargo_dir = Path(f"target/{target}/release") if target else Path("target/release")
 
         # Platform-specific cargo output name
-        if platform.system() == "Windows":
+        if target and "wasm" in target:
+            cargo_lib = cargo_dir / "_aim_xrk_rs.wasm"
+        elif platform.system() == "Windows":
             cargo_lib = cargo_dir / "_aim_xrk_rs.dll"
         elif platform.system() == "Darwin":
             cargo_lib = cargo_dir / "lib_aim_xrk_rs.dylib"
