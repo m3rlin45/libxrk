@@ -1,0 +1,22 @@
+[package]
+name = "libxrk"
+version = "0.9.1"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "_aim_xrk_rs"
+crate-type = ["cdylib"]
+path = "rust/src/lib.rs"
+
+[dependencies]
+pyo3 = { version = "0.26", features = ["extension-module"] }
+binrw = "0.14"
+arrow = { version = "57", default-features = false, features = ["pyarrow"] }
+flate2 = "1"
+ryu = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"

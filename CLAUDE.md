@@ -1,7 +1,7 @@
 # libxrk Development Guide
 
 ## Project Overview
-Python library for reading AIM XRK/XRZ motorsports telemetry files. Uses Cython for binary parsing and PyArrow for data representation.
+Python library for reading AIM XRK/XRZ motorsports telemetry files. Uses Cython for binary parsing (default) with an optional Rust+PyO3 parser (preview). Data is represented as PyArrow tables.
 
 **Important:** Always run commands through `poetry run` to use the project's virtual environment.
 
@@ -18,11 +18,28 @@ poetry build            # Build wheel
 
 ## Code Structure
 
-- `src/libxrk/aim_xrk.pyx` - Cython binary parser (core logic)
+- `src/libxrk/aim_xrk.pyx` - Cython binary parser (default backend)
 - `src/libxrk/aim_xrk.pyi` - Type stubs for Cython module
+- `rust/` - Rust+PyO3 parser (preview backend, ~2x faster)
+- `src/libxrk/_aim_xrk_rs.pyi` - Type stubs for Rust module
 - `src/libxrk/base.py` - LogFile dataclass, channel merging
 - `src/libxrk/gps.py` - GPS utilities, lap detection, timing fix
 - `tests/` - pytest tests with real XRK data in `tests/test_data/`
+
+## Parser Backends
+
+The library has two parser backends with identical APIs:
+
+- **Cython** (default): `src/libxrk/aim_xrk.pyx` — mature, well-tested
+- **Rust** (preview): `rust/` — ~2x faster
+
+Set `LIBXRK_BACKEND=rust` to use the Rust parser.
+
+```bash
+poetry run poe rust-build       # Build Rust extension
+LIBXRK_BACKEND=rust poetry run poe test  # Test with Rust backend
+poetry run python scripts/benchmark.py   # Compare performance
+```
 
 ## Code Style
 
@@ -73,6 +90,10 @@ Pyodide test scripts are in `scripts/run_pyodide_tests*.mjs`. They accept `--pyo
 ## Cython Rebuild
 
 After modifying `src/libxrk/aim_xrk.pyx`, you **must** run `poetry install` to recompile the Cython extension before running tests. Stale `.so` files will cause incorrect test results without any obvious error.
+
+## Rust Rebuild
+
+After modifying Rust source in `rust/`, run `poetry run poe rust-build` (release) or `poetry run poe rust-build-debug` (faster compile). The Rust extension coexists with Cython — both can be installed simultaneously.
 
 ## Architecture Notes
 

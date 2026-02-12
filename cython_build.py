@@ -1,8 +1,11 @@
-"""Build script for compiling Cython extensions."""
+"""Build script for compiling Cython and Rust extensions."""
 
 import os
 import platform
 import shutil
+import subprocess
+import sys
+import sysconfig
 from pathlib import Path
 from setuptools import Extension
 from setuptools.command.build_ext import build_ext as _build_ext
@@ -19,6 +22,35 @@ class build_ext(_build_ext):
             # Standard build - put intermediate files in build/
             pass
         super().run()
+        self._build_rust()
+
+    def _build_rust(self):
+        """Build Rust extension via cargo. Fails if cargo unavailable."""
+        env = os.environ.copy()
+        env["PYO3_PYTHON"] = sys.executable
+        subprocess.run(["cargo", "build", "--release"], check=True, env=env)
+
+        # Find output (respects CARGO_BUILD_TARGET for cross-compilation)
+        target = os.environ.get("CARGO_BUILD_TARGET")
+        cargo_dir = Path(f"target/{target}/release") if target else Path("target/release")
+
+        # Platform-specific cargo output name
+        if platform.system() == "Windows":
+            cargo_lib = cargo_dir / "_aim_xrk_rs.dll"
+        elif platform.system() == "Darwin":
+            cargo_lib = cargo_dir / "lib_aim_xrk_rs.dylib"
+        else:
+            cargo_lib = cargo_dir / "lib_aim_xrk_rs.so"
+
+        ext_suffix = sysconfig.get_config_var("EXT_SUFFIX") or ".so"
+
+        # Copy to build output
+        dest_dir = Path(self.build_lib) / "libxrk"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(cargo_lib, dest_dir / f"_aim_xrk_rs{ext_suffix}")
+
+        # Copy to source tree for development installs
+        shutil.copy2(cargo_lib, Path("src/libxrk") / f"_aim_xrk_rs{ext_suffix}")
 
     def copy_extensions_to_source(self):
         """Copy built extensions to the source tree for development."""

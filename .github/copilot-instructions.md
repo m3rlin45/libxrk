@@ -45,8 +45,21 @@ This builds the library for WebAssembly and runs tests in Pyodide. **This is a l
 After modifying `aim_xrk.pyx`, rebuild the Cython extension:
 
 ```bash
-poetry build
-poetry install --only-root
+poetry install
+```
+
+### Rust Rebuild
+
+After modifying Rust source in `rust/`, rebuild:
+
+```bash
+poetry run poe rust-build
+```
+
+To test with the Rust backend:
+
+```bash
+LIBXRK_BACKEND=rust poetry run poe test
 ```
 
 ## Before Finishing Work
