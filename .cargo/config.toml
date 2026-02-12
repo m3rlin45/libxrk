@@ -1,0 +1,17 @@
+# Cargo config for wasm32-unknown-emscripten (Pyodide) builds.
+#
+# Rust nightly's pre-compiled stdlib for wasm32-unknown-emscripten uses native
+# wasm exceptions (-fwasm-exceptions), which Pyodide 0.27 (Emscripten 3.1.58)
+# does not support. We use build-std to rebuild stdlib from source with
+# panic=abort (via RUSTFLAGS in the poe tasks) to completely eliminate
+# exception handling from the generated WebAssembly.
+#
+# The linker wrapper (scripts/emcc-no-wasm-exceptions.sh) strips the
+# -fwasm-exceptions flag that Rust nightly injects into the emcc invocation.
+#
+# The wasm-opt wrapper in build/emsdk/upstream/bin/ filters unsupported flags
+# (--enable-bulk-memory-opt, --enable-call-indirect-overlong) that newer Rust
+# nightlies emit but Emscripten 3.1.58's wasm-opt v117 doesn't support.
+
+[unstable]
+build-std = ["std", "panic_abort"]

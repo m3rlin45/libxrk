@@ -31,9 +31,9 @@ poetry build            # Build wheel
 The library has two parser backends with identical APIs:
 
 - **Cython** (default): `src/libxrk/aim_xrk.pyx` — mature, well-tested
-- **Rust** (preview): `rust/` — ~2x faster
+- **Rust** (preview): `rust/` — ~2x faster, used automatically in Pyodide/WASM
 
-Set `LIBXRK_BACKEND=rust` to use the Rust parser.
+Set `LIBXRK_BACKEND=rust` to use the Rust parser. Falls back to Rust if Cython is unavailable.
 
 ```bash
 poetry run poe rust-build       # Build Rust extension

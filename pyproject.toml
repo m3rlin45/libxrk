@@ -185,9 +185,19 @@ interpreter = "bash"
 help = "Build Rust extension module (debug, faster compile)"
 
 [tool.poe.tasks.pyodide-build]
-shell = "source ./build/emsdk/emsdk_env.sh && pyodide build --exports whole_archive"
+shell = """
+_bak=/tmp/_libxrk_native_$$ && mkdir -p "$_bak" && \
+find src/libxrk -maxdepth 1 -name '*linux-gnu.so' -exec mv {} "$_bak/" \\; && \
+source $HOME/.cargo/env && \
+export RUSTUP_TOOLCHAIN=nightly && \
+source ./build/emsdk/emsdk_env.sh && \
+export RUSTFLAGS="-C target-feature=-exception-handling -C panic=abort" && \
+export CARGO_BUILD_TARGET=wasm32-unknown-emscripten && \
+pyodide build --exports whole_archive; \
+_rc=$?; mv "$_bak"/*.so src/libxrk/ 2>/dev/null; rm -rf "$_bak"; exit $_rc
+"""
 interpreter = "bash"
-help = "Build Pyodide wheel"
+help = "Build Pyodide wheel (Cython + Rust for WASM)"
 deps = ["emsdk-setup"]
 
 [tool.poe.tasks.emsdk-setup]
@@ -201,7 +211,20 @@ interpreter = "bash"
 help = "Install Pyodide 0.27.x npm package for WebAssembly testing"
 
 [tool.poe.tasks.pyodide-test]
-shell = "rm -f src/libxrk/*.so dist/*pyodide_2024*.whl && source ./build/emsdk/emsdk_env.sh && pyodide build --exports whole_archive && node scripts/run_pyodide_tests.mjs --dist-dir=./dist --pyodide-version=0.27 && node scripts/run_pyodide_tests_idbfs.mjs --dist-dir=./dist --pyodide-version=0.27 && poetry install --only-root"
+shell = """
+_bak=/tmp/_libxrk_native_$$ && mkdir -p "$_bak" && \
+find src/libxrk -maxdepth 1 -name '*linux-gnu.so' -exec mv {} "$_bak/" \\; && \
+rm -f dist/*pyodide_2024*.whl && \
+source $HOME/.cargo/env && \
+export RUSTUP_TOOLCHAIN=nightly && \
+source ./build/emsdk/emsdk_env.sh && \
+export RUSTFLAGS="-C target-feature=-exception-handling -C panic=abort" && \
+export CARGO_BUILD_TARGET=wasm32-unknown-emscripten && \
+pyodide build --exports whole_archive && \
+node scripts/run_pyodide_tests.mjs --dist-dir=./dist --pyodide-version=0.27 && \
+node scripts/run_pyodide_tests_idbfs.mjs --dist-dir=./dist --pyodide-version=0.27; \
+_rc=$?; mv "$_bak"/*.so src/libxrk/ 2>/dev/null; rm -rf "$_bak"; exit $_rc
+"""
 interpreter = "bash"
 help = "Build and run tests in Pyodide 0.27.x (WebAssembly)"
 deps = ["emsdk-setup", "pyodide-setup"]
@@ -226,10 +249,16 @@ help = "Install Pyodide 0.29.x npm package"
 
 [tool.poe.tasks.pyodide-build-0-29]
 shell = """
-export PATH="$HOME/.pyenv/versions/3.13.12/bin:$PATH" && \
+_bak=/tmp/_libxrk_native_$$ && mkdir -p "$_bak" && \
+find src/libxrk -maxdepth 1 -name '*linux-gnu.so' -exec mv {} "$_bak/" \\; && \
+EMSDK=$PWD/build/emsdk-0.29 && \
+export PATH="$HOME/.pyenv/versions/3.13.12/bin:$HOME/.cargo/bin:$EMSDK/upstream/emscripten:$PATH" && \
+export EMSDK EM_CONFIG=$EMSDK/.emscripten EMSDK_NODE=$EMSDK/node/22.16.0_64bit/bin/node && \
+export RUSTUP_TOOLCHAIN=nightly RUSTFLAGS="-Zemscripten-wasm-eh" && \
+export CARGO_BUILD_TARGET=wasm32-unknown-emscripten && \
 pip install pyodide-build==0.29.3 "wheel<0.44" && \
-source ./build/emsdk-0.29/emsdk_env.sh && \
-pyodide build --exports whole_archive
+pyodide build --exports whole_archive; \
+_rc=$?; mv "$_bak"/*.so src/libxrk/ 2>/dev/null; rm -rf "$_bak"; exit $_rc
 """
 interpreter = "bash"
 help = "Build Pyodide 0.29.x wheel (requires Python 3.13 via pyenv)"
@@ -237,21 +266,39 @@ deps = ["emsdk-setup-0-29"]
 
 [tool.poe.tasks.pyodide-test-0-29]
 shell = """
-export PATH="$HOME/.pyenv/versions/3.13.12/bin:$PATH" && \
-rm -f src/libxrk/*.so dist/*pyodide_2025*.whl && \
+_bak=/tmp/_libxrk_native_$$ && mkdir -p "$_bak" && \
+find src/libxrk -maxdepth 1 -name '*linux-gnu.so' -exec mv {} "$_bak/" \\; && \
+EMSDK=$PWD/build/emsdk-0.29 && \
+export PATH="$HOME/.pyenv/versions/3.13.12/bin:$HOME/.cargo/bin:$EMSDK/upstream/emscripten:$PATH" && \
+export EMSDK EM_CONFIG=$EMSDK/.emscripten EMSDK_NODE=$EMSDK/node/22.16.0_64bit/bin/node && \
+export RUSTUP_TOOLCHAIN=nightly RUSTFLAGS="-Zemscripten-wasm-eh" && \
+export CARGO_BUILD_TARGET=wasm32-unknown-emscripten && \
+rm -f dist/*pyodide_2025*.whl && \
 pip install pyodide-build==0.29.3 "wheel<0.44" && \
-source ./build/emsdk-0.29/emsdk_env.sh && \
 pyodide build --exports whole_archive && \
 node scripts/run_pyodide_tests.mjs --dist-dir=./dist --pyodide-version=0.29 && \
-node scripts/run_pyodide_tests_idbfs.mjs --dist-dir=./dist --pyodide-version=0.29 && \
-poetry install --only-root
+node scripts/run_pyodide_tests_idbfs.mjs --dist-dir=./dist --pyodide-version=0.29; \
+_rc=$?; mv "$_bak"/*.so src/libxrk/ 2>/dev/null; rm -rf "$_bak"; exit $_rc
 """
 interpreter = "bash"
 help = "Build and test with Pyodide 0.29.x (requires Python 3.13 via pyenv)"
 deps = ["emsdk-setup-0-29", "pyodide-setup-0-29"]
 
 [tool.poe.tasks.build-all]
-shell = "rm -rf dist/ && poetry build && source ./build/emsdk/emsdk_env.sh && pyodide build --exports whole_archive && ls -la dist/"
+shell = """
+_bak=/tmp/_libxrk_native_$$ && mkdir -p "$_bak" && \
+rm -rf dist/ && \
+source $HOME/.cargo/env && \
+poetry build && \
+find src/libxrk -maxdepth 1 -name '*linux-gnu.so' -exec mv {} "$_bak/" \\; && \
+export RUSTUP_TOOLCHAIN=nightly && \
+source ./build/emsdk/emsdk_env.sh && \
+export RUSTFLAGS="-C target-feature=-exception-handling -C panic=abort" && \
+export CARGO_BUILD_TARGET=wasm32-unknown-emscripten && \
+pyodide build --exports whole_archive; \
+_rc=$?; mv "$_bak"/*.so src/libxrk/ 2>/dev/null; rm -rf "$_bak"; \
+[ $_rc -eq 0 ] && ls -la dist/; exit $_rc
+"""
 interpreter = "bash"
 help = "Build CPython wheel, sdist, and Pyodide wheel"
 deps = ["emsdk-setup"]

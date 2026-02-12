@@ -90,6 +90,7 @@ function parseArgs() {
   const args = {
     distDir: path.join(projectRoot, "dist"),
     pyodideVersion: "0.27",
+    backend: "",
   };
 
   for (const arg of process.argv.slice(2)) {
@@ -97,6 +98,8 @@ function parseArgs() {
       args.distDir = arg.split("=")[1];
     } else if (arg.startsWith("--pyodide-version=")) {
       args.pyodideVersion = arg.split("=")[1];
+    } else if (arg.startsWith("--backend=")) {
+      args.backend = arg.split("=")[1];
     }
   }
 
@@ -146,15 +149,23 @@ async function main() {
     // Directory might already exist
   }
 
-  console.log("\nRunning tests...\n");
+  if (args.backend) {
+    console.log(`\nRunning tests with backend: ${args.backend}...\n`);
+  } else {
+    console.log("\nRunning tests...\n");
+  }
 
   // Read and execute Python test runner
   const testRunnerPath = path.join(pyodideTestsDir, "run_unit_tests.py");
   const testRunnerCode = fs.readFileSync(testRunnerPath, "utf-8");
   pyodide.FS.writeFile("/pyodide_tests/run_unit_tests.py", testRunnerCode);
 
+  const backendSetup = args.backend
+    ? `import os; os.environ['LIBXRK_BACKEND'] = '${args.backend}'\n`
+    : "";
+
   const testResult = await pyodide.runPythonAsync(`
-import sys
+${backendSetup}import sys
 sys.path.insert(0, '/pyodide_tests')
 from run_unit_tests import run_tests
 run_tests()
