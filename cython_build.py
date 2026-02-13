@@ -26,6 +26,13 @@ class build_ext(_build_ext):
 
     def _build_rust(self):
         """Build Rust extension via cargo. Fails if cargo unavailable."""
+        # Skip native Rust build when cross-compiling for Emscripten (Pyodide).
+        # The Pyodide environment sets RUSTFLAGS with nightly-only -Z options
+        # that are incompatible with a native cargo build.
+        build_platform = sysconfig.get_platform()
+        if "emscripten" in build_platform or "wasm" in build_platform:
+            return
+
         env = os.environ.copy()
         env["PYO3_PYTHON"] = sys.executable
         subprocess.run(["cargo", "build", "--release"], check=True, env=env)
