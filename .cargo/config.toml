@@ -15,3 +15,9 @@
 
 [unstable]
 build-std = ["std", "panic_abort"]
+
+# macOS: allow undefined Python symbols in cdylib (resolved at runtime by the
+# Python interpreter).  PyO3's extension-module feature should emit these flags
+# but doesn't when arrow-pyarrow pulls in a second pyo3-ffi copy.
+[target.'cfg(target_os = "macos")']
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
