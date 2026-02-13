@@ -93,5 +93,11 @@ jobs:
     - name: Run unit tests in Pyodide
       run: node scripts/run_pyodide_tests.mjs --dist-dir=./dist --pyodide-version=${{ matrix.version-arg }}
 
+    - name: Run unit tests in Pyodide (Rust backend)
+      run: node scripts/run_pyodide_tests.mjs --dist-dir=./dist --pyodide-version=${{ matrix.version-arg }} --backend=rust
+
     - name: Run bytes input tests in Pyodide
       run: node scripts/run_pyodide_tests_idbfs.mjs --dist-dir=./dist --pyodide-version=${{ matrix.version-arg }}
+
+    - name: Run bytes input tests in Pyodide (Rust backend)
+      run: node scripts/run_pyodide_tests_idbfs.mjs --dist-dir=./dist --pyodide-version=${{ matrix.version-arg }} --backend=rust

@@ -1,7 +1,7 @@
 # libxrk Development Guide
 
 ## Project Overview
-Python library for reading AIM XRK/XRZ motorsports telemetry files. Uses Cython for binary parsing (default) with an optional Rust+PyO3 parser (preview). Data is represented as PyArrow tables.
+Python library for reading AIM XRK/XRZ motorsports telemetry files. Uses Cython for binary parsing (default) with a Rust+PyO3 parser (~2x faster). Both backends are included in all published wheels. Data is represented as PyArrow tables.
 
 **Important:** Always run commands through `poetry run` to use the project's virtual environment.
 
@@ -20,7 +20,7 @@ poetry build            # Build wheel
 
 - `src/libxrk/aim_xrk.pyx` - Cython binary parser (default backend)
 - `src/libxrk/aim_xrk.pyi` - Type stubs for Cython module
-- `rust/` - Rust+PyO3 parser (preview backend, ~2x faster)
+- `rust/` - Rust+PyO3 parser (~2x faster)
 - `src/libxrk/_aim_xrk_rs.pyi` - Type stubs for Rust module
 - `src/libxrk/base.py` - LogFile dataclass, channel merging
 - `src/libxrk/gps.py` - GPS utilities, lap detection, timing fix
@@ -28,10 +28,10 @@ poetry build            # Build wheel
 
 ## Parser Backends
 
-The library has two parser backends with identical APIs:
+The library has two parser backends with identical APIs. Both are included in all published wheels.
 
 - **Cython** (default): `src/libxrk/aim_xrk.pyx` — mature, well-tested
-- **Rust** (preview): `rust/` — ~2x faster, used automatically in Pyodide/WASM
+- **Rust**: `rust/` — ~2x faster, used automatically in Pyodide/WASM
 
 Set `LIBXRK_BACKEND=rust` to use the Rust parser. Falls back to Rust if Cython is unavailable.
 
