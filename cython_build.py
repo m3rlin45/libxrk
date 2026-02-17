@@ -66,10 +66,8 @@ class build_ext(_build_ext):
         dest_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(cargo_lib, dest_dir / f"_aim_xrk_rs{ext_suffix}")
 
-        # Copy to source tree for development installs (skip for cross-compilation
-        # since the .wasm output can't be loaded natively)
-        if not is_emscripten:
-            shutil.copy2(cargo_lib, Path("src/libxrk") / f"_aim_xrk_rs{ext_suffix}")
+        # Copy to source tree so poetry includes it in the wheel
+        shutil.copy2(cargo_lib, Path("src/libxrk") / f"_aim_xrk_rs{ext_suffix}")
 
     def copy_extensions_to_source(self):
         """Copy built extensions to the source tree for development."""
