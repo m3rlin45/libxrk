@@ -120,11 +120,12 @@ struct ParserState {
 }
 
 /// Pre-scan results used to pre-allocate accumulator capacity.
+/// Uses Vec<usize> indexed by channel index for O(1) access (no hashing).
 struct PrescanResult {
     /// Total data bytes per accumulator category [0..4] per index.
-    data_bytes: [HashMap<usize, usize>; 4],
+    data_bytes: [Vec<usize>; 4],
     /// M-message timecode count per channel index.
-    m_timecode_count: HashMap<usize, usize>,
+    m_timecode_count: Vec<usize>,
     /// Total GPS payload bytes.
     gps_bytes: usize,
     /// Total GNFI payload bytes.
@@ -134,11 +135,27 @@ struct PrescanResult {
 impl PrescanResult {
     fn new() -> Self {
         PrescanResult {
-            data_bytes: [HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new()],
-            m_timecode_count: HashMap::new(),
+            data_bytes: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            m_timecode_count: Vec::new(),
             gps_bytes: 0,
             gnfi_bytes: 0,
         }
+    }
+
+    #[inline]
+    fn add_data_bytes(&mut self, cat: usize, idx: usize, bytes: usize) {
+        if self.data_bytes[cat].len() <= idx {
+            self.data_bytes[cat].resize(idx + 1, 0);
+        }
+        self.data_bytes[cat][idx] += bytes;
+    }
+
+    #[inline]
+    fn add_timecodes(&mut self, idx: usize, count: usize) {
+        if self.m_timecode_count.len() <= idx {
+            self.m_timecode_count.resize(idx + 1, 0);
+        }
+        self.m_timecode_count[idx] += count;
     }
 }
 
@@ -168,14 +185,14 @@ impl ParserState {
     /// Pre-allocate accumulator Vecs based on prescan byte counts.
     fn apply_prescan_hints(&mut self, hints: &PrescanResult) {
         for cat in 0..4 {
-            for (&idx, &bytes) in &hints.data_bytes[cat] {
-                if idx < self.gc_data[cat].len() {
+            for (idx, &bytes) in hints.data_bytes[cat].iter().enumerate() {
+                if bytes > 0 && idx < self.gc_data[cat].len() {
                     self.gc_data[cat][idx].data.reserve(bytes);
                 }
             }
         }
-        for (&idx, &count) in &hints.m_timecode_count {
-            if idx < self.gc_data[3].len() {
+        for (idx, &count) in hints.m_timecode_count.iter().enumerate() {
+            if count > 0 && idx < self.gc_data[3].len() {
                 self.gc_data[3][idx].timecodes.reserve(count);
             }
         }
@@ -351,7 +368,7 @@ fn prescan(data: &[u8], state: &mut ParserState) -> PrescanResult {
                         if index < state.gc_data[0].len() {
                             let total_size = state.gc_data[0][index].add_helper;
                             if total_size > 3 && pos + total_size <= len && data[pos + total_size - 1] == b')' {
-                                *hints.data_bytes[0].entry(index).or_insert(0) += total_size - 3;
+                                hints.add_data_bytes(0, index, total_size - 3);
                                 pos += total_size;
                                 continue;
                             }
@@ -364,7 +381,7 @@ fn prescan(data: &[u8], state: &mut ParserState) -> PrescanResult {
                         if index < state.gc_data[1].len() {
                             let total_size = state.gc_data[1][index].add_helper;
                             if total_size > 3 && pos + total_size <= len && data[pos + total_size - 1] == b')' {
-                                *hints.data_bytes[1].entry(index).or_insert(0) += total_size - 3;
+                                hints.add_data_bytes(1, index, total_size - 3);
                                 pos += total_size;
                                 continue;
                             }
@@ -381,8 +398,8 @@ fn prescan(data: &[u8], state: &mut ParserState) -> PrescanResult {
                             if mms > 0 && sample_size > 0 {
                                 let total_size = 10 + sample_size * count + 1;
                                 if pos + total_size <= len && data[pos + total_size - 1] == b')' {
-                                    *hints.data_bytes[3].entry(index).or_insert(0) += sample_size * count;
-                                    *hints.m_timecode_count.entry(index).or_insert(0) += count;
+                                    hints.add_data_bytes(3, index, sample_size * count);
+                                    hints.add_timecodes(index, count);
                                     pos += total_size;
                                     continue;
                                 }
@@ -397,7 +414,7 @@ fn prescan(data: &[u8], state: &mut ParserState) -> PrescanResult {
                         if index < state.gc_data[2].len() {
                             let total_size = state.gc_data[2][index].add_helper;
                             if total_size > 8 && pos + total_size <= len && data[pos + total_size - 1] == b')' {
-                                *hints.data_bytes[2].entry(index).or_insert(0) += total_size - 8;
+                                hints.add_data_bytes(2, index, total_size - 8);
                                 pos += total_size;
                                 continue;
                             }

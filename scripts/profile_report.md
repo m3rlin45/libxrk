@@ -1,4 +1,4 @@
-# Rust Backend CPU Profile Report (Post-Clone-Elimination)
+# Rust Backend CPU Profile Report (Post-Pre-Allocation)
 
 **Date:** 2026-02-17
 **Platform:** Linux 6.6.87.2-microsoft-standard-WSL2 (x86_64)
@@ -11,8 +11,8 @@
 
 | File | Cython median | Rust median | Speedup |
 |------|--------------|-------------|---------|
-| SFJ (7.9 MB, 34 ch) | 53 ms | 18 ms | 2.93x |
-| 86 (40 MB, 102 ch) | 233 ms | 100 ms | 2.34x |
+| SFJ (7.9 MB, 34 ch) | 50 ms | 19 ms | ~2.5x |
+| 86 (40 MB, 102 ch) | 230 ms | 109 ms | ~2.1x |
 
 ### Pure Rust parsing + GPS decode (no PyO3/Arrow)
 
@@ -25,153 +25,138 @@
 
 | Phase | Time | % of total |
 |-------|------|-----------|
-| Pure Rust parsing + GPS decode | ~104 ms | 104% (*) |
-| Arrow conversion + PyO3 + Python | ~−4 ms | — |
-| **End-to-end Rust backend** | **~100 ms** | **100%** |
+| Pure Rust parsing + GPS decode | ~87 ms | 80% |
+| File I/O + Arrow conversion + PyO3 + Python | ~22 ms | 20% |
+| **End-to-end Rust backend** | **~109 ms** | **100%** |
 
-(*) Pure Rust bench includes GPS decode overhead that overlaps with end-to-end.
-After eliminating Arrow clones, the Arrow bridge is essentially free — the
-end-to-end time is now dominated entirely by parsing and GPS decode.
-
-## 2. samply Results — Pure Rust Parsing (86 file, 5451 samples)
+## 2. samply Results — Pure Rust Parsing (86 file, 5485 samples)
 
 ### Self Time (where CPU cycles are actually spent)
 
 | Function | Self % | Samples | Category |
 |----------|--------|---------|----------|
-| `core::ptr::write` | 30.2% | 1647 | Memory: Vec data copy |
-| libc `memmove` (rep movsb) | 21.8% | 1188 | Memory: libc memcpy/memmove |
-| `Vec::push_mut` | 7.7% | 420 | Memory: Vec growth |
-| libc `brk` / `sbrk` | 6.9% | 374 | Memory: heap expansion |
-| `parser::decode_all_channels` | 4.9% | 268 | Parsing: channel decode |
-| `decoders::decode_sample` | 3.6% | 195 | Parsing: sample decode |
-| `parser::scan_stream` | 2.5% | 135 | Parsing: byte scanning |
-| `parser::try_parse_g_message` | 2.1% | 112 | Parsing: G-message |
-| libc allocator internals | 1.7% | 94 | Memory: alloc |
-| `parser::try_parse_m_message` | 1.6% | 87 | Parsing: M-message |
-| `decoders::half_to_f32` | 1.3% | 73 | Parsing: float16 decode |
-| `decoders::SampleValue::as_f64` | 1.2% | 66 | Parsing: type convert |
-| `gps_utils::ecef2lla_vermeille2003` | 1.0% | 53 | GPS: coordinate conversion |
+| `decode_all_channels` data write (movq/mov) | 26.6% | 1461 | Data writing: decoded values + timecodes |
+| libc `memmove` (rep movsb) | 8.2% | 451 | Memory: extend_from_slice copies |
+| `parser::scan_stream` | 6.3% | 345 | Parsing: byte scanning + dispatch |
+| libc `brk` / `sbrk` | 5.2% | 287 | Memory: heap expansion |
+| `decode_all_channels` other (increment, bounds) | 5.7% | 313 | Data writing: loop overhead |
+| `decoders::decode_sample` | 3.8% | 208 | Parsing: sample decode |
+| `prescan` (inlined into parse_xrk) | 3.0% | 164 | Prescan: byte scanning |
+| `core::hash::BuildHasher::hash_one` | 2.4% | 133 | Hashing: prescan HashMap |
+| `decoders::half_to_f32` / `as_f64` | ~2% | ~110 | Parsing: type conversion |
+| `gps_utils::ecef2lla_vermeille2003` | ~1% | ~55 | GPS: coordinate conversion |
 
 ### Total Time (inclusive, call tree)
 
 | Function | Total % | Notes |
 |----------|---------|-------|
-| `bench_parse::main` | 99.6% | Full benchmark loop |
-| `parser::parse_xrk` | 43.1% | Entry point (= scan + finalize) |
-| `core::ptr::write` | 30.2% | Vec data copy on push/grow |
-| `RawVecInner::grow_amortized` | 22.3% | Vec reallocation policy |
-| `System::realloc` | 22.3% | glibc `realloc` calls |
-| `Vec::push_mut` | 20.0% | Includes alloc + copy |
-| `parser::scan_stream` | 11.9% | Byte scanning + message dispatch |
-| `parser::decode_all_channels` | 9.8% | Channel data decode |
-| `System::dealloc` (free) | 6.5% | glibc `free()` calls |
-| `RawVecInner::reserve` | 5.3% | Capacity checks |
-| `decoders::decode_sample` | 3.6% | Per-sample decode |
-| `core::ptr::copy_nonoverlapping` | 3.4% | memcpy for Vec realloc |
-| `f64::atan2` | 2.1% | GPS trig (ecef2lla) |
+| `bench_parse::main` | 84.9% | Full benchmark loop |
+| `parser::parse_xrk` (finalize) | 35.8% | = decode_all_channels + finalize |
+| `parser::parse_xrk` (prescan) | 18.1% | Pre-scan pass |
+| `parser::scan_stream` | 13.0% | Main byte scanning |
+| `try_parse_m_message` | 8.4% | M-message parsing (via scan_stream) |
+| `System::dealloc` (free) | 3.8% | glibc `free()` calls |
+| `decoders::decode_sample` | 3.8% | Per-sample decode |
+| `core::hash::BuildHasher::hash_one` | 2.4% | Hashing in prescan |
 
 ### Category Summary
 
 | Category | Self % |
 |----------|--------|
-| **Memory: data copy** (`ptr::write`, libc `memmove`) | ~52% |
-| **Memory: alloc/realloc** (`Vec::push_mut`, `brk`, libc alloc) | ~17% |
-| Parsing logic (scan + decode + messages) | ~18% |
+| **Data writing** (decoded values/timecodes to output Vecs) | ~32% |
+| **Hashing** (prescan HashMap entry/lookup) | ~5% |
+| **Memory: memmove** (extend_from_slice in scan_stream) | ~8% |
+| **Memory: brk/alloc** | ~5% |
+| Parsing logic (scan + decode + messages) | ~15% |
+| Prescan scanning | ~3% |
 | GPS processing | ~1% |
-| Other | ~2% |
+| Other | ~5% |
 
-## 3. py-spy Results — Full Python+Rust Stack (86 file, 29101 samples)
+## 3. py-spy Results — Full Python+Rust Stack (86 file, 21393 samples)
 
 ### Total Time (inclusive, parsing loop only)
 
 | Function | Total % | Notes |
 |----------|---------|-------|
-| Parsing loop | 91.5% | Excludes one-time import overhead |
-| `Vec::push` | 45.8% | Vec growth dominates everything |
-| `parser::parse_xrk` | 44.8% | Pure Rust parsing |
-| `parser::ParserState::finalize` | 44.8% | = decode_all_channels + finalize |
-| `ptr::write` | 41.4% | Vec data copy |
-| `parser::decode_all_channels` | 21.9% | Channel data decode |
-| `realloc` (libc) | 15.9% | glibc reallocation |
-| `parser::scan_stream` | 7.8% | Byte scanning + dispatch |
-| `aim_xrk` (lib.rs) | 5.8% | Rust PyO3 entry point |
-| `Vec::extend_from_slice` | 3.4% | Accum.data growth |
-| `gps_processing::decode_gps` | 3.0% | GPS channel decode |
-| `atan2` (libm) | 2.3% | GPS ECEF↔LLA trig |
-| `ptr::copy_nonoverlapping` | 1.9% | memcpy for Vec realloc |
+| Parsing loop | 81.5% | Excludes one-time import overhead |
+| `parser::parse_xrk` (finalize) | 35.8% | decode_all_channels + finalize |
+| `parser::parse_xrk` (prescan) | 18.1% | Pre-scan pass |
+| `decode_all_channels` | 18.0% | Channel data decode |
+| `Vec::push` (f64 values) | 18.0% | Values push in decode |
+| `Vec::push` (i64 timecodes) | 15.8% | Timecodes push in decode |
+| `HashMap::entry` | 13.8% | **All from prescan** — hashing overhead |
+| `scan_stream` | 13.0% | Main byte scanning |
+| `Vec::push` (other) | 8.6% | Vec growth in scan_stream accums |
+| `try_parse_m_message` | 8.4% | M-message parsing |
+| `gps_processing::decode_gps` | 1.6% | GPS channel decode |
 
 ### Self Time Categories
 
 | Category | Self % | Samples |
 |----------|--------|---------|
-| Memory: ptr::write / copy | 41.5% | 12072 |
-| libc internals (memcpy/memmove/realloc) | 29.8% | 8679 |
-| Parsing logic | 11.4% | 3312 |
-| Python benchmark loop | 5.7% | 1651 |
-| Memory: Vec growth | 4.8% | 1387 |
-| GPS processing | 1.7% | 496 |
-| Arrow bridge | 0.9% | 261 |
-| Other | 4.2% | 1212 |
+| Data writing: ptr::write / copy | 40.4% | 8642 |
+| **HashMap/hashing (prescan)** | **19.0%** | **4064** |
+| libc (memmove/brk/alloc) | 9.1% | 1951 |
+| Python/import overhead | 7.6% | 1616 |
+| Prescan scanning | 3.9% | 831 |
+| Vec growth | 2.4% | 506 |
+| Arrow bridge | 2.1% | 456 |
+| GPS processing | 1.6% | 342 |
+| Parsing: decode_sample | 1.3% | 269 |
+| Parsing: scan_stream | 0.5% | 112 |
+| Other | 12.2% | 2604 |
 
 ## 4. Top Hotspots (ranked)
 
-1. **Vec growth in `scan_stream` accumulators** — dominates pure Rust self-time (~69% memory)
-   `extend_from_slice` on `Accum.data` and `Vec::push` on `Accum.timecodes` cause
-   repeated reallocation as data accumulates during stream scanning. No pre-allocation
-   hints are used. For the 86 file this means hundreds of reallocations per channel
-   as data grows from empty to final size.
+1. **HashMap hashing in `prescan`** — 19% self-time, 13.8% total in py-spy
+   `PrescanResult` uses `HashMap<usize, usize>` to count bytes per channel index.
+   Every G/S/M/c message triggers a `hints.data_bytes[cat].entry(index).or_insert(0)`
+   call with SipHash hashing. Channel indices are small integers (0–101), so a
+   `Vec<usize>` indexed directly would eliminate all hashing overhead.
 
-2. **`decode_all_channels` allocation** (parser.rs) — 21.9% total in py-spy
-   Creates new `Vec<i64>` and `Vec<f64>` for each of 102 channels. Each channel's
-   raw bytes are decoded sample-by-sample, pushing onto fresh Vecs. The decode loop
-   itself is efficient but dominated by Vec growth overhead.
+2. **Data writing in `decode_all_channels`** — 40% self-time (unavoidable)
+   `core::ptr::write` for pushing decoded f64 values and i64 timecodes into output
+   Vecs. These Vecs are already pre-sized via `Vec::with_capacity(n_rows)`, so there
+   are no reallocations. This is the irreducible cost of decoding.
 
-3. **GPS decode** (gps_processing.rs) — 3.0% total in py-spy
-   `decode_gps` decodes NAV-SOL messages and `ecef2lla_vermeille2003` converts
-   coordinates using trig functions (atan2, sqrt). Small but measurable for files
-   with many GPS samples.
+3. **libc `memmove` in `scan_stream`** — 8.2% self in samply
+   `extend_from_slice` copies raw bytes from the input buffer into pre-allocated
+   accumulator Vecs. The copies are unavoidable (data must be staged for decode),
+   but the `memmove` is now into pre-allocated buffers (no reallocation).
 
-4. **`decode_sample` dispatch** (decoders.rs:49) — 3.6% self in samply
-   Match on `decoder_type` with byte extraction. Already well-optimized.
+4. **GPS decode** (gps_processing.rs) — 1.6% total in py-spy
+   Small and well-optimized. Not worth further effort.
 
-5. ~~**Vec cloning in `build_channel_table`** — was 17.9% of end-to-end time~~
-   **FIXED.** Arrow bridge now takes ownership of data via `std::mem::take` and
-   `into_iter()`. Arrow bridge self-time is now <1%.
+5. ~~**Vec growth in `scan_stream` accumulators** — was 69% self-time~~
+   **FIXED.** Pre-allocation reduced memmove from 21.8% to 8.2%, brk from 6.9%
+   to 0.7%, Vec::push_mut from 7.7% to 0.5%.
+
+6. ~~**Vec cloning in Arrow bridge** — was 17.9% of end-to-end time~~
+   **FIXED.** Arrow bridge now takes ownership via `std::mem::take` and
+   `into_iter()`. Arrow bridge self-time is now ~2%.
 
 ## 5. Observations
 
-- **Memory still dominates everything.** Even after eliminating Arrow clones,
-  ~69% of self-time is `core::ptr::write` (Vec data copy) and libc `memmove`/`realloc`.
-  This is now entirely within the parser itself (scan_stream + decode_all_channels),
-  not the Arrow bridge.
+- **HashMap hashing is the new #1 bottleneck.** The prescan pass uses
+  `HashMap<usize, usize>` for byte counting, causing ~19% of self-time in
+  SipHash hashing and hashbrown probing. Replacing with `Vec<usize>` (indexed
+  by channel index) would eliminate this entirely since indices are small integers.
 
-- **The Arrow bridge is no longer a bottleneck.** After the clone elimination,
-  Arrow bridge self-time dropped from ~18% to <1%. The end-to-end time (~100 ms)
-  is now within noise of the pure Rust parsing time (~104 ms), confirming that
-  Arrow conversion is effectively zero-cost.
+- **Pre-allocation worked but introduced prescan overhead.** The prescan pass
+  takes 18.1% of total time, of which ~14% is HashMap hashing overhead. With
+  the HashMap→Vec fix, prescan overhead would drop to ~4% (just byte scanning),
+  making it a clear net win.
 
-- **Accumulator pre-allocation is now the #1 optimization target.** `scan_stream`
-  grows `Accum.data` (raw bytes) and `Accum.timecodes` from empty Vecs. If we
-  estimated per-channel data sizes from the file header (e.g., `file_size / n_channels`),
-  pre-allocating would eliminate most of the realloc churn (~22% total time in
-  `RawVecInner::grow_amortized`).
+- **Data writing dominates (40% self-time).** After eliminating reallocation
+  and hashing overhead, the irreducible cost is writing decoded values to Vecs.
+  `decode_all_channels` already uses `Vec::with_capacity(n_rows)`, so these
+  writes go into pre-sized buffers without reallocation.
 
-- **`decode_all_channels` could benefit from capacity hints.** Each channel creates
-  Vecs with approximate capacity. If the accumulator tracked exact sample counts
-  during scanning, decode could allocate exactly once.
+- **Memory allocation nearly eliminated.** brk/sbrk dropped from 6.9% to 0.7%,
+  memmove from 21.8% to 8.2% (remaining is unavoidable extend_from_slice copies),
+  Vec::push growth from 7.7% to 0.5%.
 
-- **The parser itself is very efficient.** Actual byte-scanning and decoding logic
-  (`scan_stream` at 2.5% self, `decode_sample` at 3.6% self) is lean. The parser
-  spends ~18% of self-time doing useful work; the rest is memory management.
-
-- **PyO3 overhead is negligible.** py-spy shows <1% in Arrow bridge and no
-  measurable time in PyO3 type conversions or GIL operations.
-
-- **GPS processing is small but visible.** At 3% total, GPS decode + ECEF
-  conversion is the third-largest component. The `atan2` calls in `ecef2lla` are
-  inherently expensive (trig), but the absolute time (~3 ms) doesn't justify
-  optimization effort.
+- **Arrow bridge and PyO3 remain negligible.** ~2% self-time for Arrow conversion.
 
 ## 6. Applied Optimizations
 
@@ -206,13 +191,25 @@ end-to-end time is now dominated entirely by parsing and GPS decode.
 - SFJ: 17.6 ms → 18.6 ms (within noise — 34 channels, little realloc to eliminate)
 - 86: 104.0 ms → 87.1 ms (16% faster — 102 channels, eliminated ~22% realloc overhead)
 
-**End-to-end (Python → Rust → Arrow → LogFile):**
-- SFJ: ~18 ms → ~19 ms (within noise)
-- 86: ~100 ms → ~109 ms (includes file I/O; pure Rust improvement masked by I/O)
-
 ## 7. Remaining Optimization Priorities
 
 | Priority | Target | Expected gain | Effort |
 |----------|--------|---------------|--------|
-| 1 | Track exact sample counts during scan for `decode_all_channels` capacity | ~5-10% pure Rust | Low-Medium |
-| 2 | Arena allocator for decode_all_channels | ~5% pure Rust | High |
+| 1 | Replace `HashMap` with `Vec` in `PrescanResult` | ~14% total time | Low |
+| 2 | Track exact sample counts during scan for `decode_all_channels` capacity | ~3-5% pure Rust | Low-Medium |
+| 3 | Arena allocator for decode_all_channels | ~2-3% pure Rust | High |
+
+### Priority 1 detail: Replace HashMap with Vec in PrescanResult
+
+`PrescanResult.data_bytes` uses `[HashMap<usize, usize>; 4]` but channel indices
+are small integers (0–101 for the 86 file). Replace with `[Vec<usize>; 4]` and
+index directly. Same for `m_timecode_count`. This eliminates all SipHash hashing
+and hashbrown probing, which accounts for ~14% of total time in py-spy.
+
+```rust
+// Before (HashMap — 14% overhead):
+*hints.data_bytes[0].entry(index).or_insert(0) += total_size - 3;
+
+// After (Vec — O(1) direct indexing):
+hints.data_bytes[0][index] += total_size - 3;
+```
