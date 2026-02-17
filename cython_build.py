@@ -40,7 +40,7 @@ class build_ext(_build_ext):
             # Native build: tell PyO3 which Python to link against.
             env["PYO3_PYTHON"] = sys.executable
 
-        subprocess.run(["cargo", "build", "--release"], check=True, env=env)
+        subprocess.run(["cargo", "build", "--release", "--lib"], check=True, env=env)
 
         # Find output (respects CARGO_BUILD_TARGET for cross-compilation)
         target = env.get("CARGO_BUILD_TARGET")
