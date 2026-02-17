@@ -45,6 +45,12 @@ jobs:
       with:
         version: ${{ matrix.emscripten-version }}
 
+    - name: Install wasm-opt wrapper for older Emscripten
+      run: |
+        WASM_OPT="$EMSDK/upstream/bin/wasm-opt"
+        mv "$WASM_OPT" "${WASM_OPT}.real"
+        cp scripts/wasm-opt-wrapper.sh "$WASM_OPT"
+
     - name: Install pyodide-build
       run: |
         pip install "wheel<0.44.0"
