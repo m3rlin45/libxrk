@@ -6,7 +6,7 @@ license = "MIT"
 
 [lib]
 name = "_aim_xrk_rs"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 path = "rust/src/lib.rs"
 
 [dependencies]
@@ -16,7 +16,17 @@ arrow = { version = "57", default-features = false, features = ["pyarrow"] }
 flate2 = "1"
 ryu = "1"
 
+[[bin]]
+name = "bench_parse"
+path = "rust/src/bench_parse.rs"
+required-features = []
+
 [profile.release]
 lto = true
 codegen-units = 1
 strip = "symbols"
+
+[profile.profiling]
+inherits = "release"
+debug = 1
+strip = "none"

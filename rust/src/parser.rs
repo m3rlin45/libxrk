@@ -87,6 +87,13 @@ pub struct LapInfo {
 /// This is the main entry point equivalent to `_decode_sequence()`.
 pub fn parse_xrk(data: &[u8], progress: Option<&dyn Fn(usize, usize)>) -> ParseResult {
     let mut state = ParserState::new();
+
+    // Pre-scan: learn channel structure from headers and count data sizes.
+    // This allows pre-allocating accumulator Vecs to eliminate realloc churn
+    // during the main scan (~22% of pure Rust time was in Vec::grow_amortized).
+    let hints = prescan(data, &mut state);
+    state.apply_prescan_hints(&hints);
+
     scan_stream(data, &mut state, progress);
     state.finalize()
 }
@@ -112,6 +119,29 @@ struct ParserState {
     enf_sub_messages: Vec<HashMap<u32, Vec<HeaderMessage>>>,
 }
 
+/// Pre-scan results used to pre-allocate accumulator capacity.
+struct PrescanResult {
+    /// Total data bytes per accumulator category [0..4] per index.
+    data_bytes: [HashMap<usize, usize>; 4],
+    /// M-message timecode count per channel index.
+    m_timecode_count: HashMap<usize, usize>,
+    /// Total GPS payload bytes.
+    gps_bytes: usize,
+    /// Total GNFI payload bytes.
+    gnfi_bytes: usize,
+}
+
+impl PrescanResult {
+    fn new() -> Self {
+        PrescanResult {
+            data_bytes: [HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new()],
+            m_timecode_count: HashMap::new(),
+            gps_bytes: 0,
+            gnfi_bytes: 0,
+        }
+    }
+}
+
 impl ParserState {
     fn new() -> Self {
         ParserState {
@@ -133,6 +163,24 @@ impl ParserState {
         while self.gc_data[cat].len() <= idx {
             self.gc_data[cat].push(Accum::new());
         }
+    }
+
+    /// Pre-allocate accumulator Vecs based on prescan byte counts.
+    fn apply_prescan_hints(&mut self, hints: &PrescanResult) {
+        for cat in 0..4 {
+            for (&idx, &bytes) in &hints.data_bytes[cat] {
+                if idx < self.gc_data[cat].len() {
+                    self.gc_data[cat][idx].data.reserve(bytes);
+                }
+            }
+        }
+        for (&idx, &count) in &hints.m_timecode_count {
+            if idx < self.gc_data[3].len() {
+                self.gc_data[3][idx].timecodes.reserve(count);
+            }
+        }
+        self.gps_data.reserve(hints.gps_bytes);
+        self.gnfi_data.reserve(hints.gnfi_bytes);
     }
 
     fn register_chs(&mut self, chs: &ChsPayload) {
@@ -273,6 +321,139 @@ impl ParserState {
             laps,
             enf_sub_messages: self.enf_sub_messages,
         }
+    }
+}
+
+/// Fast pre-scan to count data sizes per channel, enabling pre-allocation.
+///
+/// Processes header messages (CHS/GRP/CNF) to learn channel structure, then
+/// counts bytes for each data message type. Over-counts slightly (ignores
+/// timecode dedup/overlap) which is intentional — extra capacity is harmless.
+fn prescan(data: &[u8], state: &mut ParserState) -> PrescanResult {
+    let mut hints = PrescanResult::new();
+    let len = data.len();
+    let mut pos: usize = 0;
+
+    while pos < len {
+        if pos + 3 > len {
+            pos += 1;
+            continue;
+        }
+
+        let op0 = data[pos];
+        let op1 = data[pos + 1];
+
+        if op0 == b'(' {
+            match op1 {
+                b'G' => {
+                    if pos + 9 <= len {
+                        let index = u16::from_le_bytes([data[pos + 6], data[pos + 7]]) as usize;
+                        if index < state.gc_data[0].len() {
+                            let total_size = state.gc_data[0][index].add_helper;
+                            if total_size > 3 && pos + total_size <= len && data[pos + total_size - 1] == b')' {
+                                *hints.data_bytes[0].entry(index).or_insert(0) += total_size - 3;
+                                pos += total_size;
+                                continue;
+                            }
+                        }
+                    }
+                }
+                b'S' => {
+                    if pos + 9 <= len {
+                        let index = u16::from_le_bytes([data[pos + 6], data[pos + 7]]) as usize;
+                        if index < state.gc_data[1].len() {
+                            let total_size = state.gc_data[1][index].add_helper;
+                            if total_size > 3 && pos + total_size <= len && data[pos + total_size - 1] == b')' {
+                                *hints.data_bytes[1].entry(index).or_insert(0) += total_size - 3;
+                                pos += total_size;
+                                continue;
+                            }
+                        }
+                    }
+                }
+                b'M' => {
+                    if pos + 11 <= len {
+                        let index = u16::from_le_bytes([data[pos + 6], data[pos + 7]]) as usize;
+                        let count = u16::from_le_bytes([data[pos + 8], data[pos + 9]]) as usize;
+                        if index < state.gc_data[3].len() {
+                            let sample_size = state.gc_data[3][index].add_helper;
+                            let mms = state.gc_data[3][index].mms;
+                            if mms > 0 && sample_size > 0 {
+                                let total_size = 10 + sample_size * count + 1;
+                                if pos + total_size <= len && data[pos + total_size - 1] == b')' {
+                                    *hints.data_bytes[3].entry(index).or_insert(0) += sample_size * count;
+                                    *hints.m_timecode_count.entry(index).or_insert(0) += count;
+                                    pos += total_size;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+                b'c' => {
+                    if pos + 12 <= len {
+                        let channel_field = u16::from_le_bytes([data[pos + 3], data[pos + 4]]);
+                        let index = (channel_field >> 3) as usize;
+                        if index < state.gc_data[2].len() {
+                            let total_size = state.gc_data[2][index].add_helper;
+                            if total_size > 8 && pos + total_size <= len && data[pos + total_size - 1] == b')' {
+                                *hints.data_bytes[2].entry(index).or_insert(0) += total_size - 8;
+                                pos += total_size;
+                                continue;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        } else if op0 == b'<' && op1 == b'h' {
+            if let Ok((msg, consumed)) = HeaderMessage::parse(data, pos) {
+                prescan_header_message(&msg, state, &mut hints);
+                pos += consumed;
+                continue;
+            }
+        }
+
+        pos += 1;
+    }
+
+    hints
+}
+
+/// Handle a header message during prescan: register channels/groups, count GPS/GNFI bytes.
+fn prescan_header_message(msg: &HeaderMessage, state: &mut ParserState, hints: &mut PrescanResult) {
+    let token = msg.token;
+
+    if token == tokens::gps() || token == tokens::gps1() {
+        hints.gps_bytes += msg.payload.len();
+        return;
+    }
+    if token == tokens::gnfi() {
+        hints.gnfi_bytes += msg.payload.len();
+        return;
+    }
+    if token == tokens::cnf() {
+        // Recursively discover channels from CNF payload.
+        let mut sub_state = ParserState::new();
+        scan_stream(&msg.payload, &mut sub_state, None);
+        for (_, ch_info) in &sub_state.channels {
+            if !state.channels.contains_key(&ch_info.chs.index) {
+                state.register_chs(&ch_info.chs);
+            }
+        }
+        for (_, grp_info) in &sub_state.groups {
+            if !state.groups.contains_key(&grp_info.grp.index) {
+                state.register_grp(&grp_info.grp);
+            }
+        }
+        return;
+    }
+
+    let payload = messages::dispatch_payload(msg);
+    match &payload {
+        Payload::Chs(chs) => state.register_chs(chs),
+        Payload::Grp(grp) => state.register_grp(grp),
+        _ => {}
     }
 }
 
