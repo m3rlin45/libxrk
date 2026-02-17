@@ -201,7 +201,7 @@ help = "Build Pyodide wheel (Cython + Rust for WASM)"
 deps = ["emsdk-setup"]
 
 [tool.poe.tasks.emsdk-setup]
-shell = "EMSDK_VERSION=$(pyodide config get emscripten_version) && mkdir -p build && ([ -d build/emsdk ] || (git clone https://github.com/emscripten-core/emsdk.git build/emsdk && cd build/emsdk && git config core.autocrlf false && git checkout -- .)) && ./build/emsdk/emsdk install $EMSDK_VERSION && ./build/emsdk/emsdk activate $EMSDK_VERSION"
+shell = "EMSDK_VERSION=$(pyodide config get emscripten_version) && mkdir -p build && ([ -d build/emsdk ] || (git clone https://github.com/emscripten-core/emsdk.git build/emsdk && cd build/emsdk && git config core.autocrlf false && git checkout -- .)) && ./build/emsdk/emsdk install $EMSDK_VERSION && ./build/emsdk/emsdk activate $EMSDK_VERSION && WASM_OPT=build/emsdk/upstream/bin/wasm-opt && ([ -f ${WASM_OPT}.real ] || mv $WASM_OPT ${WASM_OPT}.real) && cp scripts/wasm-opt-wrapper.sh $WASM_OPT"
 interpreter = "bash"
 help = "Install Emscripten SDK to build/emsdk"
 
@@ -237,7 +237,8 @@ EMSDK_VERSION=$(pyodide config get emscripten_version) && \
 mkdir -p build/emsdk-0.29 && \
 ([ -d build/emsdk-0.29/.git ] || git clone https://github.com/emscripten-core/emsdk.git build/emsdk-0.29) && \
 cd build/emsdk-0.29 && git config core.autocrlf false && git checkout -- . && \
-./emsdk install $EMSDK_VERSION && ./emsdk activate $EMSDK_VERSION
+./emsdk install $EMSDK_VERSION && ./emsdk activate $EMSDK_VERSION && \
+WASM_OPT=upstream/bin/wasm-opt && ([ -f ${WASM_OPT}.real ] || mv $WASM_OPT ${WASM_OPT}.real) && cp ../../scripts/wasm-opt-wrapper.sh $WASM_OPT
 """
 interpreter = "bash"
 help = "Install Emscripten SDK for Pyodide 0.29.x (requires Python 3.13 via pyenv)"
