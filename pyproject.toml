@@ -317,6 +317,7 @@ before-build = "pip install numpy cython"
 [tool.cibuildwheel.macos]
 archs = ["x86_64", "arm64"]
 before-build = "pip install numpy cython"
+environment = { MACOSX_DEPLOYMENT_TARGET = "10.13" }
 
 [tool.cibuildwheel.windows]
 # ARM64 excluded until pyarrow publishes Windows ARM64 wheels

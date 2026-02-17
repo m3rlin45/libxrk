@@ -26,24 +26,32 @@ class build_ext(_build_ext):
 
     def _build_rust(self):
         """Build Rust extension via cargo. Fails if cargo unavailable."""
-        # Skip native Rust build when cross-compiling for Emscripten (Pyodide).
-        # The Pyodide environment sets RUSTFLAGS with nightly-only -Z options
-        # that are incompatible with a native cargo build.
-        build_platform = sysconfig.get_platform()
-        if "emscripten" in build_platform or "wasm" in build_platform:
-            return
-
         env = os.environ.copy()
-        env["PYO3_PYTHON"] = sys.executable
+        build_platform = sysconfig.get_platform()
+        is_emscripten = "emscripten" in build_platform or "wasm" in build_platform
+
+        if is_emscripten:
+            # Cross-compiling for Emscripten/Pyodide.
+            # Ensure CARGO_BUILD_TARGET is set for cargo.
+            env.setdefault("CARGO_BUILD_TARGET", "wasm32-unknown-emscripten")
+            # Do NOT set PYO3_PYTHON — pyodide-build provides
+            # PYO3_CROSS_PYTHON_VERSION and PYO3_CROSS_LIB_DIR for cross builds.
+        else:
+            # Native build: tell PyO3 which Python to link against.
+            env["PYO3_PYTHON"] = sys.executable
+
         subprocess.run(["cargo", "build", "--release"], check=True, env=env)
 
         # Find output (respects CARGO_BUILD_TARGET for cross-compilation)
-        target = os.environ.get("CARGO_BUILD_TARGET")
+        target = env.get("CARGO_BUILD_TARGET")
         cargo_dir = Path(f"target/{target}/release") if target else Path("target/release")
 
         # Platform-specific cargo output name
-        if target and "wasm" in target:
-            cargo_lib = cargo_dir / "_aim_xrk_rs.wasm"
+        if is_emscripten:
+            # cdylib on wasm32-unknown-emscripten: try with and without "lib" prefix
+            cargo_lib = cargo_dir / "lib_aim_xrk_rs.wasm"
+            if not cargo_lib.exists():
+                cargo_lib = cargo_dir / "_aim_xrk_rs.wasm"
         elif platform.system() == "Windows":
             cargo_lib = cargo_dir / "_aim_xrk_rs.dll"
         elif platform.system() == "Darwin":
@@ -58,8 +66,10 @@ class build_ext(_build_ext):
         dest_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(cargo_lib, dest_dir / f"_aim_xrk_rs{ext_suffix}")
 
-        # Copy to source tree for development installs
-        shutil.copy2(cargo_lib, Path("src/libxrk") / f"_aim_xrk_rs{ext_suffix}")
+        # Copy to source tree for development installs (skip for cross-compilation
+        # since the .wasm output can't be loaded natively)
+        if not is_emscripten:
+            shutil.copy2(cargo_lib, Path("src/libxrk") / f"_aim_xrk_rs{ext_suffix}")
 
     def copy_extensions_to_source(self):
         """Copy built extensions to the source tree for development."""
