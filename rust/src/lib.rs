@@ -288,7 +288,10 @@ fn get_trk_marker(result: &parser::ParseResult) -> Option<(f64, f64)> {
 fn payload_to_python(py: Python<'_>, payload: &messages::Payload) -> PyResult<Py<PyAny>> {
     match payload {
         messages::Payload::StringMsg(s) => Ok(s.into_pyobject(py)?.into_any().unbind()),
-        messages::Payload::Vet(v) => Ok((*v).into_pyobject(py)?.into_any().unbind()),
+        messages::Payload::Vet(v) => match v {
+            payloads::vet::VetPayload::Mode(s) => Ok(s.into_pyobject(py)?.into_any().unbind()),
+            payloads::vet::VetPayload::Value(val) => Ok(val.into_pyobject(py)?.into_any().unbind()),
+        },
         messages::Payload::Unknown(data) => Ok(pyo3::types::PyBytes::new(py, data).into_any().unbind()),
         _ => Ok(py.None()),
     }

@@ -162,7 +162,7 @@ pub enum Payload {
     Odo(payloads::odo::OdoPayload),
     EmbeddedIdn(payloads::idn::IdnPayload), // iSLV/SRC
     Racm(payloads::racm::RacmPayload),
-    Vet(u8),
+    Vet(payloads::vet::VetPayload),
     Cde(Vec<u8>),
     StringMsg(String),
     Cnf(Vec<HeaderMessage>), // Recursive
@@ -211,6 +211,9 @@ pub mod tokens {
     pub fn hwnf() -> u32 { tokdec("HWNF") }
     pub fn pdlt() -> u32 { tokdec("PDLT") }
     pub fn nte() -> u32 { tokdec("NTE") }
+    pub fn plm() -> u32 { tokdec("+LM") }
+    pub fn man() -> u32 { tokdec("MAN") }
+    pub fn mod_() -> u32 { tokdec("MOD") }
 }
 
 /// Check if a token is a string message type.
@@ -232,6 +235,9 @@ fn is_string_token(token: u32) -> bool {
         || token == tokens::hwnf()
         || token == tokens::pdlt()
         || token == tokens::nte()
+        || token == tokens::plm()
+        || token == tokens::man()
+        || token == tokens::mod_()
 }
 
 /// Dispatch a header message payload to the appropriate type.
@@ -330,10 +336,7 @@ pub fn dispatch_payload(msg: &HeaderMessage) -> Payload {
     }
 
     if token == tokens::vet() {
-        if !data.is_empty() {
-            return Payload::Vet(data[0]);
-        }
-        return Payload::Unknown(data.clone());
+        return Payload::Vet(payloads::vet::VetPayload::parse(data));
     }
 
     if token == tokens::cde() {
