@@ -472,7 +472,7 @@ def _decode_sequence(s, progress=None):
                             # [76:80]  char[4]     device tag ("@AIM" or null)
                             # [80]     uint8       device node ID
                             # [81]     uint8       maybe_device_flags (3 values: 0x00, 0x02, 0x10)
-                            # [82:84]  padding
+                            # [82:84]  unknown (non-zero on external GPS, hw_id=2018)
                             # [84]     uint8       maybe_output_type (1/4/6/0xFF)
                             # [85:88]  padding
                             # [88:92]  uint32 LE   display index (0xFFFFFFFF for virtual)
@@ -488,7 +488,7 @@ def _decode_sequence(s, progress=None):
                             _chs_padding = (
                                 dcopy[2:4] + dcopy[17:20] + dcopy[21:24] +
                                 dcopy[56:64] + dcopy[70:72] + dcopy[73:76] +
-                                dcopy[82:84] + dcopy[85:88] + dcopy[93:96]
+                                dcopy[85:88] + dcopy[93:96]
                             )
                             if any(_chs_padding):
                                 _ch_name = dcopy[32:56].split(b'\x00')[0].decode(
@@ -498,7 +498,7 @@ def _decode_sequence(s, progress=None):
                                     if b != 0 and i in (
                                         2, 3, 17, 18, 19, 21, 22, 23,
                                         56, 57, 58, 59, 60, 61, 62, 63,
-                                        70, 71, 73, 74, 75, 82, 83,
+                                        70, 71, 73, 74, 75,
                                         85, 86, 87, 93, 94, 95)
                                 ]
                                 print(
@@ -534,7 +534,8 @@ def _decode_sequence(s, progress=None):
                             last_time = end_time
                         elif tok in (_tokdec('RCR'), _tokdec('VEH'), _tokdec('CMP'), _tokdec('VTY'), _tokdec('NDV'), _tokdec('TMD'), _tokdec('TMT'),
                                      _tokdec('DBUN'), _tokdec('DBUT'), _tokdec('DVER'), _tokdec('MANL'), _tokdec('MODL'), _tokdec('MANI'),
-                                     _tokdec('MODI'), _tokdec('HWNF'), _tokdec('PDLT'), _tokdec('NTE')):
+                                     _tokdec('MODI'), _tokdec('HWNF'), _tokdec('PDLT'), _tokdec('NTE'),
+                                     _tokdec('+LM'), _tokdec('MAN'), _tokdec('MOD')):
                             data = _nullterm_string(data)
                         elif tok == _tokdec('idn'):
                             # idn message: 56-byte payload with logger info
@@ -571,10 +572,6 @@ def _decode_sequence(s, progress=None):
                         elif tok == _tokdec('RACM'):
                             if len(data) > 1:
                                 data = _nullterm_string(data)
-                                if data not in ('speed', 'performance'):
-                                    print('libxrk: unexpected RACM mode %r (expected "speed" or "performance").'
-                                          ' Please report at https://github.com/m3rlin45/libxrk/issues'
-                                          % data)
                             else:
                                 data = data[0]
                                 if data != 0:
@@ -582,11 +579,10 @@ def _decode_sequence(s, progress=None):
                                           ' Please report at https://github.com/m3rlin45/libxrk/issues'
                                           % data)
                         elif tok == _tokdec('VET'):
-                            data = data[0]
-                            if data != 0:
-                                print('libxrk: unexpected VET value %d (expected 0).'
-                                      ' Please report at https://github.com/m3rlin45/libxrk/issues'
-                                      % data)
+                            if len(data) > 1:
+                                data = _nullterm_string(data)
+                            else:
+                                data = data[0]
                         elif tok == _tokdec('iSLV'):
                             if len(data) >= 16 and data[:3] == b'idn':
                                 idn = data[6:]
@@ -869,8 +865,7 @@ def _get_metadata(msg_by_type, channels=None):
     # Vehicle electronics type from VET message
     if _tokdec('VET') in msg_by_type:
         vet = msg_by_type[_tokdec('VET')][-1].content
-        if isinstance(vet, int):
-            ret['Vehicle Electronics Type'] = vet
+        ret['Vehicle Electronics Type'] = vet
     # Calibrations from CAL messages, cross-referenced with CHS channel data
     if _tokdec('CAL') in msg_by_type:
         # Build map from (cal_val_1, cal_val_2) -> channel name via CHS offsets 96-103

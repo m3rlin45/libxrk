@@ -174,8 +174,15 @@ pub fn extract_metadata(py: Python<'_>, result: &ParseResult) -> PyResult<Py<PyA
     if let Some(msg_list) = msgs.get(&tokens::vet()) {
         if let Some(last_msg) = msg_list.last() {
             let payload = messages::dispatch_payload(last_msg);
-            if let Payload::Vet(val) = payload {
-                dict.set_item("Vehicle Electronics Type", val)?;
+            if let Payload::Vet(vet) = payload {
+                match vet {
+                    crate::payloads::vet::VetPayload::Mode(mode) => {
+                        dict.set_item("Vehicle Electronics Type", &mode)?;
+                    }
+                    crate::payloads::vet::VetPayload::Value(val) => {
+                        dict.set_item("Vehicle Electronics Type", val)?;
+                    }
+                }
             }
         }
     }

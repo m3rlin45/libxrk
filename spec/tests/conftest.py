@@ -18,6 +18,7 @@ SFJ_SUZUKA_XRK = TEST_DATA_DIR / "SFJ" / "CMD_SFJ_Suzuka Car_Generic testing_a_0
 FILE_86_XRK = TEST_DATA_DIR / "86" / "CMD_Inferno 86_Fuji GP Sh_Generic testing_a_2248.xrk"
 FILE_86_XRZ = TEST_DATA_DIR / "86" / "CMD_Inferno 86_Fuji GP Sh_Generic testing_a_2248.xrz"
 AIM_OFFICIAL_XRK = TEST_DATA_DIR / "aim_official" / "test.xrk"
+ISSUE49_XRK = TEST_DATA_DIR / "issue49" / "badGPSdata.xrk"
 
 ALL_XRK_FILES = [
     SFJ_XRK,
@@ -25,6 +26,7 @@ ALL_XRK_FILES = [
     SFJ_SUZUKA_XRK,
     FILE_86_XRK,
     AIM_OFFICIAL_XRK,
+    ISSUE49_XRK,
 ]
 ALL_XRZ_FILES = [SFJ_XRZ, SFJ_0101_XRZ, FILE_86_XRZ]
 ALL_FILES = ALL_XRK_FILES + ALL_XRZ_FILES
@@ -60,6 +62,14 @@ def file_86_cython():
     from libxrk import aim_xrk
 
     return aim_xrk(str(FILE_86_XRK))
+
+
+@pytest.fixture(scope="session")
+def issue49_parsed():
+    """Parse the issue49 XRK file once per session (spec parser only, NOT Cython)."""
+    from spec.xrk_format import parse_xrk_file
+
+    return parse_xrk_file(str(ISSUE49_XRK))
 
 
 @pytest.fixture(scope="session")

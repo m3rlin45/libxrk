@@ -10,3 +10,4 @@ pub mod lap;
 pub mod odo;
 pub mod racm;
 pub mod trk;
+pub mod vet;

@@ -206,7 +206,7 @@ CHSPayload = Struct(
     "device_tag" / Bytes(4),  # [76:80]  device tag ("@AIM" or null)
     "device_node_id" / Int8ul,  # [80]     device node ID
     "maybe_device_flags" / Int8ul,  # [81]     (3 values: 0x00, 0x02, 0x10)
-    "_pad_82_84" / Bytes(2),  # [82:84]  padding (expected zero)
+    "unknown_82" / Bytes(2),  # [82:84]  unknown (non-zero on external GPS, hw_id=2018)
     "maybe_output_type" / Int8ul,  # [84]     (1/4/6/0xFF)
     "_pad_85_88" / Bytes(3),  # [85:88]  padding (expected zero)
     "display_index" / Int32ul,  # [88:92]  display index (0xFFFFFFFF for virtual)
@@ -406,9 +406,22 @@ RACMPayload = Struct(
     ),
 )
 
-# VET — Vehicle Electronics Type (single byte)
+# VET — Vehicle Electronics Type (string or value byte)
+# Reference: aim_xrk.pyx VET handling (mirrors RACM dual-form pattern)
 VETPayload = Struct(
-    "value" / Int8ul,
+    "_raw" / GreedyBytes,
+    "mode"
+    / Computed(
+        lambda ctx: "string" if len(ctx._raw) > 1 else ("value" if len(ctx._raw) == 1 else None)
+    ),
+    "value"
+    / Computed(
+        lambda ctx: (
+            _nullterm(ctx._raw)
+            if len(ctx._raw) > 1
+            else (ctx._raw[0] if len(ctx._raw) == 1 else None)
+        )
+    ),
 )
 
 
@@ -643,6 +656,9 @@ _DISPATCH_TABLE = _dispatch_table(
             "HWNF",
             "PDLT",
             "NTE",
+            "+LM",
+            "MAN",
+            "MOD",
         )
     ),
 )
@@ -904,7 +920,6 @@ def chs_padding_bytes(chs):
         + chs._pad_56_64
         + chs._pad_70_72
         + chs._pad_73_76
-        + chs._pad_82_84
         + chs._pad_85_88
         + chs._pad_93_96
     )
