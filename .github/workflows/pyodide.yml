@@ -16,10 +16,12 @@ jobs:
             python-version: "3.12"
             emscripten-version: "3.1.58"
             artifact-suffix: "-0.27"
+            rust-flags: "-C target-feature=-exception-handling -C panic=abort"
           - pyodide-version: "0.29.3"
             python-version: "3.13"
             emscripten-version: "4.0.9"
             artifact-suffix: "-0.29"
+            rust-flags: "-Zemscripten-wasm-eh"
     name: Build wheel for Pyodide ${{ matrix.pyodide-version }}
 
     steps:
@@ -31,6 +33,12 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
+
+    - name: Install Rust nightly with wasm32-unknown-emscripten
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        targets: wasm32-unknown-emscripten
+        components: rust-src
 
     - name: Install Emscripten SDK
       uses: mymindstorm/setup-emsdk@v14
@@ -47,6 +55,12 @@ jobs:
 
     - name: Build wheel for Pyodide
       run: pyodide build --exports whole_archive
+      env:
+        RUSTUP_TOOLCHAIN: nightly
+        CARGO_BUILD_TARGET: wasm32-unknown-emscripten
+        RUSTFLAGS: ${{ matrix.rust-flags }}
+        CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER: ${{ github.workspace }}/scripts/emcc-no-wasm-exceptions.sh
+        PYO3_CROSS_PYTHON_VERSION: ${{ matrix.python-version }}
 
     - name: Upload wheel artifact
       uses: actions/upload-artifact@v4
