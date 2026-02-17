@@ -11,7 +11,7 @@ use arrow::pyarrow::ToPyArrow;
 use pyo3::prelude::*;
 
 use crate::gps_processing::{GpsChannelDef, GpsDecodeResult, GPS_CHANNEL_DEFS};
-use crate::parser::{ChannelData, ChannelInfo, ParseResult, ProcessedLap};
+use crate::parser::{ChannelData, ChannelInfo, ProcessedLap};
 
 /// Build a PyArrow table for a single channel.
 ///
@@ -20,7 +20,7 @@ use crate::parser::{ChannelData, ChannelInfo, ParseResult, ProcessedLap};
 pub fn build_channel_table(
     py: Python<'_>,
     name: &str,
-    ch_data: &ChannelData,
+    ch_data: ChannelData,
     ch_info: &ChannelInfo,
 ) -> PyResult<Py<PyAny>> {
     let chs = &ch_info.chs;
@@ -49,8 +49,8 @@ pub fn build_channel_table(
         Field::new(name, DataType::Float64, false).with_metadata(metadata),
     ]);
 
-    let timecodes = Int64Array::from(ch_data.timecodes.clone());
-    let values = Float64Array::from(ch_data.values_f64.clone());
+    let timecodes = Int64Array::from(ch_data.timecodes);
+    let values = Float64Array::from(ch_data.values_f64);
 
     let batch = RecordBatch::try_new(
         Arc::new(schema),
@@ -101,12 +101,13 @@ pub fn build_laps_table(
 /// Returns a Vec of (channel_name, PyArrow RecordBatch) pairs.
 pub fn build_all_channel_tables(
     py: Python<'_>,
-    result: &ParseResult,
+    channel_data: HashMap<u16, ChannelData>,
+    channels: &HashMap<u16, ChannelInfo>,
 ) -> PyResult<Vec<(String, Py<PyAny>)>> {
     let mut tables = Vec::new();
 
-    for (&ch_idx, ch_data) in &result.channel_data {
-        if let Some(ch_info) = result.channels.get(&ch_idx) {
+    for (ch_idx, ch_data) in channel_data.into_iter() {
+        if let Some(ch_info) = channels.get(&ch_idx) {
             let name = ch_info.chs.long_name();
             let table = build_channel_table(py, &name, ch_data, ch_info)?;
             tables.push((name, table));
@@ -121,9 +122,9 @@ fn build_gps_channel(
     py: Python<'_>,
     name: &str,
     def: &GpsChannelDef,
-    timecodes: &[i64],
-    values_f64: Option<&[f64]>,
-    values_f32: Option<&[f32]>,
+    timecodes: Vec<i64>,
+    values_f64: Option<Vec<f64>>,
+    values_f32: Option<Vec<f32>>,
 ) -> PyResult<Py<PyAny>> {
     // GPS channel metadata — matches Channel defaults for non-CHS channels
     let mut metadata = HashMap::new();
@@ -141,17 +142,17 @@ fn build_gps_channel(
     metadata.insert("display_range_min".to_string(), "0.0".to_string());
     metadata.insert("display_range_max".to_string(), "0.0".to_string());
 
-    let tc_array = Int64Array::from(timecodes.to_vec());
+    let tc_array = Int64Array::from(timecodes);
 
     let batch = if def.is_f64 {
-        let vals = Float64Array::from(values_f64.unwrap().to_vec());
+        let vals = Float64Array::from(values_f64.unwrap());
         let schema = Schema::new(vec![
             Field::new("timecodes", DataType::Int64, false),
             Field::new(name, DataType::Float64, false).with_metadata(metadata),
         ]);
         RecordBatch::try_new(Arc::new(schema), vec![Arc::new(tc_array), Arc::new(vals)])
     } else {
-        let vals = Float32Array::from(values_f32.unwrap().to_vec());
+        let vals = Float32Array::from(values_f32.unwrap());
         let schema = Schema::new(vec![
             Field::new("timecodes", DataType::Int64, false),
             Field::new(name, DataType::Float32, false).with_metadata(metadata),
@@ -171,35 +172,48 @@ fn build_gps_channel(
 /// Returns a Vec of (channel_name, PyArrow RecordBatch) pairs.
 pub fn build_gps_channel_tables(
     py: Python<'_>,
-    gps: &GpsDecodeResult,
+    gps: GpsDecodeResult,
 ) -> PyResult<Vec<(String, Py<PyAny>)>> {
-    let tc = &gps.timecodes;
     let mut tables = Vec::with_capacity(12);
 
-    // Order must match GPS_CHANNEL_DEFS
-    let f64_channels: &[&[f64]] = &[&gps.speed, &gps.latitude, &gps.longitude, &gps.altitude];
-    let f32_channels: &[&[f32]] = &[
-        &gps.satellites,
-        &gps.fix,
-        &gps.pdop,
-        &gps.position_accuracy,
-        &gps.velocity_accuracy,
-        &gps.inline_acc,
-        &gps.lateral_acc,
-        &gps.yaw_rate,
-    ];
+    // Destructure to take ownership of all fields
+    let GpsDecodeResult {
+        timecodes,
+        speed,
+        latitude,
+        longitude,
+        altitude,
+        satellites,
+        fix,
+        pdop,
+        position_accuracy,
+        velocity_accuracy,
+        inline_acc,
+        lateral_acc,
+        yaw_rate,
+    } = gps;
 
-    let mut f64_idx = 0;
-    let mut f32_idx = 0;
+    // Order must match GPS_CHANNEL_DEFS: 4 f64 channels then 8 f32 channels
+    let mut f64_channels = vec![speed, latitude, longitude, altitude].into_iter();
+    let mut f32_channels = vec![
+        satellites,
+        fix,
+        pdop,
+        position_accuracy,
+        velocity_accuracy,
+        inline_acc,
+        lateral_acc,
+        yaw_rate,
+    ].into_iter();
 
     for def in GPS_CHANNEL_DEFS {
+        // Timecodes are shared across all 12 GPS channels, so clone is unavoidable
+        let tc = timecodes.clone();
         let table = if def.is_f64 {
-            let vals = f64_channels[f64_idx];
-            f64_idx += 1;
+            let vals = f64_channels.next().unwrap();
             build_gps_channel(py, def.name, def, tc, Some(vals), None)?
         } else {
-            let vals = f32_channels[f32_idx];
-            f32_idx += 1;
+            let vals = f32_channels.next().unwrap();
             build_gps_channel(py, def.name, def, tc, None, Some(vals))?
         };
         tables.push((def.name.to_string(), table));

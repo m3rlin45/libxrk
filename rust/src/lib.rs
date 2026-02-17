@@ -106,13 +106,19 @@ fn aim_xrk(
         closure
     });
 
-    let result = parser::parse_xrk(
+    let mut result = parser::parse_xrk(
         &data,
         progress_cb.as_ref().map(|cb| cb.as_ref()),
     );
 
-    // Build channel tables
-    let channel_tables = arrow_bridge::build_all_channel_tables(py, &result)?;
+    // Compute non-GPS max end time before moving channel_data out
+    let non_gps_max_end_time: Option<i64> = result.channel_data.values()
+        .filter_map(|ch| ch.timecodes.last().copied())
+        .max();
+
+    // Move channel_data out of result (avoids cloning every channel)
+    let channel_data = std::mem::take(&mut result.channel_data);
+    let channel_tables = arrow_bridge::build_all_channel_tables(py, channel_data, &result.channels)?;
 
     // Build channels dict
     let channels_dict = PyDict::new(py);
@@ -146,11 +152,6 @@ fn aim_xrk(
             Vec::new()
         };
 
-        // Compute max end time of non-GPS channels (for indirect detection)
-        let non_gps_max_end_time: Option<i64> = result.channel_data.values()
-            .filter_map(|ch| ch.timecodes.last().copied())
-            .max();
-
         // Detect and apply corrections to GPS timecodes
         let corrections = gps_timing::detect_gap_corrections(
             &gps.timecodes,
@@ -160,15 +161,6 @@ fn aim_xrk(
         );
         if !corrections.is_empty() {
             gps_timing::apply_corrections(&mut gps.timecodes, &corrections);
-        }
-    }
-
-    // Build GPS Arrow tables (with corrected timecodes)
-    if let Some(ref gps) = gps_result {
-        let gps_tables = arrow_bridge::build_gps_channel_tables(py, gps)?;
-        for (name, batch) in &gps_tables {
-            let table = pa_table_class.call_method1("from_batches", (vec![batch.bind(py)],))?;
-            channels_dict.set_item(name, table)?;
         }
     }
 
@@ -228,6 +220,15 @@ fn aim_xrk(
                     }
                 }
             }
+        }
+    }
+
+    // Build GPS Arrow tables after lap detection (consumes gps_result by value)
+    if let Some(gps) = gps_result {
+        let gps_tables = arrow_bridge::build_gps_channel_tables(py, gps)?;
+        for (name, batch) in &gps_tables {
+            let table = pa_table_class.call_method1("from_batches", (vec![batch.bind(py)],))?;
+            channels_dict.set_item(name, table)?;
         }
     }
 
