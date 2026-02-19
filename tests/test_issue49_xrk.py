@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 from typing import Any, ClassVar
 
+import numpy as np
+
 from libxrk.base import LogFile
 
 TEST_DATA_DIR = Path(__file__).parent / "test_data"
@@ -172,21 +174,40 @@ class TestIssue49CrossBackend(unittest.TestCase):
                 f"Channel {name!r}: rust={rust_count} != cython={cython_count}",
             )
 
-    def test_gps_values_match(self) -> None:
-        """First/last GPS values should match between backends."""
-        gps_names = ["GPS Speed", "GPS Latitude", "GPS Longitude", "GPS Altitude"]
-        for name in gps_names:
-            rust_col = self.rust_log.channels[name].column(name)
-            cython_col = self.cython_log.channels[name].column(name)
-            for pos, idx in [("first", 0), ("last", -1)]:
-                rust_val = rust_col[idx].as_py()
-                cython_val = cython_col[idx].as_py()
-                self.assertAlmostEqual(
-                    rust_val,
-                    cython_val,
-                    places=3,
-                    msg=f"{name} {pos}: rust={rust_val} != cython={cython_val}",
-                )
+    def test_channel_types_match(self) -> None:
+        """Arrow types should match between Rust and Cython for all channels."""
+        for name in self.rust_log.channels:
+            rust_type = self.rust_log.channels[name].schema.field(name).type
+            cython_type = self.cython_log.channels[name].schema.field(name).type
+            self.assertEqual(
+                rust_type,
+                cython_type,
+                f"Channel {name!r}: rust type={rust_type} != cython type={cython_type}",
+            )
+
+    def test_non_gps_channel_values_exact_match(self) -> None:
+        """Non-GPS CHS channels should produce identical timecodes and values."""
+        gps_prefixes = ("GPS ", "GPS_")
+        for name in self.rust_log.channels:
+            if any(name.startswith(p) for p in gps_prefixes):
+                continue
+            rust_tc = self.rust_log.channels[name].column("timecodes").to_numpy()
+            cython_tc = self.cython_log.channels[name].column("timecodes").to_numpy()
+            np.testing.assert_array_equal(rust_tc, cython_tc, err_msg=f"{name} timecodes")
+            rust_vals = self.rust_log.channels[name].column(name).to_numpy(zero_copy_only=False)
+            cython_vals = self.cython_log.channels[name].column(name).to_numpy(zero_copy_only=False)
+            np.testing.assert_array_equal(rust_vals, cython_vals, err_msg=f"{name} values")
+
+    def test_gps_channel_values_close(self) -> None:
+        """GPS channel values should be close between backends (tolerance for float math)."""
+        for name in self.rust_log.channels:
+            if not (name.startswith("GPS ") or name.startswith("GPS_")):
+                continue
+            rust_vals = self.rust_log.channels[name].column(name).to_numpy(zero_copy_only=False)
+            cython_vals = self.cython_log.channels[name].column(name).to_numpy(zero_copy_only=False)
+            np.testing.assert_allclose(
+                rust_vals, cython_vals, rtol=1e-5, atol=1e-10, err_msg=f"{name}"
+            )
 
     def test_lap_count_match(self) -> None:
         """Lap count should match between backends."""

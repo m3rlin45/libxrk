@@ -80,6 +80,7 @@ class DataStream:
     laps: pa.Table
     time_offset: int
     gnfi_timecodes: Optional[object] = None
+    has_lap_messages: bool = False
 
 @dataclass(**dc_slots)
 class Decoder:
@@ -754,6 +755,7 @@ def _decode_sequence(s, progress=None):
             c.sampledata = np.divide(c.sampledata, 1000).data
 
     laps = None
+    has_lap_messages = False
     gnfi_timecodes = None
     if not channels:
         t4 = time.perf_counter()
@@ -766,7 +768,7 @@ def _decode_sequence(s, progress=None):
             group_work = worker.map(process_group, [x for x in groups if x])
             channel_work = worker.map(process_channel,
                                       [x for x in channels if x and not x.group])
-            gps_ch, laps, gnfi_timecodes = bg_work.result()
+            gps_ch, laps, has_lap_messages, gnfi_timecodes = bg_work.result()
             t4 = time.perf_counter()
             for i in group_work:
                 pass
@@ -779,7 +781,7 @@ def _decode_sequence(s, progress=None):
         for c in channels:
             if c and not c.group: process_channel(c)
         t4 = time.perf_counter()
-        gps_ch, laps, gnfi_timecodes = _bg_gps_laps(
+        gps_ch, laps, has_lap_messages, gnfi_timecodes = _bg_gps_laps(
             <cython.uchar[:gpsmsg.size()]> &gpsmsg[0],
             <cython.uchar[:gnfimsg.size()]> &gnfimsg[0] if gnfimsg.size() else None,
             messages, time_offset, last_time)
@@ -792,7 +794,8 @@ def _decode_sequence(s, progress=None):
         messages=messages,
         laps=laps,
         time_offset=time_offset,
-        gnfi_timecodes=gnfi_timecodes)
+        gnfi_timecodes=gnfi_timecodes,
+        has_lap_messages=has_lap_messages)
 
 def _get_metadata(msg_by_type, channels=None):
     ret = {}
@@ -895,8 +898,8 @@ def _bg_gps_laps(gpsmsg, gnfimsg, msg_by_type, time_offset, last_time):
     for ch in channels:
         if ch.long_name == 'GPS Latitude': lat_ch = ch
         if ch.long_name == 'GPS Longitude': lon_ch = ch
-    laps = _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time)
-    return channels, laps, gnfi_timecodes
+    laps, has_lap_messages = _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time)
+    return channels, laps, has_lap_messages, gnfi_timecodes
 
 def _decode_gps(gpsmsg, time_offset):
     """Decode GPS messages from XRK data stream.
@@ -1056,9 +1059,11 @@ def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
     lap_nums = []
     start_times = []
     end_times = []
+    has_lap_messages = False
 
     # Prefer LAP messages when available (matches official DLL behavior)
     if _tokdec('LAP') in msg_by_type:
+        has_lap_messages = True
         for m in msg_by_type[_tokdec('LAP')]:
             # 2nd byte is segment #, see M4GT4
             segment, lap, duration, end_time = struct.unpack('xBHIxxxxxxxxI', m.content)
@@ -1109,11 +1114,12 @@ def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
         lap_nums = [n - min_lap for n in lap_nums]
 
     # Create PyArrow table
-    return pa.table({
+    laps_table = pa.table({
         'num': pa.array(lap_nums, type=pa.int32()),
         'start_time': pa.array(start_times, type=pa.int64()),
         'end_time': pa.array(end_times, type=pa.int64())
     })
+    return laps_table, has_lap_messages
 
 
 def _channel_to_table(ch):
@@ -1258,7 +1264,10 @@ def aim_xrk(fname, progress=None):
 
     # Fix GPS timing gaps (spurious timestamp jumps in some AIM loggers)
     # Pass GNFI timecodes for more robust detection (if available)
-    fix_gps_timing_gaps(log, gnfi_timecodes=data.gnfi_timecodes)
+    # Only correct lap boundaries when laps came from GPS-based detection
+    # (not from LAP messages, which use the internal clock unaffected by the bug)
+    fix_gps_timing_gaps(log, gnfi_timecodes=data.gnfi_timecodes,
+                        correct_laps=not data.has_lap_messages)
 
     return log
 

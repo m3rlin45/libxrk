@@ -9,7 +9,12 @@ Before the fix, last_time was incorrectly 0, causing the last lap to have end_ti
 
 import unittest
 from pathlib import Path
+from typing import ClassVar
+
+import numpy as np
+
 from libxrk import aim_xrk
+from libxrk.base import LogFile
 
 
 # Path to test data
@@ -92,6 +97,131 @@ class TestAIMOfficialXRK(unittest.TestCase):
                 300000,
                 f"Lap {lap_num} has suspiciously long duration: {duration}ms",
             )
+
+
+def _rust_backend_available() -> bool:
+    """Check if the Rust backend extension is importable."""
+    try:
+        import libxrk._aim_xrk_rs  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+@unittest.skipUnless(_rust_backend_available(), "Rust backend not available")
+class TestAIMOfficialCrossBackend(unittest.TestCase):
+    """Cross-backend comparison for the official AIM test.xrk file."""
+
+    rust_log: ClassVar[LogFile]
+    cython_log: ClassVar[LogFile]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
+        from libxrk.aim_xrk import aim_xrk as cython_aim_xrk
+
+        cls.rust_log = rust_aim_xrk(str(AIM_OFFICIAL_XRK_FILE))
+        cls.cython_log = cython_aim_xrk(str(AIM_OFFICIAL_XRK_FILE))
+
+    def test_channel_names_match(self) -> None:
+        """Both backends should produce the same set of channel names."""
+        self.assertEqual(
+            set(self.rust_log.channels.keys()),
+            set(self.cython_log.channels.keys()),
+        )
+
+    def test_channel_sample_counts_match(self) -> None:
+        """Per-channel sample counts should match between backends."""
+        for name in self.rust_log.channels:
+            rust_count = len(self.rust_log.channels[name])
+            cython_count = len(self.cython_log.channels[name])
+            self.assertEqual(
+                rust_count,
+                cython_count,
+                f"Channel {name!r}: rust={rust_count} != cython={cython_count}",
+            )
+
+    def test_channel_types_match(self) -> None:
+        """Arrow types should match between Rust and Cython for all channels."""
+        for name in self.rust_log.channels:
+            rust_type = self.rust_log.channels[name].schema.field(name).type
+            cython_type = self.cython_log.channels[name].schema.field(name).type
+            self.assertEqual(
+                rust_type,
+                cython_type,
+                f"Channel {name!r}: rust type={rust_type} != cython type={cython_type}",
+            )
+
+    def test_non_gps_channel_values_match(self) -> None:
+        """Non-GPS CHS channels should produce matching values.
+
+        Note: This file has no LAP messages, so time_offset is computed from
+        the first data message timecode. The backends may differ by a small
+        constant offset (~18ms), so timecodes are compared with tolerance.
+        Values (which are offset-independent) should match exactly.
+        """
+        gps_prefixes = ("GPS ", "GPS_")
+        for name in self.rust_log.channels:
+            if any(name.startswith(p) for p in gps_prefixes):
+                continue
+            rust_tc = self.rust_log.channels[name].column("timecodes").to_numpy()
+            cython_tc = self.cython_log.channels[name].column("timecodes").to_numpy()
+            # Timecodes may have a constant offset; check they differ uniformly
+            tc_diffs = rust_tc - cython_tc
+            np.testing.assert_array_equal(
+                tc_diffs,
+                tc_diffs[0],
+                err_msg=f"{name} timecodes have non-uniform offset",
+            )
+            rust_vals = self.rust_log.channels[name].column(name).to_numpy(zero_copy_only=False)
+            cython_vals = self.cython_log.channels[name].column(name).to_numpy(zero_copy_only=False)
+            np.testing.assert_array_equal(rust_vals, cython_vals, err_msg=f"{name} values")
+
+    def test_gps_channel_values_close(self) -> None:
+        """GPS channel values should be close between backends."""
+        for name in self.rust_log.channels:
+            if not (name.startswith("GPS ") or name.startswith("GPS_")):
+                continue
+            rust_vals = self.rust_log.channels[name].column(name).to_numpy(zero_copy_only=False)
+            cython_vals = self.cython_log.channels[name].column(name).to_numpy(zero_copy_only=False)
+            np.testing.assert_allclose(
+                rust_vals, cython_vals, rtol=1e-5, atol=1e-10, err_msg=f"{name}"
+            )
+
+    def test_lap_count_match(self) -> None:
+        """Lap count should match between backends."""
+        self.assertEqual(self.rust_log.laps.num_rows, self.cython_log.laps.num_rows)
+
+    def test_lap_durations_match(self) -> None:
+        """Lap durations should match between backends.
+
+        Note: This file has no LAP messages (GPS-based lap detection), so
+        absolute lap times may differ by a constant time_offset between backends.
+        Durations are offset-independent and should match exactly.
+        """
+        rust_starts = np.array(self.rust_log.laps.column("start_time").to_pylist())
+        rust_ends = np.array(self.rust_log.laps.column("end_time").to_pylist())
+        cython_starts = np.array(self.cython_log.laps.column("start_time").to_pylist())
+        cython_ends = np.array(self.cython_log.laps.column("end_time").to_pylist())
+        np.testing.assert_array_equal(
+            rust_ends - rust_starts,
+            cython_ends - cython_starts,
+            err_msg="Lap durations differ between backends",
+        )
+
+    def test_channel_metadata_match(self) -> None:
+        """Channel metadata (units, dec_pts, interpolate) should match between backends."""
+        for name in self.rust_log.channels:
+            rust_meta = self.rust_log.channels[name].schema.field(name).metadata or {}
+            cython_meta = self.cython_log.channels[name].schema.field(name).metadata or {}
+            for key in (b"units", b"dec_pts", b"interpolate"):
+                self.assertEqual(
+                    rust_meta.get(key),
+                    cython_meta.get(key),
+                    f"Channel {name!r} metadata {key!r}: "
+                    f"rust={rust_meta.get(key)!r} != cython={cython_meta.get(key)!r}",
+                )
 
 
 if __name__ == "__main__":
