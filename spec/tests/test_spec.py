@@ -518,6 +518,76 @@ class TestCDECrossValidation:
 
 
 # ---------------------------------------------------------------------------
+# Cross-validation: Issue #49 (AIM model 768 + Mectronik ECU)
+# ---------------------------------------------------------------------------
+
+
+class TestIssue49CrossValidation:
+    """Cross-validation tests for the issue49 badGPSdata.xrk file."""
+
+    def test_vet_cross_validation(self, issue49_parsed, issue49_cython):
+        """VET value should match between spec and Cython parsers."""
+        vet_msgs = issue49_parsed.messages_by_token("VET")
+        assert len(vet_msgs) > 0
+        spec_val = vet_msgs[-1].payload.value
+        cython_val = issue49_cython.metadata["Vehicle Electronics Type"]
+        assert spec_val == cython_val == "..."
+
+    def test_racm_cross_validation(self, issue49_parsed, issue49_cython):
+        """RACM string value should match between spec and Cython parsers."""
+        racm_msgs = issue49_parsed.messages_by_token("RACM")
+        found_string_mode = None
+        for m in racm_msgs:
+            if m.payload and m.payload["mode"] == "string":
+                found_string_mode = m.payload["value"]
+        cython_val = issue49_cython.metadata.get("Race Mode")
+        assert found_string_mode == cython_val == "..."
+
+    def test_logger_identity(self, issue49_parsed, issue49_cython):
+        """Logger ID and Model ID should match between spec and Cython parsers."""
+        src_msgs = issue49_parsed.messages_by_token("SRC")
+        idn_msgs = issue49_parsed.messages_by_token("idn")
+        found = None
+        if src_msgs and src_msgs[-1].payload:
+            found = src_msgs[-1].payload
+        elif idn_msgs:
+            found = idn_msgs[-1].payload
+        assert found is not None
+        assert found["logger_id"] == issue49_cython.metadata["Logger ID"]
+        assert found["model_id"] == issue49_cython.metadata["Logger Model ID"]
+
+    def test_new_string_tokens(self, issue49_parsed):
+        """New string tokens (+LM, MAN, MOD) should be present with str payloads."""
+        for token in ("+LM", "MAN", "MOD"):
+            msgs = issue49_parsed.find_nested_messages(token)
+            assert len(msgs) >= 1, f"Expected at least one {token!r} message"
+            for m in msgs:
+                assert isinstance(
+                    m.payload, str
+                ), f"{token!r} payload should be str, got {type(m.payload)}"
+
+    def test_chs_byte82_nonzero_on_external_gps(self, issue49_parsed):
+        """CHS byte[82] should be non-zero for external GPS channels (hardware_id=2018)."""
+        found = False
+        for idx, ch in issue49_parsed.channels.items():
+            if ch.hardware_id == 2018:
+                found = True
+                assert any(
+                    ch.unknown_82
+                ), f"Channel {ch.name!r} (hw_id=2018): expected non-zero unknown_82"
+        assert found, "No channels with hardware_id=2018 found"
+
+    def test_chs_byte82_zero_on_other_channels(self, issue49_parsed):
+        """CHS byte[82] should be zero for non-GPS channels (hardware_id != 2018)."""
+        for idx, ch in issue49_parsed.channels.items():
+            if ch.hardware_id != 2018:
+                assert not any(ch.unknown_82), (
+                    f"Channel {ch.name!r} (hw_id={ch.hardware_id}): "
+                    f"expected zero unknown_82, got {ch.unknown_82.hex()}"
+                )
+
+
+# ---------------------------------------------------------------------------
 # Cross-validation: Data messages (sample-level)
 # ---------------------------------------------------------------------------
 

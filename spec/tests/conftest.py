@@ -66,10 +66,18 @@ def file_86_cython():
 
 @pytest.fixture(scope="session")
 def issue49_parsed():
-    """Parse the issue49 XRK file once per session (spec parser only, NOT Cython)."""
+    """Parse the issue49 XRK file once per session (spec parser)."""
     from spec.xrk_format import parse_xrk_file
 
     return parse_xrk_file(str(ISSUE49_XRK))
+
+
+@pytest.fixture(scope="session")
+def issue49_cython():
+    """Load the issue49 file via Cython parser once per session."""
+    from libxrk import aim_xrk
+
+    return aim_xrk(str(ISSUE49_XRK))
 
 
 @pytest.fixture(scope="session")

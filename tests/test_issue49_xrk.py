@@ -1,7 +1,6 @@
 """Tests for issue #49 XRK file (AIM logger model 768 + Mectronik MKE7 ECU).
 
-This file must ONLY be tested with the Rust backend — the Cython backend
-must never open this file (safety constraint from issue investigation).
+Tests both Rust and Cython backends, plus cross-backend comparison.
 """
 
 import os
@@ -27,7 +26,7 @@ def _rust_backend_available() -> bool:
 
 @unittest.skipUnless(_rust_backend_available(), "Rust backend not available")
 class TestIssue49XRK(unittest.TestCase):
-    """Tests for the issue49 badGPSdata.xrk file (Rust backend only)."""
+    """Tests for the issue49 badGPSdata.xrk file (Rust backend)."""
 
     log: ClassVar[LogFile]
 
@@ -79,6 +78,122 @@ class TestIssue49XRK(unittest.TestCase):
         model_id = self.log.metadata.get("Logger Model ID")
         self.assertIsNotNone(model_id)
         self.assertEqual(model_id, 768)
+
+
+class TestIssue49CythonXRK(unittest.TestCase):
+    """Tests for the issue49 badGPSdata.xrk file (Cython backend)."""
+
+    log: ClassVar[LogFile]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from libxrk.aim_xrk import aim_xrk
+
+        cls.log = aim_xrk(str(ISSUE49_XRK_FILE))
+
+    def test_metadata_vet_is_string(self) -> None:
+        """VET should be '...' (string), not an integer."""
+        vet = self.log.metadata.get("Vehicle Electronics Type")
+        self.assertIsNotNone(vet, "VET metadata missing")
+        self.assertIsInstance(vet, str, f"VET should be str, got {type(vet)}")
+        self.assertEqual(vet, "...")
+
+    def test_metadata_race_mode(self) -> None:
+        """Race Mode should be '...' (placeholder string)."""
+        racm = self.log.metadata.get("Race Mode")
+        self.assertIsNotNone(racm, "Race Mode metadata missing")
+        self.assertEqual(racm, "...")
+
+    def test_gps_channels_exist(self) -> None:
+        """GPS channels should exist with expected sample count."""
+        gps_names = ["GPS Speed", "GPS Latitude", "GPS Longitude", "GPS Altitude"]
+        for name in gps_names:
+            self.assertIn(name, self.log.channels, f"Missing GPS channel: {name}")
+            count = len(self.log.channels[name])
+            self.assertEqual(count, 5995, f"{name}: expected 5995 samples, got {count}")
+
+    def test_channel_count(self) -> None:
+        """Should have a reasonable number of channels."""
+        self.assertGreater(len(self.log.channels), 10)
+
+    def test_laps_table_exists(self) -> None:
+        """Laps table should exist and have rows."""
+        self.assertIsNotNone(self.log.laps)
+        self.assertGreater(self.log.laps.num_rows, 0)
+
+    def test_logger_model_id(self) -> None:
+        """Logger model ID should be 768 (currently unmapped)."""
+        model_id = self.log.metadata.get("Logger Model ID")
+        self.assertIsNotNone(model_id)
+        self.assertEqual(model_id, 768)
+
+
+@unittest.skipUnless(_rust_backend_available(), "Rust backend not available")
+class TestIssue49CrossBackend(unittest.TestCase):
+    """Cross-backend comparison for the issue49 badGPSdata.xrk file."""
+
+    rust_log: ClassVar[LogFile]
+    cython_log: ClassVar[LogFile]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
+        from libxrk.aim_xrk import aim_xrk as cython_aim_xrk
+
+        cls.rust_log = rust_aim_xrk(str(ISSUE49_XRK_FILE))
+        cls.cython_log = cython_aim_xrk(str(ISSUE49_XRK_FILE))
+
+    def test_metadata_match(self) -> None:
+        """Key metadata should match between backends."""
+        for key in ("Vehicle Electronics Type", "Race Mode", "Logger Model ID", "Logger ID"):
+            rust_val = self.rust_log.metadata.get(key)
+            cython_val = self.cython_log.metadata.get(key)
+            self.assertEqual(
+                rust_val,
+                cython_val,
+                f"Metadata {key!r}: rust={rust_val!r} != cython={cython_val!r}",
+            )
+
+    def test_channel_names_match(self) -> None:
+        """Both backends should produce the same set of channel names."""
+        self.assertEqual(
+            set(self.rust_log.channels.keys()),
+            set(self.cython_log.channels.keys()),
+        )
+
+    def test_channel_sample_counts_match(self) -> None:
+        """Per-channel sample counts should match between backends."""
+        for name in self.rust_log.channels:
+            rust_count = len(self.rust_log.channels[name])
+            cython_count = len(self.cython_log.channels[name])
+            self.assertEqual(
+                rust_count,
+                cython_count,
+                f"Channel {name!r}: rust={rust_count} != cython={cython_count}",
+            )
+
+    def test_gps_values_match(self) -> None:
+        """First/last GPS values should match between backends."""
+        gps_names = ["GPS Speed", "GPS Latitude", "GPS Longitude", "GPS Altitude"]
+        for name in gps_names:
+            rust_col = self.rust_log.channels[name].column(name)
+            cython_col = self.cython_log.channels[name].column(name)
+            for pos, idx in [("first", 0), ("last", -1)]:
+                rust_val = rust_col[idx].as_py()
+                cython_val = cython_col[idx].as_py()
+                self.assertAlmostEqual(
+                    rust_val,
+                    cython_val,
+                    places=3,
+                    msg=f"{name} {pos}: rust={rust_val} != cython={cython_val}",
+                )
+
+    def test_lap_count_match(self) -> None:
+        """Lap count should match between backends."""
+        self.assertEqual(
+            self.rust_log.laps.num_rows,
+            self.cython_log.laps.num_rows,
+        )
 
 
 if __name__ == "__main__":
