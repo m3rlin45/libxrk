@@ -49,7 +49,7 @@ Standard metadata fields extracted from XRK files:
 | Device Name | str | User-configured device name |
 | GPS Receiver | str | GPS receiver type: `"GPS"` (external) or `"iGPS"` (internal) |
 | Race Mode | str | Lap detection mode: `"speed"` or `"performance"` (absent if not set) |
-| Vehicle Electronics Type | int | Vehicle electronics config type |
+| Vehicle Electronics Type | str \| int | Vehicle electronics type (string for unconfigured loggers, int otherwise) |
 | Odo/* | various | Odometer readings |
 | Expansion Devices | list[dict] | CAN expansion devices (Bus Unit, Bus Type, Version, Manufacturer, Model, Logger ID, Model ID) |
 | Calibrations | list[dict] | Per-channel calibration data (type, raw_1, raw_2, channel; type 1 adds output_1, output_2) |
