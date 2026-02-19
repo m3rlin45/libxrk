@@ -67,10 +67,113 @@ pub struct ParseResult {
     pub enf_sub_messages: Vec<HashMap<u32, Vec<HeaderMessage>>>,
 }
 
+/// Typed channel value storage — preserves the native Arrow type from each decoder.
+pub enum ChannelValues {
+    UInt8(Vec<u8>),
+    UInt16(Vec<u16>),
+    Int16(Vec<i16>),
+    Int32(Vec<i32>),
+    UInt32(Vec<u32>),
+    Float32(Vec<f32>),
+    Float64(Vec<f64>),
+}
+
+impl ChannelValues {
+    /// Create a new typed vector with the right variant based on decoder/channel properties.
+    ///
+    /// V-units channels with integer decoders use Float64 (numpy 2.x: np.divide(int, 1000) → f64).
+    /// V-units channels with float decoders stay Float32 (numpy 2.x: np.divide(f32, 1000) → f32).
+    /// Manual gear channels use UInt32.
+    /// Otherwise: decoder type determines the variant.
+    pub fn new(decoder_type: u8, units: &str, is_manual: bool, capacity: usize) -> Self {
+        if units == "V" {
+            // V conversion (mV→V via /1000): numpy 2.x scalar promotion rules
+            // - int / int_scalar → float64
+            // - float32 / int_scalar → float32
+            return match decoder_type {
+                6 | 20 => ChannelValues::Float32(Vec::with_capacity(capacity)),
+                _ => ChannelValues::Float64(Vec::with_capacity(capacity)),
+            };
+        }
+        if is_manual {
+            return ChannelValues::UInt32(Vec::with_capacity(capacity));
+        }
+        match decoder_type {
+            1 | 15 => ChannelValues::UInt16(Vec::with_capacity(capacity)),
+            4 | 11 => ChannelValues::Int16(Vec::with_capacity(capacity)),
+            6 | 20 => ChannelValues::Float32(Vec::with_capacity(capacity)),
+            13 => ChannelValues::UInt8(Vec::with_capacity(capacity)),
+            _ => ChannelValues::Int32(Vec::with_capacity(capacity)),
+        }
+    }
+
+    /// Push a decoded sample value into the typed vector.
+    pub fn push(&mut self, val: crate::decoders::SampleValue) {
+        use crate::decoders::SampleValue;
+        match self {
+            ChannelValues::Float64(v) => v.push(val.as_f64()),
+            ChannelValues::UInt8(v) => match val {
+                SampleValue::UInt8(x) => v.push(x),
+                _ => v.push(val.as_f64() as u8),
+            },
+            ChannelValues::UInt16(v) => match val {
+                SampleValue::UInt16(x) => v.push(x),
+                _ => v.push(val.as_f64() as u16),
+            },
+            ChannelValues::Int16(v) => match val {
+                SampleValue::Int16(x) => v.push(x),
+                _ => v.push(val.as_f64() as i16),
+            },
+            ChannelValues::Int32(v) => match val {
+                SampleValue::Int32(x) => v.push(x),
+                _ => v.push(val.as_f64() as i32),
+            },
+            ChannelValues::UInt32(v) => match val {
+                SampleValue::UInt32(x) => v.push(x),
+                _ => v.push(val.as_f64() as u32),
+            },
+            ChannelValues::Float32(v) => match val {
+                SampleValue::Float32(x) => v.push(x),
+                _ => v.push(val.as_f32()),
+            },
+        }
+    }
+
+    /// Push a zero/default value of the appropriate type.
+    pub fn push_default(&mut self) {
+        match self {
+            ChannelValues::UInt8(v) => v.push(0),
+            ChannelValues::UInt16(v) => v.push(0),
+            ChannelValues::Int16(v) => v.push(0),
+            ChannelValues::Int32(v) => v.push(0),
+            ChannelValues::UInt32(v) => v.push(0),
+            ChannelValues::Float32(v) => v.push(0.0),
+            ChannelValues::Float64(v) => v.push(0.0),
+        }
+    }
+
+    /// Apply mV→V conversion (divide by 1000). Valid for Float64 and Float32 variants.
+    pub fn apply_mv_to_v(&mut self) {
+        match self {
+            ChannelValues::Float64(v) => {
+                for val in v.iter_mut() {
+                    *val /= 1000.0;
+                }
+            }
+            ChannelValues::Float32(v) => {
+                for val in v.iter_mut() {
+                    *val /= 1000.0;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Decoded channel data ready for Arrow conversion.
 pub struct ChannelData {
     pub timecodes: Vec<i64>,
-    pub values_f64: Vec<f64>,
+    pub values: ChannelValues,
 }
 
 /// Processed lap info.
@@ -806,7 +909,7 @@ fn decode_all_channels(
                     let data_offset_in_stored = grp_offset;
 
                     let mut timecodes = Vec::with_capacity(n_rows);
-                    let mut values = Vec::with_capacity(n_rows);
+                    let mut values = ChannelValues::new(decoder_type, ch_info.chs.units(), is_manual, n_rows);
 
                     for row in 0..n_rows {
                         let row_start = row * stride;
@@ -826,23 +929,21 @@ fn decode_all_channels(
                             } else {
                                 crate::decoders::decode_sample(decoder_type, sample_data)
                             } {
-                                values.push(val.as_f64());
+                                values.push(val);
                             } else {
-                                values.push(0.0);
+                                values.push_default();
                             }
                         }
                     }
 
                     // Apply V conversion (mV -> V)
                     if ch_info.chs.units() == "V" {
-                        for v in &mut values {
-                            *v /= 1000.0;
-                        }
+                        values.apply_mv_to_v();
                     }
 
                     if !timecodes.is_empty() {
                         let _ = grp_info; // used for validation
-                        result.insert(ch_idx, ChannelData { timecodes, values_f64: values });
+                        result.insert(ch_idx, ChannelData { timecodes, values });
                     }
                 }
             }
@@ -868,7 +969,7 @@ fn decode_all_channels(
                 let n_rows = acc.data.len() / stride;
 
                 let mut timecodes = Vec::with_capacity(n_rows);
-                let mut values = Vec::with_capacity(n_rows);
+                let mut values = ChannelValues::new(decoder_type, ch_info.chs.units(), is_manual, n_rows);
 
                 for row in 0..n_rows {
                     let row_start = row * stride;
@@ -887,21 +988,19 @@ fn decode_all_channels(
                         } else {
                             crate::decoders::decode_sample(decoder_type, sample_data)
                         } {
-                            values.push(val.as_f64());
+                            values.push(val);
                         } else {
-                            values.push(0.0);
+                            values.push_default();
                         }
                     }
                 }
 
                 if ch_info.chs.units() == "V" {
-                    for v in &mut values {
-                        *v /= 1000.0;
-                    }
+                    values.apply_mv_to_v();
                 }
 
                 if !timecodes.is_empty() {
-                    result.insert(ch_idx, ChannelData { timecodes, values_f64: values });
+                    result.insert(ch_idx, ChannelData { timecodes, values });
                 }
             } else {
                 // M messages
@@ -910,7 +1009,7 @@ fn decode_all_channels(
                     let n_rows = acc.timecodes.len();
 
                     let mut timecodes = Vec::with_capacity(n_rows);
-                    let mut values = Vec::with_capacity(n_rows);
+                    let mut values = ChannelValues::new(decoder_type, ch_info.chs.units(), is_manual, n_rows);
 
                     for (i, &tc) in acc.timecodes.iter().enumerate() {
                         timecodes.push(tc as i64 - time_offset);
@@ -922,21 +1021,19 @@ fn decode_all_channels(
                             } else {
                                 crate::decoders::decode_sample(decoder_type, sample_data)
                             } {
-                                values.push(val.as_f64());
+                                values.push(val);
                             } else {
-                                values.push(0.0);
+                                values.push_default();
                             }
                         }
                     }
 
                     if ch_info.chs.units() == "V" {
-                        for v in &mut values {
-                            *v /= 1000.0;
-                        }
+                        values.apply_mv_to_v();
                     }
 
                     if !timecodes.is_empty() {
-                        result.insert(ch_idx, ChannelData { timecodes, values_f64: values });
+                        result.insert(ch_idx, ChannelData { timecodes, values });
                     }
                 }
             }

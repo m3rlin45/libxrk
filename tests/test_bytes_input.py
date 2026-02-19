@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from typing import ClassVar
 
+import numpy as np
+
 from libxrk import aim_xrk
 from libxrk.base import LogFile
 
@@ -202,6 +204,108 @@ class TestFileInput(unittest.TestCase):
         log = aim_xrk(XRK_86_FILE, progress=None)
         self.assertIsNotNone(log)
         self.assertGreater(len(log.channels), 0)
+
+
+def _rust_backend_available() -> bool:
+    """Check if the Rust backend extension is importable."""
+    try:
+        import libxrk._aim_xrk_rs  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+@unittest.skipUnless(_rust_backend_available(), "Rust backend not available")
+class TestBytesInputCrossBackend(unittest.TestCase):
+    """Cross-backend comparison for bytes/BytesIO input."""
+
+    file_bytes: ClassVar[bytes]
+    rust_log: ClassVar[LogFile]
+    cython_log: ClassVar[LogFile]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
+        from libxrk.aim_xrk import aim_xrk as cython_aim_xrk
+
+        cls.file_bytes = XRK_86_FILE.read_bytes()
+        cls.rust_log = rust_aim_xrk(cls.file_bytes)
+        cls.cython_log = cython_aim_xrk(cls.file_bytes)
+
+    def test_bytes_channel_names_match(self) -> None:
+        """Channel names from bytes input should match between backends."""
+        self.assertEqual(
+            set(self.rust_log.channels.keys()),
+            set(self.cython_log.channels.keys()),
+        )
+
+    def test_bytes_channel_types_match(self) -> None:
+        """Arrow types from bytes input should match between backends."""
+        for name in self.rust_log.channels:
+            rust_type = self.rust_log.channels[name].schema.field(name).type
+            cython_type = self.cython_log.channels[name].schema.field(name).type
+            self.assertEqual(
+                rust_type,
+                cython_type,
+                f"Channel {name!r}: rust type={rust_type} != cython type={cython_type}",
+            )
+
+    def test_bytes_non_gps_values_exact_match(self) -> None:
+        """Non-GPS channels from bytes input should match exactly between backends."""
+        gps_prefixes = ("GPS ", "GPS_")
+        for name in self.rust_log.channels:
+            if any(name.startswith(p) for p in gps_prefixes):
+                continue
+            rust_tc = self.rust_log.channels[name].column("timecodes").to_numpy()
+            cython_tc = self.cython_log.channels[name].column("timecodes").to_numpy()
+            np.testing.assert_array_equal(rust_tc, cython_tc, err_msg=f"{name} timecodes")
+            rust_vals = self.rust_log.channels[name].column(name).to_numpy(zero_copy_only=False)
+            cython_vals = self.cython_log.channels[name].column(name).to_numpy(zero_copy_only=False)
+            np.testing.assert_array_equal(rust_vals, cython_vals, err_msg=f"{name} values")
+
+    def test_bytes_gps_values_close(self) -> None:
+        """GPS channels from bytes input should be close between backends."""
+        for name in self.rust_log.channels:
+            if not (name.startswith("GPS ") or name.startswith("GPS_")):
+                continue
+            rust_vals = self.rust_log.channels[name].column(name).to_numpy(zero_copy_only=False)
+            cython_vals = self.cython_log.channels[name].column(name).to_numpy(zero_copy_only=False)
+            np.testing.assert_allclose(
+                rust_vals, cython_vals, rtol=1e-5, atol=1e-10, err_msg=f"{name}"
+            )
+
+    def test_bytes_lap_data_match(self) -> None:
+        """Lap data from bytes input should match between backends."""
+        self.assertEqual(self.rust_log.laps.num_rows, self.cython_log.laps.num_rows)
+        rust_starts = self.rust_log.laps.column("start_time").to_pylist()
+        cython_starts = self.cython_log.laps.column("start_time").to_pylist()
+        self.assertEqual(rust_starts, cython_starts)
+
+    def test_bytes_metadata_match(self) -> None:
+        """Key metadata from bytes input should match between backends."""
+        for key in ("Logger ID", "Logger Model ID", "Venue", "GPS Receiver"):
+            rust_val = self.rust_log.metadata.get(key)
+            cython_val = self.cython_log.metadata.get(key)
+            self.assertEqual(
+                rust_val,
+                cython_val,
+                f"Metadata {key!r}: rust={rust_val!r} != cython={cython_val!r}",
+            )
+
+    def test_bytesio_matches_bytes(self) -> None:
+        """BytesIO input should produce same result as raw bytes for Rust backend."""
+        from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
+
+        bio_log = rust_aim_xrk(io.BytesIO(self.file_bytes))
+        self.assertEqual(
+            set(bio_log.channels.keys()),
+            set(self.rust_log.channels.keys()),
+        )
+        for name in bio_log.channels:
+            bio_count = len(bio_log.channels[name])
+            bytes_count = len(self.rust_log.channels[name])
+            self.assertEqual(bio_count, bytes_count, f"Channel {name!r} row count mismatch")
 
 
 if __name__ == "__main__":

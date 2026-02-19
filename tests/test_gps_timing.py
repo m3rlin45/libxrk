@@ -1,12 +1,12 @@
 """Tests for GPS timing gap detection and correction in libxrk."""
 
 import unittest
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 import numpy as np
 import pyarrow as pa
 
-from libxrk import GPS_CHANNEL_NAMES, LogFile
+from libxrk import GPS_CHANNEL_NAMES, LogFile, aim_xrk
 from libxrk.gps import fix_gps_timing_gaps
 
 
@@ -345,7 +345,6 @@ class TestGpsTimingGapFixIntegration(unittest.TestCase):
     def setUpClass(cls) -> None:
         """Load the test file once for all tests."""
         from pathlib import Path
-        from libxrk import aim_xrk
 
         cls.TEST_DATA_DIR = Path(__file__).parent / "test_data"
         cls.SFJ_0101_XRK = (
@@ -600,7 +599,6 @@ class TestSuzukaGnfiIntegration(unittest.TestCase):
     def setUpClass(cls) -> None:
         """Load the Suzuka test file."""
         from pathlib import Path
-        from libxrk import aim_xrk
 
         cls.TEST_DATA_DIR = Path(__file__).parent / "test_data"
         cls.SUZUKA_XRK = cls.TEST_DATA_DIR / "SFJ" / "CMD_SFJ_Suzuka Car_Generic testing_a_0090.xrk"
@@ -634,6 +632,165 @@ class TestSuzukaGnfiIntegration(unittest.TestCase):
             10,
             f"GPS end time differs from InlineAcc by {time_diff_s:.1f}s (should be <10s after fix)",
         )
+
+
+def _rust_backend_available() -> bool:
+    """Check if the Rust backend extension is importable."""
+    try:
+        import libxrk._aim_xrk_rs  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+@unittest.skipUnless(_rust_backend_available(), "Rust backend not available")
+class TestGpsTimingCrossBackend(unittest.TestCase):
+    """Cross-backend comparison for GPS timing fix on real files."""
+
+    rust_0101: ClassVar[LogFile]
+    cython_0101: ClassVar[LogFile]
+    rust_suzuka: ClassVar[Optional[LogFile]]
+    cython_suzuka: ClassVar[Optional[LogFile]]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from pathlib import Path
+
+        from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
+        from libxrk.aim_xrk import aim_xrk as cython_aim_xrk
+
+        test_data_dir = Path(__file__).parent / "test_data"
+        sfj_0101 = test_data_dir / "SFJ" / "CMD_SFJ_Fuji GP Sh_Generic testing_a_0101.xrk"
+        suzuka = test_data_dir / "SFJ" / "CMD_SFJ_Suzuka Car_Generic testing_a_0090.xrk"
+
+        cls.rust_0101 = rust_aim_xrk(str(sfj_0101))
+        cls.cython_0101 = cython_aim_xrk(str(sfj_0101))
+
+        cls.rust_suzuka = None
+        cls.cython_suzuka = None
+        if suzuka.exists():
+            cls.rust_suzuka = rust_aim_xrk(str(suzuka))
+            cls.cython_suzuka = cython_aim_xrk(str(suzuka))
+
+    def test_0101_channel_names_match(self) -> None:
+        """Channel names should match for 0101 file."""
+        self.assertEqual(
+            set(self.rust_0101.channels.keys()),
+            set(self.cython_0101.channels.keys()),
+        )
+
+    def test_0101_channel_types_match(self) -> None:
+        """Arrow types should match for all 0101 channels."""
+        for name in self.rust_0101.channels:
+            rust_type = self.rust_0101.channels[name].schema.field(name).type
+            cython_type = self.cython_0101.channels[name].schema.field(name).type
+            self.assertEqual(
+                rust_type,
+                cython_type,
+                f"Channel {name!r}: rust type={rust_type} != cython type={cython_type}",
+            )
+
+    def test_0101_non_gps_values_exact_match(self) -> None:
+        """Non-GPS channels should match exactly for 0101 file."""
+        gps_prefixes = ("GPS ", "GPS_")
+        for name in self.rust_0101.channels:
+            if any(name.startswith(p) for p in gps_prefixes):
+                continue
+            rust_tc = self.rust_0101.channels[name].column("timecodes").to_numpy()
+            cython_tc = self.cython_0101.channels[name].column("timecodes").to_numpy()
+            np.testing.assert_array_equal(rust_tc, cython_tc, err_msg=f"{name} timecodes")
+            rust_vals = self.rust_0101.channels[name].column(name).to_numpy(zero_copy_only=False)
+            cython_vals = (
+                self.cython_0101.channels[name].column(name).to_numpy(zero_copy_only=False)
+            )
+            np.testing.assert_array_equal(rust_vals, cython_vals, err_msg=f"{name} values")
+
+    def test_0101_gps_timecodes_match(self) -> None:
+        """GPS timecodes should match after timing fix for 0101 file."""
+        for name in GPS_CHANNEL_NAMES:
+            if name not in self.rust_0101.channels:
+                continue
+            rust_tc = self.rust_0101.channels[name].column("timecodes").to_numpy()
+            cython_tc = self.cython_0101.channels[name].column("timecodes").to_numpy()
+            np.testing.assert_array_equal(rust_tc, cython_tc, err_msg=f"{name} timecodes")
+
+    def test_0101_gps_values_close(self) -> None:
+        """GPS values should be close between backends for 0101 file."""
+        for name in self.rust_0101.channels:
+            if not (name.startswith("GPS ") or name.startswith("GPS_")):
+                continue
+            rust_vals = self.rust_0101.channels[name].column(name).to_numpy(zero_copy_only=False)
+            cython_vals = (
+                self.cython_0101.channels[name].column(name).to_numpy(zero_copy_only=False)
+            )
+            np.testing.assert_allclose(
+                rust_vals, cython_vals, rtol=1e-5, atol=1e-10, err_msg=f"{name}"
+            )
+
+    def test_0101_lap_data_match(self) -> None:
+        """Lap times should match exactly between backends for 0101 file.
+
+        The 0101 file has the 65533ms GPS timing bug and LAP messages. Since
+        LAP messages use the internal clock (not the GPS clock), the GPS fix
+        should NOT modify lap boundaries. Both backends should produce the
+        raw LAP message timestamps.
+        """
+        self.assertEqual(self.rust_0101.laps.num_rows, self.cython_0101.laps.num_rows)
+        rust_starts = self.rust_0101.laps.column("start_time").to_pylist()
+        cython_starts = self.cython_0101.laps.column("start_time").to_pylist()
+        self.assertEqual(rust_starts, cython_starts)
+        rust_ends = self.rust_0101.laps.column("end_time").to_pylist()
+        cython_ends = self.cython_0101.laps.column("end_time").to_pylist()
+        self.assertEqual(rust_ends, cython_ends)
+
+    def test_suzuka_channel_types_match(self) -> None:
+        """Arrow types should match for all Suzuka channels."""
+        if self.rust_suzuka is None:
+            self.skipTest("Suzuka file not available")
+        assert self.rust_suzuka is not None and self.cython_suzuka is not None
+        for name in self.rust_suzuka.channels:
+            rust_type = self.rust_suzuka.channels[name].schema.field(name).type
+            cython_type = self.cython_suzuka.channels[name].schema.field(name).type
+            self.assertEqual(
+                rust_type,
+                cython_type,
+                f"Channel {name!r}: rust type={rust_type} != cython type={cython_type}",
+            )
+
+    def test_suzuka_non_gps_values_exact_match(self) -> None:
+        """Non-GPS channels should match exactly for Suzuka file."""
+        if self.rust_suzuka is None:
+            self.skipTest("Suzuka file not available")
+        assert self.rust_suzuka is not None and self.cython_suzuka is not None
+        gps_prefixes = ("GPS ", "GPS_")
+        for name in self.rust_suzuka.channels:
+            if any(name.startswith(p) for p in gps_prefixes):
+                continue
+            rust_tc = self.rust_suzuka.channels[name].column("timecodes").to_numpy()
+            cython_tc = self.cython_suzuka.channels[name].column("timecodes").to_numpy()
+            np.testing.assert_array_equal(rust_tc, cython_tc, err_msg=f"{name} timecodes")
+            rust_vals = self.rust_suzuka.channels[name].column(name).to_numpy(zero_copy_only=False)
+            cython_vals = (
+                self.cython_suzuka.channels[name].column(name).to_numpy(zero_copy_only=False)
+            )
+            np.testing.assert_array_equal(rust_vals, cython_vals, err_msg=f"{name} values")
+
+    def test_suzuka_gps_values_close(self) -> None:
+        """GPS values should be close between backends for Suzuka file."""
+        if self.rust_suzuka is None:
+            self.skipTest("Suzuka file not available")
+        assert self.rust_suzuka is not None and self.cython_suzuka is not None
+        for name in self.rust_suzuka.channels:
+            if not (name.startswith("GPS ") or name.startswith("GPS_")):
+                continue
+            rust_vals = self.rust_suzuka.channels[name].column(name).to_numpy(zero_copy_only=False)
+            cython_vals = (
+                self.cython_suzuka.channels[name].column(name).to_numpy(zero_copy_only=False)
+            )
+            np.testing.assert_allclose(
+                rust_vals, cython_vals, rtol=1e-5, atol=1e-10, err_msg=f"{name}"
+            )
 
 
 if __name__ == "__main__":

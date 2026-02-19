@@ -279,11 +279,17 @@ class LogFile:
                     resampled_values = resampled_values.copy()
                     resampled_values[leading_mask] = channel_values[0]
 
+            # Promote integer types to float64 when interpolating to preserve
+            # fractional values (np.interp returns float64, casting back to int truncates)
+            output_type = field.type
+            if should_interpolate and pa.types.is_integer(field.type):
+                output_type = pa.float64()
+
             # Build new channel table preserving metadata
             new_table = pa.table(
                 {
                     "timecodes": timecodes,
-                    name: pa.array(resampled_values, type=field.type),
+                    name: pa.array(resampled_values, type=output_type),
                 }
             )
 

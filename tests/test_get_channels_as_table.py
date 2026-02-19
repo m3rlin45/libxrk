@@ -506,5 +506,103 @@ class TestChannelMerge(unittest.TestCase):
         self.assertEqual(channel_b_values, [100.0, 200.0])
 
 
+class TestInterpolationTypePromotion(unittest.TestCase):
+    """Tests for integer type promotion during interpolation resampling."""
+
+    def test_uint16_interpolation_promotes_to_float64(self):
+        """A uint16 channel with interpolate=True should promote to float64 after resampling."""
+        # Create a uint16 channel with interpolate=True metadata
+        channel = pa.table(
+            {
+                "timecodes": pa.array([0, 100, 200], type=pa.int64()),
+                "Sensor": pa.array([100, 200, 300], type=pa.uint16()),
+            }
+        )
+        field = channel.schema.field("Sensor")
+        field_with_meta = field.with_metadata({b"interpolate": b"True"})
+        schema = pa.schema([channel.schema.field("timecodes"), field_with_meta])
+        channel = channel.cast(schema)
+
+        log = LogFile(
+            channels={"Sensor": channel},
+            laps=pa.table({"num": [], "start_time": [], "end_time": []}),
+            metadata={},
+            file_name="test.xrk",
+        )
+
+        # Resample to intermediate timecodes that require interpolation
+        target = pa.array([0, 50, 100, 150, 200], type=pa.int64())
+        resampled = log.resample_to_timecodes(target)
+
+        result = resampled.channels["Sensor"]
+        result_type = result.schema.field("Sensor").type
+
+        # Should be promoted to float64 (not truncated back to uint16)
+        self.assertEqual(result_type, pa.float64())
+
+        # Fractional interpolated values should be preserved
+        values = result.column("Sensor").to_pylist()
+        self.assertAlmostEqual(values[1], 150.0, places=5)  # midpoint of 100-200
+        self.assertAlmostEqual(values[3], 250.0, places=5)  # midpoint of 200-300
+
+    def test_int32_no_interpolation_preserves_type(self):
+        """An int32 channel without interpolate=True should keep its type."""
+        channel = pa.table(
+            {
+                "timecodes": pa.array([0, 100, 200], type=pa.int64()),
+                "Counter": pa.array([10, 20, 30], type=pa.int32()),
+            }
+        )
+        field = channel.schema.field("Counter")
+        field_with_meta = field.with_metadata({b"interpolate": b"False"})
+        schema = pa.schema([channel.schema.field("timecodes"), field_with_meta])
+        channel = channel.cast(schema)
+
+        log = LogFile(
+            channels={"Counter": channel},
+            laps=pa.table({"num": [], "start_time": [], "end_time": []}),
+            metadata={},
+            file_name="test.xrk",
+        )
+
+        target = pa.array([0, 50, 100, 150, 200], type=pa.int64())
+        resampled = log.resample_to_timecodes(target)
+
+        result = resampled.channels["Counter"]
+        result_type = result.schema.field("Counter").type
+
+        # Should remain int32 (forward fill, no interpolation)
+        self.assertEqual(result_type, pa.int32())
+
+    def test_float32_interpolation_preserves_type(self):
+        """A float32 channel with interpolate=True should stay float32."""
+        channel = pa.table(
+            {
+                "timecodes": pa.array([0, 100, 200], type=pa.int64()),
+                "Speed": pa.array([10.0, 20.0, 30.0], type=pa.float32()),
+            }
+        )
+        field = channel.schema.field("Speed")
+        field_with_meta = field.with_metadata({b"interpolate": b"True"})
+        schema = pa.schema([channel.schema.field("timecodes"), field_with_meta])
+        channel = channel.cast(schema)
+
+        log = LogFile(
+            channels={"Speed": channel},
+            laps=pa.table({"num": [], "start_time": [], "end_time": []}),
+            metadata={},
+            file_name="test.xrk",
+        )
+
+        target = pa.array([0, 50, 100, 150, 200], type=pa.int64())
+        resampled = log.resample_to_timecodes(target)
+
+        result = resampled.channels["Speed"]
+        result_type = result.schema.field("Speed").type
+
+        # float32 is not integer, so no promotion needed
+        self.assertEqual(result_type, pa.float32())
+
+
 if __name__ == "__main__":
     unittest.main()

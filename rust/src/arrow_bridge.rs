@@ -5,13 +5,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow::array::{Float32Array, Float64Array, Int32Array, Int64Array, RecordBatch};
+use arrow::array::{Array, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, RecordBatch, UInt8Array, UInt16Array, UInt32Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::pyarrow::ToPyArrow;
 use pyo3::prelude::*;
 
 use crate::gps_processing::{GpsChannelDef, GpsDecodeResult, GPS_CHANNEL_DEFS};
-use crate::parser::{ChannelData, ChannelInfo, ProcessedLap};
+use crate::parser::{ChannelData, ChannelInfo, ChannelValues, ProcessedLap};
 
 /// Build a PyArrow table for a single channel.
 ///
@@ -43,18 +43,27 @@ pub fn build_channel_table(
     metadata.insert("display_range_min".to_string(), format_float(chs.display_range_min));
     metadata.insert("display_range_max".to_string(), format_float(chs.display_range_max));
 
-    // Determine the data type — use Float64 for values (matching Cython which uses numpy float64)
+    // Build typed Arrow array matching the native decoder type (parity with Cython)
+    let timecodes = Int64Array::from(ch_data.timecodes);
+
+    let (values_col, data_type): (Arc<dyn Array>, DataType) = match ch_data.values {
+        ChannelValues::UInt8(v)   => (Arc::new(UInt8Array::from(v)),   DataType::UInt8),
+        ChannelValues::UInt16(v)  => (Arc::new(UInt16Array::from(v)),  DataType::UInt16),
+        ChannelValues::Int16(v)   => (Arc::new(Int16Array::from(v)),   DataType::Int16),
+        ChannelValues::Int32(v)   => (Arc::new(Int32Array::from(v)),   DataType::Int32),
+        ChannelValues::UInt32(v)  => (Arc::new(UInt32Array::from(v)),  DataType::UInt32),
+        ChannelValues::Float32(v) => (Arc::new(Float32Array::from(v)), DataType::Float32),
+        ChannelValues::Float64(v) => (Arc::new(Float64Array::from(v)), DataType::Float64),
+    };
+
     let schema = Schema::new(vec![
         Field::new("timecodes", DataType::Int64, false),
-        Field::new(name, DataType::Float64, false).with_metadata(metadata),
+        Field::new(name, data_type, false).with_metadata(metadata),
     ]);
-
-    let timecodes = Int64Array::from(ch_data.timecodes);
-    let values = Float64Array::from(ch_data.values_f64);
 
     let batch = RecordBatch::try_new(
         Arc::new(schema),
-        vec![Arc::new(timecodes), Arc::new(values)],
+        vec![Arc::new(timecodes), values_col],
     ).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
     // Convert to PyArrow via C Data Interface (zero-copy)

@@ -514,6 +514,7 @@ def fix_gps_timing_gaps(
     log: "LogFile",
     expected_dt_ms: float = 40.0,
     gnfi_timecodes: np.ndarray | None = None,
+    correct_laps: bool = True,
 ) -> "LogFile":
     """Detect and correct 16-bit overflow timing gaps in GPS channels and lap boundaries.
 
@@ -530,7 +531,8 @@ def fix_gps_timing_gaps(
     3. Indirect detection: GPS ends ~65533ms after other channels, indicating
        the bug occurred during a GPS signal loss (hidden within a smaller gap)
 
-    The fix is applied in-place to the LogFile's channels dict and laps table.
+    The fix is applied in-place to the LogFile's channels dict and optionally
+    the laps table.
 
     Parameters
     ----------
@@ -542,11 +544,17 @@ def fix_gps_timing_gaps(
     gnfi_timecodes : np.ndarray or None, default=None
         Optional GNFI timecodes from logger's internal clock. If provided,
         used for more robust detection of the GPS timing bug.
+    correct_laps : bool, default=True
+        Whether to also correct lap boundaries. Should be False when laps
+        come from LAP messages (which use the internal clock, unaffected
+        by the GPS timing bug). Should be True when laps come from
+        GPS-based detection (which uses the buggy GPS timecodes).
 
     Returns
     -------
     LogFile
-        The same LogFile object with corrected GPS timecodes and lap boundaries.
+        The same LogFile object with corrected GPS timecodes (and optionally
+        lap boundaries).
     """
     # The firmware bug causes a gap of approximately 65533ms (0xFFED).
     OVERFLOW_BUG_MS = 65533
@@ -659,8 +667,9 @@ def fix_gps_timing_gaps(
 
         log.channels[name] = new_table
 
-    # Fix lap boundaries (start_time, end_time)
-    if log.laps is not None and len(log.laps) > 0:
+    # Fix lap boundaries (start_time, end_time) only when laps came from
+    # GPS-based detection (not LAP messages, which use the internal clock)
+    if correct_laps and log.laps is not None and len(log.laps) > 0:
         start_times = log.laps.column("start_time").to_numpy().astype(np.float64)
         end_times = log.laps.column("end_time").to_numpy().astype(np.float64)
 

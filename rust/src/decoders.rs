@@ -2,10 +2,14 @@
 //!
 //! Maps decoder_type to decode function. Equivalent to `_decoders` in aim_xrk.pyx.
 
-/// Decoded sample value.
+/// Decoded sample value — preserves the native type from each decoder.
 #[derive(Debug, Clone, Copy)]
 pub enum SampleValue {
+    UInt8(u8),
+    UInt16(u16),
+    Int16(i16),
     Int32(i32),
+    UInt32(u32),
     Float32(f32),
     Float64(f64),
 }
@@ -13,7 +17,11 @@ pub enum SampleValue {
 impl SampleValue {
     pub fn as_f64(self) -> f64 {
         match self {
+            SampleValue::UInt8(v) => v as f64,
+            SampleValue::UInt16(v) => v as f64,
+            SampleValue::Int16(v) => v as f64,
             SampleValue::Int32(v) => v as f64,
+            SampleValue::UInt32(v) => v as f64,
             SampleValue::Float32(v) => v as f64,
             SampleValue::Float64(v) => v,
         }
@@ -21,7 +29,11 @@ impl SampleValue {
 
     pub fn as_f32(self) -> f32 {
         match self {
+            SampleValue::UInt8(v) => v as f32,
+            SampleValue::UInt16(v) => v as f32,
+            SampleValue::Int16(v) => v as f32,
             SampleValue::Int32(v) => v as f32,
+            SampleValue::UInt32(v) => v as f32,
             SampleValue::Float32(v) => v,
             SampleValue::Float64(v) => v as f32,
         }
@@ -57,13 +69,13 @@ pub fn decode_sample(decoder_type: u8, data: &[u8]) -> Option<SampleValue> {
         1 => {
             if data.len() < 2 { return None; }
             let v = u16::from_le_bytes([data[0], data[1]]);
-            Some(SampleValue::Int32(v as i32))
+            Some(SampleValue::UInt16(v))
         }
         // int16 types (type 4, 11)
         4 | 11 => {
             if data.len() < 2 { return None; }
             let v = i16::from_le_bytes([data[0], data[1]]);
-            Some(SampleValue::Int32(v as i32))
+            Some(SampleValue::Int16(v))
         }
         // float32 (type 6)
         6 => {
@@ -74,13 +86,13 @@ pub fn decode_sample(decoder_type: u8, data: &[u8]) -> Option<SampleValue> {
         // uint8 (type 13)
         13 => {
             if data.len() < 1 { return None; }
-            Some(SampleValue::Int32(data[0] as i32))
+            Some(SampleValue::UInt8(data[0]))
         }
         // uint16 gear lookup (type 15)
         15 => {
             if data.len() < 2 { return None; }
             let v = u16::from_le_bytes([data[0], data[1]]);
-            Some(SampleValue::Int32(gear_lookup(v) as i32))
+            Some(SampleValue::UInt16(gear_lookup(v)))
         }
         // float16 encoded as uint16 (type 20)
         20 => {
@@ -102,11 +114,11 @@ pub fn decode_manual_gear(data: &[u8]) -> Option<SampleValue> {
     let v = u64::from_le_bytes([data[0], data[1], data[2], data[3],
                                 data[4], data[5], data[6], data[7]]);
     let gear = if v & 0x80000 != 0 {
-        0
+        0u32
     } else {
-        ((v >> 16) & 7) as i32
+        ((v >> 16) & 7) as u32
     };
-    Some(SampleValue::Int32(gear))
+    Some(SampleValue::UInt32(gear))
 }
 
 /// Check if a channel name is a manual decoder type.
