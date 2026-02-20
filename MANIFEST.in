@@ -1,0 +1,9 @@
+include src/libxrk/*.pyx
+include src/libxrk/*.pyi
+include src/libxrk/py.typed
+include src/libxrk/CLAUDE.md
+include Cargo.toml
+include Cargo.lock
+recursive-include rust *.rs
+exclude src/libxrk/*.so
+exclude src/libxrk/*.pyd

@@ -3,17 +3,17 @@
 ## Project Overview
 Python library for reading AIM XRK/XRZ motorsports telemetry files. Uses Cython for binary parsing (default) with a Rust+PyO3 parser (~2x faster). Both backends are included in all published wheels. Data is represented as PyArrow tables.
 
-**Important:** Always run commands through `poetry run` to use the project's virtual environment.
+**Important:** Always run commands through `uv run` to use the project's virtual environment, or use `just` recipes.
 
 ## Quick Commands
 
 ```bash
-poetry install          # Install dependencies
-poetry run poe check    # Run all checks (lint, typecheck, test)
-poetry run poe format   # Black formatting
-poetry run poe typecheck # mypy
-poetry run poe test     # pytest
-poetry build            # Build wheel
+uv sync              # Install dependencies
+just check           # Run all checks (lint, typecheck, test)
+just format          # Black formatting
+just typecheck       # mypy
+just test            # pytest
+uv build             # Build wheel
 ```
 
 ## Code Structure
@@ -36,9 +36,9 @@ The library has two parser backends with identical APIs. Both are included in al
 Set `LIBXRK_BACKEND=rust` to use the Rust parser. Falls back to Rust if Cython is unavailable.
 
 ```bash
-poetry run poe rust-build       # Build Rust extension
-LIBXRK_BACKEND=rust poetry run poe test  # Test with Rust backend
-poetry run python scripts/benchmark.py   # Compare performance
+just rust-build                        # Build Rust extension
+LIBXRK_BACKEND=rust just test          # Test with Rust backend
+uv run python scripts/benchmark.py     # Compare performance
 ```
 
 ## Code Style
@@ -50,9 +50,9 @@ poetry run python scripts/benchmark.py   # Compare performance
 ## Testing
 
 ```bash
-poetry run poe test                              # All tests
-poetry run pytest tests/test_sfj_xrk.py -v       # Specific file
-poetry run pytest tests/test_sfj_xrk.py -k name  # Specific test
+just test                                        # All tests
+uv run pytest tests/test_sfj_xrk.py -v           # Specific file
+uv run pytest tests/test_sfj_xrk.py -k name      # Specific test
 ```
 
 Test data: `tests/test_data/` contains real XRK/XRZ files (SFJ and 86 vehicles).
@@ -69,31 +69,31 @@ The library supports running in the browser via Pyodide. Two versions are suppor
 ### Pyodide 0.27.x (default)
 
 ```bash
-poetry run poe emsdk-setup    # Install Emscripten SDK (first time only)
-poetry run poe pyodide-setup  # Install Pyodide npm package (first time only)
-poetry run poe pyodide-build  # Build Pyodide wheel
-poetry run poe pyodide-test   # Build and run tests in Pyodide
-poetry run poe build-all      # Build CPython wheel, sdist, and Pyodide wheel
+just emsdk-setup      # Install Emscripten SDK (first time only)
+just pyodide-setup    # Install Pyodide npm package (first time only)
+just pyodide-build    # Build Pyodide wheel
+just pyodide-test     # Build and run tests in Pyodide
+just build-all        # Build CPython wheel, sdist, and Pyodide wheel
 ```
 
 ### Pyodide 0.29.x (requires Python 3.13 via pyenv)
 
 ```bash
-poetry run poe emsdk-setup-0-29    # Install Emscripten SDK 4.0.9
-poetry run poe pyodide-setup-0-29  # Install Pyodide 0.29.x npm package
-poetry run poe pyodide-build-0-29  # Build Pyodide 0.29.x wheel
-poetry run poe pyodide-test-0-29   # Build and run tests in Pyodide 0.29.x
+just emsdk-setup-0-29      # Install Emscripten SDK 4.0.9
+just pyodide-setup-0-29    # Install Pyodide 0.29.x npm package
+just pyodide-build-0-29    # Build Pyodide 0.29.x wheel
+just pyodide-test-0-29     # Build and run tests in Pyodide 0.29.x
 ```
 
 Pyodide test scripts are in `scripts/run_pyodide_tests*.mjs`. They accept `--pyodide-version=0.27` or `--pyodide-version=0.29` to select the version.
 
 ## Cython Rebuild
 
-After modifying `src/libxrk/aim_xrk.pyx`, you **must** run `poetry install` to recompile the Cython extension before running tests. Stale `.so` files will cause incorrect test results without any obvious error.
+After modifying `src/libxrk/aim_xrk.pyx`, you **must** run `uv sync` to recompile the Cython extension before running tests. Stale `.so` files will cause incorrect test results without any obvious error.
 
 ## Rust Rebuild
 
-After modifying Rust source in `rust/`, run `poetry run poe rust-build` (release) or `poetry run poe rust-build-debug` (faster compile). The Rust extension coexists with Cython — both can be installed simultaneously.
+After modifying Rust source in `rust/`, run `just rust-build` (release) or `just rust-build-debug` (faster compile). The Rust extension coexists with Cython — both can be installed simultaneously.
 
 ## Architecture Notes
 

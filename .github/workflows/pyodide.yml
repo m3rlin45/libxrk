@@ -34,6 +34,9 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
 
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+
     - name: Install Rust nightly with wasm32-unknown-emscripten
       uses: dtolnay/rust-toolchain@nightly
       with:
@@ -53,8 +56,8 @@ jobs:
 
     - name: Install pyodide-build
       run: |
-        pip install "wheel<0.44.0"
-        pip install pyodide-build==${{ matrix.pyodide-version }}
+        uv pip install --system --prerelease=allow "wheel<0.44.0"
+        uv pip install --system --prerelease=allow pyodide-build==${{ matrix.pyodide-version }}
 
     - name: Install Pyodide xbuildenv
       run: pyodide xbuildenv install ${{ matrix.pyodide-version }}
