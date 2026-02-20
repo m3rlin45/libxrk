@@ -28,10 +28,10 @@ On Ubuntu/Debian:
 sudo apt install build-essential python3-dev
 ```
 
-#### Install with Poetry
+##### Install with uv
 
 ```bash
-poetry install
+uv sync
 ```
 
 The Cython extension will be automatically compiled during installation.
@@ -115,7 +115,7 @@ All filtering and resampling methods return new `LogFile` instances (immutable p
 ### Quick Check
 ```bash
 # Run all quality checks (format check, type check, tests)
-poetry run poe check
+just check
 ```
 
 ### Code Formatting
@@ -124,7 +124,7 @@ This project uses [Black](https://black.readthedocs.io/) for code formatting.
 
 ```bash
 # Format all Python files
-poetry run black .
+just format
 ```
 
 ### Type Checking
@@ -133,7 +133,7 @@ This project uses [mypy](https://mypy.readthedocs.io/) for static type checking.
 
 ```bash
 # Run type checker on all Python files
-poetry run mypy .
+just typecheck
 ```
 
 ### Running Tests
@@ -142,16 +142,13 @@ This project uses [pytest](https://pytest.org/) for testing.
 
 ```bash
 # Run all tests
-poetry run pytest
-
-# Run tests with verbose output
-poetry run pytest -v
+just test
 
 # Run specific test file
-poetry run pytest tests/test_xrk_loading.py
+uv run pytest tests/test_xrk_loading.py
 
 # Run tests with coverage
-poetry run pytest --cov=libxrk
+uv run pytest --cov=libxrk
 ```
 
 ### Testing with Pyodide (WebAssembly)
@@ -161,10 +158,10 @@ This requires Node.js to be installed.
 
 ```bash
 # Build and run tests in Pyodide 0.27.x (Python 3.12)
-poetry run poe pyodide-test
+just pyodide-test
 
 # Build and run tests in Pyodide 0.29.x (Python 3.13, requires pyenv)
-poetry run poe pyodide-test-0-29
+just pyodide-test-0-29
 ```
 
 Note: Pyodide tests for both 0.27.x and 0.29.x run automatically in CI via GitHub Actions.
@@ -173,17 +170,17 @@ Note: Pyodide tests for both 0.27.x and 0.29.x run automatically in CI via GitHu
 
 ```bash
 # Build CPython wheel and sdist
-poetry build
+uv build
 
 # Build all wheels (CPython, Pyodide/WebAssembly, and sdist)
-poetry run poe build-all
+just build-all
 ```
 
 ### Clean Build
 
 ```bash
 # Clean all build artifacts and rebuild
-rm -rf build/ dist/ src/libxrk/*.so && poetry install
+rm -rf build/ dist/ src/libxrk/*.so && uv sync
 ```
 
 ## Testing
