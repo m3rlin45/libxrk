@@ -3,7 +3,7 @@
 ## Project Overview
 Python library for reading AIM XRK/XRZ motorsports telemetry files. Uses Cython for binary parsing (default) with a Rust+PyO3 parser (~2x faster). Both backends are included in all published wheels. Data is represented as PyArrow tables.
 
-**Important:** Always run commands through `uv run` to use the project's virtual environment, or use `just` recipes.
+**Important:** Always use `just` recipes when one exists for the task. Only fall back to `uv run` for one-off commands that have no `just` recipe (e.g., running a specific script).
 
 ## Quick Commands
 
@@ -89,7 +89,7 @@ Pyodide test scripts are in `scripts/run_pyodide_tests*.mjs`. They accept `--pyo
 
 ## Cython Rebuild
 
-After modifying `src/libxrk/aim_xrk.pyx`, you **must** run `uv sync` to recompile the Cython extension before running tests. Stale `.so` files will cause incorrect test results without any obvious error.
+After modifying `src/libxrk/aim_xrk.pyx`, you **must** run `uv sync --reinstall-package libxrk` to recompile the Cython extension before running tests. A plain `uv sync` may skip the rebuild if it thinks nothing changed. Stale `.so` files will cause incorrect test results without any obvious error.
 
 ## Rust Rebuild
 

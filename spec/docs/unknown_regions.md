@@ -28,14 +28,22 @@ regions have known purpose but unknown exact semantics:
 - **Status**: Correlates with hardware_id
 
 ### [13] `maybe_display_format` (uint8)
-- **Observed values**: 0, 1, 2
-- **Hypothesis**: Display formatting hint (decimal places? bar graph?)
-- **Status**: Not correlated with any visible behavior
+- **Observed values**: 0, 1, 6, 9, 11, 13, 14, 17, 18, 19, 26, 128, 130, 169
+- **Role**: Part of the channel function lookup key.
+  When combined with `unit_type_byte` [12], this pair determines the RS3
+  "Function" label (e.g., "Temperature", "Engine RPM", "Lateral Acceleration").
+  Value 0 is the default for generic CAN/ECU channels; non-zero values are
+  AIM-assigned function categories (IMU axes, shock pots, etc.).
+- **Status**: Partially decoded — used in `_function_map` / `resolve_function()`
+  lookup table alongside `unit_type_byte` and `maybe_config_flags`.
 
 ### [14:16] `maybe_config_flags` (uint16)
-- **Observed values**: Various bit patterns
-- **Hypothesis**: Channel configuration flags (encoding TBD)
-- **Status**: Not decoded
+- **Observed values**: Various bit patterns (0, 1, 4, 6, 128, 519, 1024, 1286, 4096)
+- **Role**: Acts as a tiebreaker for the channel function lookup in the single
+  ambiguous case `(display_format=0, unit_type_byte=0x11)`:
+  - `config_flags=0` → "Temperature"
+  - `config_flags=1` → "Device Temperature" (internal logger sensor)
+- **Status**: Partially decoded for function disambiguation
 
 ### [17:20] Padding (3 bytes)
 - **Observed**: Always `00 00 00`

@@ -731,6 +731,69 @@ class Test86XRK(unittest.TestCase):
             )
 
 
+    @parameterized.expand(FILE_VARIANTS)
+    def test_86_xrk_channel_function_metadata(self, name, file_path):
+        """Test that channels have correct function metadata."""
+        log = aim_xrk(str(file_path), progress=None)
+
+        # Format: (channel_name, expected_function)
+        # These values are verified against RS3 channel properties.
+        test_cases = [
+            ("ECT", "Temperature"),
+            ("CAT1", "Exhaust Temperature"),
+            ("AmbientTemp", "Temperature"),
+            ("OilTemp", "Oil Temperature"),
+            ("IntakeAirT", "Intake Air Temperature"),
+            ("LoggerTemp", "Device Temperature"),
+            ("TPMS_Temp_LF", "Temperature"),
+            ("FL_Ch1", "Temperature"),
+            ("LateralAcc", "Lateral Acceleration"),
+            ("InlineAcc", "Inline Acceleration"),
+            ("VerticalAcc", "Vertical Acceleration"),
+            ("YawRate", "Yaw Rate"),
+            ("PitchRate", "Pitch Rate"),
+            ("RollRate", "Roll Rate"),
+            ("RPM", "Engine RPM"),
+            ("Gear", "Gear"),
+            ("BrakePress", "Brake Circuit Pressure"),
+            ("WheelSpdFL", "Rear Wheel Speed"),
+            ("SteerAngle", "Steering Angle"),
+            ("Lambda", "Lambda"),
+            ("TPS", "Percent"),
+            ("External Voltage", "Battery Voltage"),
+            ("MAP", "Pressure"),
+            ("LF_Shock_Pot", "LF Shock Position"),
+            ("Baro", "Pressure"),
+            ("Luminosity", "Device Brightness"),
+            ("SpeedAverage", "Vehicle Speed"),
+            ("TPMS_Press_LF", "Pressure"),
+            ("PPS", "Percentage Throttle Load"),
+            ("ClutchSw", "Number"),
+            ("BrakeSw", "Number"),
+            ("CH", "Number"),
+            ("TPMS_Volt_LF", "Voltage"),
+            ("TPMS_ALM_LF", "Number"),
+            ("Predictive Time", ""),
+            # GPS-derived channels have empty function
+            ("GPS Speed", ""),
+            ("GPS Latitude", ""),
+            ("GPS Longitude", ""),
+            ("GPS Altitude", ""),
+        ]
+
+        for channel_name, expected_function in test_cases:
+            self.assertIn(channel_name, log.channels, f"Channel '{channel_name}' not found")
+            channel_table = log.channels[channel_name]
+            data_field = channel_table.schema.field(channel_name)
+            metadata = data_field.metadata or {}
+            function = metadata.get(b"function", b"").decode("utf-8")
+            self.assertEqual(
+                function,
+                expected_function,
+                f"Channel '{channel_name}' function: got {function!r}, expected {expected_function!r}",
+            )
+
+
 def _rust_backend_available() -> bool:
     """Check if the Rust backend extension is importable."""
     try:
@@ -837,11 +900,11 @@ class Test86CrossBackend(unittest.TestCase):
         self.assertEqual(rust_ends, cython_ends)
 
     def test_channel_metadata_match(self) -> None:
-        """Channel metadata (units, dec_pts, interpolate) should match between backends."""
+        """Channel metadata (units, dec_pts, interpolate, function) should match between backends."""
         for name in self.rust_log.channels:
             rust_meta = self.rust_log.channels[name].schema.field(name).metadata or {}
             cython_meta = self.cython_log.channels[name].schema.field(name).metadata or {}
-            for key in (b"units", b"dec_pts", b"interpolate"):
+            for key in (b"units", b"dec_pts", b"interpolate", b"function"):
                 self.assertEqual(
                     rust_meta.get(key),
                     cython_meta.get(key),

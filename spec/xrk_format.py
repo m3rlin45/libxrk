@@ -166,6 +166,72 @@ LOGGER_MODELS = {
     793: "MXm",
 }
 
+# Channel function lookup: (maybe_display_format, unit_type_byte) -> function string.
+# Derived from RS3 channel properties. See channel_function_observations.md.
+FUNCTION_MAP = {
+    (0, 0x01): "Percent",
+    (0, 0x03): "Acceleration",
+    (0, 0x04): "Angle",
+    (0, 0x05): "Angular Rate",
+    (0, 0x0B): "Number",
+    (0, 0x0C): "Distance",
+    (0, 0x0E): "Pressure",
+    (0, 0x0F): "Engine RPM",
+    (0, 0x10): "Rear Wheel Speed",
+    (0, 0x11): "Temperature",
+    (0, 0x12): "Time",
+    (0, 0x15): "Voltage",
+    (0, 0x91): "Exhaust Temperature",
+    (0, 0x9A): "Lap Time",
+    (1, 0x95): "Battery Voltage",
+    (2, 0x9A): "Total Odometer",
+    (3, 0x1A): "Reset Odometer",
+    (5, 0x1A): "Best Lap Time",
+    (5, 0x9A): "Rolling Lap Time",
+    (6, 0x06): "Gear",
+    (6, 0x1F): "Gear",
+    (9, 0x1E): "Lambda",
+    (11, 0x91): "Oil Temperature",
+    (13, 0x84): "Steering Angle",
+    (14, 0x81): "Percentage Throttle Load",
+    (16, 0x91): "Water Temperature",
+    (17, 0x03): "Inline Acceleration",
+    (17, 0x05): "Roll Rate",
+    (17, 0x83): "Lateral Acceleration",
+    (17, 0x85): "Pitch Rate",
+    (18, 0x03): "Vertical Acceleration",
+    (18, 0x05): "Yaw Rate",
+    (21, 0x12): "Master Clock",
+    (26, 0x21): "Device Brightness",
+    (27, 0x92): "Best Run Diff",
+    (28, 0x12): "Prev Lap Diff",
+    (28, 0x92): "Ref Lap Diff",
+    (35, 0x92): "Best Today Diff",
+    (128, 0x10): "Vehicle Speed",
+    (128, 0x91): "Intake Air Temperature",
+    (128, 0x9A): "Lap Time",
+    (129, 0x9A): "GPS Time",
+    (130, 0x0E): "Brake Circuit Pressure",
+    (144, 0x91): "Water Temperature",
+    (145, 0x03): "Inline Acceleration",
+    (145, 0x83): "Lateral Acceleration",
+    (146, 0x05): "Yaw Rate",
+    (169, 0x8C): "LF Shock Position",
+}
+
+# Override for ambiguous (display_format=0, unit_type=0x11) when config_flags disambiguates
+FUNCTION_MAP_OVERRIDE = {
+    (0, 0x11, 1): "Device Temperature",
+}
+
+
+def _resolve_function(display_format, unit_type_byte, config_flags):
+    """Resolve channel function from CHS fields."""
+    override = FUNCTION_MAP_OVERRIDE.get((display_format, unit_type_byte, config_flags))
+    if override is not None:
+        return override
+    return FUNCTION_MAP.get((display_format, unit_type_byte), "")
+
 
 def _nullterm(data, encoding="ascii"):
     """Decode a null-terminated string from bytes."""
@@ -231,6 +297,12 @@ CHSPayload = Struct(
     ),
     "dec_pts" / Computed(lambda ctx: UNIT_MAP.get(ctx.unit_type_byte & 127, ("", 0))[1]),
     "interpolate" / Computed(lambda ctx: DECODER_TABLE.get(ctx.decoder_type, ("", False))[1]),
+    "function"
+    / Computed(
+        lambda ctx: _resolve_function(
+            ctx.maybe_display_format, ctx.unit_type_byte, ctx.maybe_config_flags
+        )
+    ),
     "short_name_str" / Computed(lambda ctx: _nullterm(ctx.short_name)),
     "device_tag_str"
     / Computed(

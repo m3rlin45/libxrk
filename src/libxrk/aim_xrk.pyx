@@ -56,6 +56,7 @@ class Channel:
     dec_pts: int = 0
     interpolate: bool = False
     unknown: bytes = b""
+    function: str = ""
     source_type: int = 0
     source_channel_id: int = 0
     device_tag: str = ""
@@ -168,6 +169,81 @@ _unit_map = {
     33: ('%', 2),
     43: ('kg', 3),
 }
+
+# Channel function lookup: (maybe_display_format, unit_type_byte) -> function string.
+# Derived from RS3 channel properties. See channel_function_observations.md.
+# For display_format=0, the function is determined by unit_type_byte (most CAN channels).
+# For display_format>0, the function is an AIM-assigned classification.
+_function_map = {
+    # display_format=0: generic CAN/ECU channels, function determined by unit_type_byte
+    (0, 0x01): 'Percent',
+    (0, 0x03): 'Acceleration',
+    (0, 0x04): 'Angle',
+    (0, 0x05): 'Angular Rate',
+    (0, 0x0b): 'Number',
+    (0, 0x0c): 'Distance',
+    (0, 0x0e): 'Pressure',
+    (0, 0x0f): 'Engine RPM',
+    (0, 0x10): 'Rear Wheel Speed',
+    (0, 0x11): 'Temperature',           # default for (0, 0x11); see _function_map_override
+    (0, 0x12): 'Time',
+    (0, 0x15): 'Voltage',
+    (0, 0x91): 'Exhaust Temperature',
+    (0, 0x9a): 'Lap Time',
+    # display_format>0: AIM-assigned function categories
+    (1, 0x95): 'Battery Voltage',
+    (2, 0x9a): 'Total Odometer',
+    (3, 0x1a): 'Reset Odometer',
+    (5, 0x1a): 'Best Lap Time',
+    (5, 0x9a): 'Rolling Lap Time',
+    (6, 0x06): 'Gear',
+    (6, 0x1f): 'Gear',
+    (9, 0x1e): 'Lambda',
+    (11, 0x91): 'Oil Temperature',
+    (13, 0x84): 'Steering Angle',
+    (14, 0x81): 'Percentage Throttle Load',
+    (16, 0x91): 'Water Temperature',
+    (17, 0x03): 'Inline Acceleration',
+    (17, 0x05): 'Roll Rate',
+    (17, 0x83): 'Lateral Acceleration',
+    (17, 0x85): 'Pitch Rate',
+    (18, 0x03): 'Vertical Acceleration',
+    (18, 0x05): 'Yaw Rate',
+    (21, 0x12): 'Master Clock',
+    (26, 0x21): 'Device Brightness',
+    (27, 0x92): 'Best Run Diff',
+    (28, 0x12): 'Prev Lap Diff',
+    (28, 0x92): 'Ref Lap Diff',
+    (35, 0x92): 'Best Today Diff',
+    (128, 0x10): 'Vehicle Speed',
+    (128, 0x91): 'Intake Air Temperature',
+    (128, 0x9a): 'Lap Time',
+    (129, 0x9a): 'GPS Time',
+    (130, 0x0e): 'Brake Circuit Pressure',
+    (144, 0x91): 'Water Temperature',
+    (145, 0x03): 'Inline Acceleration',
+    (145, 0x83): 'Lateral Acceleration',
+    (146, 0x05): 'Yaw Rate',
+    (169, 0x8c): 'LF Shock Position',
+}
+
+# Override for (display_format=0, unit_type=0x11) when config_flags disambiguates:
+# config_flags=1 -> Device Temperature (internal logger sensor)
+_function_map_override = {
+    (0, 0x11, 1): 'Device Temperature',
+}
+
+def _resolve_function(display_format, unit_type_byte, config_flags):
+    """Resolve the channel function string from CHS fields.
+
+    Uses (display_format, unit_type_byte) as the primary lookup key,
+    with config_flags as a tiebreaker for ambiguous cases.
+    Returns empty string for unknown combinations.
+    """
+    override = _function_map_override.get((display_format, unit_type_byte, config_flags))
+    if override is not None:
+        return override
+    return _function_map.get((display_format, unit_type_byte), '')
 
 def _ndarray_from_mv(mv):
     mv = memoryview(mv) # force it
@@ -456,8 +532,8 @@ def _decode_sequence(s, progress=None):
                             # [6:8]    uint16 LE   source channel ID within device
                             # [8:12]   uint32 LE   hardware reference (GPS-only)
                             # [12]     uint8       unit type (lower 7 bits); high bit = calibrated flag
-                            # [13]     uint8       maybe_display_format (purpose unclear)
-                            # [14:16]  uint16 LE   maybe_config_flags (encoding unknown)
+                            # [13]     uint8       maybe_display_format (function lookup key; see _function_map)
+                            # [14:16]  uint16 LE   maybe_config_flags (function tiebreaker for byte 13=0)
                             # [16]     uint8       source type (1=internal, 5=GPS, 9=CAN, etc.)
                             # [17:20]  padding
                             # [20]     uint8       decoder type, used by _decoders
@@ -518,6 +594,11 @@ def _decode_sequence(s, progress=None):
                             (data.cal_value_1, data.cal_value_2,
                              data.display_range_min, data.display_range_max
                             ) = struct.unpack_from('<4f', dcopy, 96)
+                            data.function = _resolve_function(
+                                dcopy[13],  # maybe_display_format
+                                dcopy[12],  # unit_type_byte
+                                struct.unpack_from('<H', dcopy, 14)[0],  # maybe_config_flags
+                            )
 
                             dcopy[0:2] = [0] * 2 # reset index
                             dcopy[24:32] = [0] * 8 # short name
@@ -1129,6 +1210,7 @@ def _channel_to_table(ch):
         b'units': (ch.units if ch.size != 1 else '').encode('utf-8'),
         b'dec_pts': str(ch.dec_pts).encode('utf-8'),
         b'interpolate': str(ch.interpolate).encode('utf-8'),
+        b'function': ch.function.encode('utf-8'),
         b'source_type': str(ch.source_type).encode('utf-8'),
         b'source_channel_id': str(ch.source_channel_id).encode('utf-8'),
         b'device_tag': ch.device_tag.encode('utf-8'),
