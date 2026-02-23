@@ -1,12 +1,18 @@
 # libxrk task runner
 
-# Format code with Black
+# Format code (Python + Rust)
 format:
     uv run black .
+    cargo fmt
 
-# Check formatting with Black
+# Check formatting (Python + Rust)
 lint:
     uv run black --check .
+    cargo fmt --check
+
+# Rust clippy lints
+clippy:
+    cargo clippy --workspace --all-targets -- -W clippy::all
 
 # Type check with mypy
 typecheck:
@@ -20,15 +26,15 @@ test:
 spec-test:
     uv run pytest spec/tests/ -v -n auto
 
-# Run all checks (lint, typecheck, test, spec-test)
-check: lint typecheck test spec-test
+# Run all checks (lint, clippy, typecheck, test, spec-test)
+check: lint clippy typecheck test spec-test
 
 # Generate spec test vectors
 spec-vectors:
     uv run python spec/test_vectors/generate_vectors.py
 
 # Run benchmark
-benchmark:
+benchmark: rust-build
     uv run python scripts/benchmark.py
 
 # Interactive REPL with a loaded XRK file

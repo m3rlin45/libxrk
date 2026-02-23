@@ -1,0 +1,15 @@
+[package]
+name = "libxrk-python"
+version = "0.10.1"
+edition = "2021"
+publish = false
+
+[lib]
+name = "_aim_xrk_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+libxrk = { path = "../libxrk", features = ["arrow"] }
+pyo3 = { version = "0.26", features = ["extension-module"] }
+arrow = { workspace = true, features = ["pyarrow"] }
+ryu = "1"
