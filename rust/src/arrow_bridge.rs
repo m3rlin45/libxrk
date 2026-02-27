@@ -35,6 +35,7 @@ pub fn build_channel_table(
     metadata.insert("units".to_string(), units);
     metadata.insert("dec_pts".to_string(), chs.dec_pts().to_string());
     metadata.insert("interpolate".to_string(), if chs.interpolate() { "True" } else { "False" }.to_string());
+    metadata.insert("function".to_string(), chs.function().to_string());
     metadata.insert("source_type".to_string(), chs.source_type.to_string());
     metadata.insert("source_channel_id".to_string(), chs.source_channel_id.to_string());
     metadata.insert("device_tag".to_string(), chs.device_tag());
@@ -143,6 +144,7 @@ fn build_gps_channel(
         "interpolate".to_string(),
         if def.interpolate { "True" } else { "False" }.to_string(),
     );
+    metadata.insert("function".to_string(), "".to_string());
     metadata.insert("source_type".to_string(), "0".to_string());
     metadata.insert("source_channel_id".to_string(), "0".to_string());
     metadata.insert("device_tag".to_string(), "".to_string());
@@ -272,6 +274,7 @@ pub fn arrow_metadata_roundtrip_test(py: Python<'_>) -> PyResult<Py<PyAny>> {
     metadata.insert("units".to_string(), "rpm".to_string());
     metadata.insert("dec_pts".to_string(), "0".to_string());
     metadata.insert("interpolate".to_string(), "True".to_string());
+    metadata.insert("function".to_string(), "Engine RPM".to_string());
     metadata.insert("source_type".to_string(), "1".to_string());
     metadata.insert("source_channel_id".to_string(), "42".to_string());
     metadata.insert("device_tag".to_string(), "@AIM".to_string());

@@ -85,6 +85,15 @@ impl ChsPayload {
         }
     }
 
+    /// Resolve the channel function string from CHS fields.
+    pub fn function(&self) -> &'static str {
+        tables::resolve_function(
+            self.maybe_display_format,
+            self.unit_type_byte,
+            self.maybe_config_flags,
+        )
+    }
+
     /// M-message sample period in milliseconds (sample_period_us / 1000).
     pub fn mms(&self) -> u32 {
         self.sample_period_us / 1000

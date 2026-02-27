@@ -67,9 +67,12 @@ Channels have different sample rates. Use `get_channels_as_table()` to merge.
 ```python
 field = log.channels['Engine RPM'].schema.field('Engine RPM')
 units = field.metadata.get(b'units', b'').decode()  # e.g., "rpm"
+function = field.metadata.get(b'function', b'').decode()  # e.g., "Engine RPM"
 ```
 
-Keys: `b"units"`, `b"dec_pts"`, `b"interpolate"`, `b"source_type"`, `b"source_channel_id"`, `b"device_tag"`, `b"cal_value_1"`, `b"cal_value_2"`, `b"display_range_min"`, `b"display_range_max"`
+Keys: `b"units"`, `b"dec_pts"`, `b"interpolate"`, `b"function"`, `b"source_type"`, `b"source_channel_id"`, `b"device_tag"`, `b"cal_value_1"`, `b"cal_value_2"`, `b"display_range_min"`, `b"display_range_max"`
+
+The `b"function"` key contains the RS3 channel function classification (e.g., "Temperature", "Engine RPM", "Lateral Acceleration"). This is a best-effort lookup derived from `(maybe_display_format, unit_type_byte, config_flags)` in the CHS binary. Empty string for GPS-derived channels and unrecognized combinations.
 
 ## LogFile Methods
 

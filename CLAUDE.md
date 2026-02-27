@@ -3,7 +3,7 @@
 ## Project Overview
 Python library for reading AIM XRK/XRZ motorsports telemetry files. Uses Cython for binary parsing (default) with a Rust+PyO3 parser (~2x faster). Both backends are included in all published wheels. Data is represented as PyArrow tables.
 
-**Important:** Always run commands through `uv run` to use the project's virtual environment, or use `just` recipes.
+**Important:** Always use `just` recipes when one exists for the task. Only fall back to `uv run` for one-off commands that have no `just` recipe (e.g., running a specific script).
 
 ## Quick Commands
 
@@ -89,7 +89,7 @@ Pyodide test scripts are in `scripts/run_pyodide_tests*.mjs`. They accept `--pyo
 
 ## Cython Rebuild
 
-After modifying `src/libxrk/aim_xrk.pyx`, you **must** run `uv sync` to recompile the Cython extension before running tests. Stale `.so` files will cause incorrect test results without any obvious error.
+After modifying `src/libxrk/aim_xrk.pyx`, you **must** run `uv sync --reinstall-package libxrk` to recompile the Cython extension before running tests. A plain `uv sync` may skip the rebuild if it thinks nothing changed. Stale `.so` files will cause incorrect test results without any obvious error.
 
 ## Rust Rebuild
 
@@ -100,7 +100,7 @@ After modifying Rust source in `rust/`, run `just rust-build` (release) or `just
 - Each channel is a PyArrow table with `timecodes` + value columns
 - Different channels have different sample rates
 - `get_channels_as_table()` merges via full outer join with interpolation/forward-fill
-- Channel metadata stored in PyArrow field.metadata (bytes keys: `b"units"`, `b"dec_pts"`, `b"interpolate"`)
+- Channel metadata stored in PyArrow field.metadata (bytes keys: `b"units"`, `b"dec_pts"`, `b"interpolate"`, `b"function"`)
 - GPS timing fix auto-corrects 65533ms gaps (AIM firmware bug)
 - All filtering/resampling methods return new `LogFile` instances (immutable pattern)
 - `resample_to_timecodes()` is the core resampling logic, other methods delegate to it
@@ -113,6 +113,10 @@ After modifying Rust source in `rust/`, run `just rust-build` (release) or `just
 - `resample_to_timecodes(timecodes, channels?)` - Resample all channels to target timebase
 - `resample_to_channel(ref_channel, channels?)` - Resample to reference channel's timebase
 - `get_channels_as_table()` - Merge all channels into single table
+
+## Source Control
+
+This repo uses Sapling (`sl`). **Never use `GIT_DIR=.sl/store/git` or any `git` commands.** Use `sl` commands for all source control operations and `gh --repo m3rlin45/libxrk` for GitHub CLI commands.
 
 ## Documentation Requirements
 
