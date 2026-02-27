@@ -88,3 +88,66 @@ pub fn logger_model_name(model_id: u16) -> Option<&'static str> {
         _ => None,
     }
 }
+
+/// Resolve the channel function string from CHS fields.
+///
+/// Uses `(maybe_display_format, unit_type_byte)` as the primary lookup key,
+/// with `config_flags` as a tiebreaker for ambiguous cases.
+/// Returns empty string for unknown combinations.
+///
+/// Derived from RS3 channel properties. See `channel_function_observations.md`.
+pub fn resolve_function(display_format: u8, unit_type_byte: u8, config_flags: u16) -> &'static str {
+    // Override: (0, 0x11, config_flags=1) -> "Device Temperature"
+    if display_format == 0 && unit_type_byte == 0x11 && config_flags == 1 {
+        return "Device Temperature";
+    }
+
+    match (display_format, unit_type_byte) {
+        // display_format=0: generic CAN/ECU channels, function by unit_type_byte
+        (0, 0x01) => "Percent",
+        (0, 0x03) => "Acceleration",
+        (0, 0x04) => "Angle",
+        (0, 0x05) => "Angular Rate",
+        (0, 0x0b) => "Number",
+        (0, 0x0c) => "Distance",
+        (0, 0x0e) => "Pressure",
+        (0, 0x0f) => "Engine RPM",
+        (0, 0x10) => "Rear Wheel Speed",
+        (0, 0x11) => "Temperature",
+        (0, 0x12) => "Time",
+        (0, 0x15) => "Voltage",
+        (0, 0x91) => "Exhaust Temperature",
+        (0, 0x9a) => "Lap Time",
+        // display_format>0: AIM-assigned function categories
+        (1, 0x95) => "Battery Voltage",
+        (2, 0x9a) => "Total Odometer",
+        (3, 0x1a) => "Reset Odometer",
+        (5, 0x1a) => "Best Lap Time",
+        (5, 0x9a) => "Rolling Lap Time",
+        (6, 0x06) | (6, 0x1f) => "Gear",
+        (9, 0x1e) => "Lambda",
+        (11, 0x91) => "Oil Temperature",
+        (13, 0x84) => "Steering Angle",
+        (14, 0x81) => "Percentage Throttle Load",
+        (16, 0x91) | (144, 0x91) => "Water Temperature",
+        (17, 0x03) | (145, 0x03) => "Inline Acceleration",
+        (17, 0x05) => "Roll Rate",
+        (17, 0x83) | (145, 0x83) => "Lateral Acceleration",
+        (17, 0x85) => "Pitch Rate",
+        (18, 0x03) => "Vertical Acceleration",
+        (18, 0x05) | (146, 0x05) => "Yaw Rate",
+        (21, 0x12) => "Master Clock",
+        (26, 0x21) => "Device Brightness",
+        (27, 0x92) => "Best Run Diff",
+        (28, 0x12) => "Prev Lap Diff",
+        (28, 0x92) => "Ref Lap Diff",
+        (35, 0x92) => "Best Today Diff",
+        (128, 0x10) => "Vehicle Speed",
+        (128, 0x91) => "Intake Air Temperature",
+        (128, 0x9a) => "Lap Time",
+        (129, 0x9a) => "GPS Time",
+        (130, 0x0e) => "Brake Circuit Pressure",
+        (169, 0x8c) => "LF Shock Position",
+        _ => "",
+    }
+}
