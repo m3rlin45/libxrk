@@ -65,10 +65,7 @@ pub fn lla2ecef(lat_deg: f64, lon_deg: f64, alt: f64) -> (f64, f64, f64) {
 ///
 /// Input velocities in any consistent unit (e.g., cm/s).
 /// Returns (V_east, V_north) in the same unit.
-pub fn ecef_velocity_to_enu(
-    dx: f64, dy: f64, dz: f64,
-    lat_rad: f64, lon_rad: f64,
-) -> (f64, f64) {
+pub fn ecef_velocity_to_enu(dx: f64, dy: f64, dz: f64, lat_rad: f64, lon_rad: f64) -> (f64, f64) {
     let sin_lat = lat_rad.sin();
     let cos_lat = lat_rad.cos();
     let sin_lon = lon_rad.sin();
@@ -94,11 +91,7 @@ fn dot3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
 ///   marker: (lat, lon) of start/finish in degrees
 ///
 /// Returns: List of lap crossing times (ms, as f64 for sub-sample precision)
-pub fn find_laps(
-    xyz: &[[f64; 3]],
-    timecodes: &[i64],
-    marker: (f64, f64),
-) -> Vec<f64> {
+pub fn find_laps(xyz: &[[f64; 3]], timecodes: &[i64], marker: (f64, f64)) -> Vec<f64> {
     let n = xyz.len();
     if n < 2 {
         return Vec::new();
@@ -117,13 +110,7 @@ pub fn find_laps(
 
     // O[i] = XYZ[i] - SO, D[i] = XYZ[i+1] - XYZ[i]
     let o: Vec<[f64; 3]> = (0..n_seg)
-        .map(|i| {
-            [
-                xyz[i][0] - so[0],
-                xyz[i][1] - so[1],
-                xyz[i][2] - so[2],
-            ]
-        })
+        .map(|i| [xyz[i][0] - so[0], xyz[i][1] - so[1], xyz[i][2] - so[2]])
         .collect();
 
     let d: Vec<[f64; 3]> = (0..n_seg)
@@ -208,8 +195,8 @@ pub fn find_laps(
 
     // Build lap markers
     let mut lap_markers: Vec<f64> = vec![0.0];
-    for i in 0..pick.len() {
-        if !pick[i] {
+    for (i, &picked) in pick.iter().enumerate() {
+        if !picked {
             continue;
         }
         let mut idx = i + 1; // np.nonzero(pick)[0] + 1

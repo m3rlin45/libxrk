@@ -67,13 +67,17 @@ pub fn detect_gps_timing_offset_from_gnfi(
 
     // For direct gaps (60000-70000ms), use gap_size - expected_dt as correction
     // For hidden bugs (detected via GNFI), use OVERFLOW_BUG_MS as correction
-    let correction = if (OVERFLOW_BUG_MS - tolerance..=OVERFLOW_BUG_MS + tolerance).contains(&gap_size) {
-        gap_size - expected_dt_ms as i64
-    } else {
-        OVERFLOW_BUG_MS
-    };
+    let correction =
+        if (OVERFLOW_BUG_MS - tolerance..=OVERFLOW_BUG_MS + tolerance).contains(&gap_size) {
+            gap_size - expected_dt_ms as i64
+        } else {
+            OVERFLOW_BUG_MS
+        };
 
-    vec![GapCorrection { gap_time, correction }]
+    vec![GapCorrection {
+        gap_time,
+        correction,
+    }]
 }
 
 /// Detect and compute GPS timing gap corrections.
@@ -108,11 +112,8 @@ pub fn detect_gap_corrections(
 
     // Method 1: GNFI-based detection (most reliable)
     if !gnfi_timecodes.is_empty() {
-        let corrections = detect_gps_timing_offset_from_gnfi(
-            gps_timecodes,
-            gnfi_timecodes,
-            expected_dt_ms,
-        );
+        let corrections =
+            detect_gps_timing_offset_from_gnfi(gps_timecodes, gnfi_timecodes, expected_dt_ms);
         if !corrections.is_empty() {
             return corrections;
         }
@@ -126,7 +127,10 @@ pub fn detect_gap_corrections(
 
         if (OVERFLOW_GAP_MIN..=OVERFLOW_GAP_MAX).contains(&gap_size) {
             let correction = gap_size - expected_dt_ms as i64;
-            corrections.push(GapCorrection { gap_time, correction });
+            corrections.push(GapCorrection {
+                gap_time,
+                correction,
+            });
         }
     }
     if !corrections.is_empty() {
@@ -184,8 +188,8 @@ mod tests {
     fn test_direct_detection_65533ms_gap() {
         let mut gps_tc: Vec<i64> = (0..50).map(|i| i * 40).collect();
         // Insert a 65533ms gap
-        for i in 25..50 {
-            gps_tc[i] += 65533;
+        for tc in &mut gps_tc[25..50] {
+            *tc += 65533;
         }
         let corrections = detect_gap_corrections(&gps_tc, &[], None, 40.0);
         assert_eq!(corrections.len(), 1);
@@ -203,8 +207,8 @@ mod tests {
 
         // Add a 5-second gap at sample 50 (too small to be detected directly)
         // but also shift all subsequent samples by 65533ms total
-        for i in 50..100 {
-            gps_tc[i] += 65533;
+        for tc in &mut gps_tc[50..100] {
+            *tc += 65533;
         }
 
         let corrections = detect_gps_timing_offset_from_gnfi(&gps_tc, &gnfi_tc, 40.0);

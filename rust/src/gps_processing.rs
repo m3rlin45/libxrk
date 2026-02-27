@@ -37,18 +37,90 @@ pub struct GpsChannelDef {
 
 /// All 12 GPS channel definitions in order.
 pub const GPS_CHANNEL_DEFS: &[GpsChannelDef] = &[
-    GpsChannelDef { name: "GPS Speed", units: "m/s", dec_pts: 1, interpolate: true, is_f64: true },
-    GpsChannelDef { name: "GPS Latitude", units: "deg", dec_pts: 4, interpolate: true, is_f64: true },
-    GpsChannelDef { name: "GPS Longitude", units: "deg", dec_pts: 4, interpolate: true, is_f64: true },
-    GpsChannelDef { name: "GPS Altitude", units: "m", dec_pts: 1, interpolate: true, is_f64: true },
-    GpsChannelDef { name: "GPS_Satellites", units: "", dec_pts: 0, interpolate: false, is_f64: false },
-    GpsChannelDef { name: "GPS_Fix", units: "", dec_pts: 0, interpolate: false, is_f64: false },
-    GpsChannelDef { name: "GPS_pDOP", units: "", dec_pts: 2, interpolate: false, is_f64: false },
-    GpsChannelDef { name: "GPS_Position_Accuracy", units: "m", dec_pts: 2, interpolate: true, is_f64: false },
-    GpsChannelDef { name: "GPS_Velocity_Accuracy", units: "m/s", dec_pts: 2, interpolate: true, is_f64: false },
-    GpsChannelDef { name: "GPS_InlineAcc", units: "g", dec_pts: 2, interpolate: true, is_f64: false },
-    GpsChannelDef { name: "GPS_LateralAcc", units: "g", dec_pts: 2, interpolate: true, is_f64: false },
-    GpsChannelDef { name: "GPS_Yaw_Rate", units: "deg/s", dec_pts: 1, interpolate: true, is_f64: false },
+    GpsChannelDef {
+        name: "GPS Speed",
+        units: "m/s",
+        dec_pts: 1,
+        interpolate: true,
+        is_f64: true,
+    },
+    GpsChannelDef {
+        name: "GPS Latitude",
+        units: "deg",
+        dec_pts: 4,
+        interpolate: true,
+        is_f64: true,
+    },
+    GpsChannelDef {
+        name: "GPS Longitude",
+        units: "deg",
+        dec_pts: 4,
+        interpolate: true,
+        is_f64: true,
+    },
+    GpsChannelDef {
+        name: "GPS Altitude",
+        units: "m",
+        dec_pts: 1,
+        interpolate: true,
+        is_f64: true,
+    },
+    GpsChannelDef {
+        name: "GPS_Satellites",
+        units: "",
+        dec_pts: 0,
+        interpolate: false,
+        is_f64: false,
+    },
+    GpsChannelDef {
+        name: "GPS_Fix",
+        units: "",
+        dec_pts: 0,
+        interpolate: false,
+        is_f64: false,
+    },
+    GpsChannelDef {
+        name: "GPS_pDOP",
+        units: "",
+        dec_pts: 2,
+        interpolate: false,
+        is_f64: false,
+    },
+    GpsChannelDef {
+        name: "GPS_Position_Accuracy",
+        units: "m",
+        dec_pts: 2,
+        interpolate: true,
+        is_f64: false,
+    },
+    GpsChannelDef {
+        name: "GPS_Velocity_Accuracy",
+        units: "m/s",
+        dec_pts: 2,
+        interpolate: true,
+        is_f64: false,
+    },
+    GpsChannelDef {
+        name: "GPS_InlineAcc",
+        units: "g",
+        dec_pts: 2,
+        interpolate: true,
+        is_f64: false,
+    },
+    GpsChannelDef {
+        name: "GPS_LateralAcc",
+        units: "g",
+        dec_pts: 2,
+        interpolate: true,
+        is_f64: false,
+    },
+    GpsChannelDef {
+        name: "GPS_Yaw_Rate",
+        units: "deg/s",
+        dec_pts: 1,
+        interpolate: true,
+        is_f64: false,
+    },
 ];
 
 /// Decode GPS NAV-SOL messages into 12 GPS channels.
@@ -60,7 +132,7 @@ pub fn decode_gps(gps_data: &[u8], time_offset: i64) -> Option<GpsDecodeResult> 
     if gps_data.is_empty() {
         return None;
     }
-    if gps_data.len() % 56 != 0 {
+    if !gps_data.len().is_multiple_of(56) {
         return None;
     }
 
@@ -279,13 +351,13 @@ fn fix_timecodes(timecodes: &mut [i32]) {
     // Step 2: fix wrap-arounds (track previous unmodified value)
     let mut prev_masked = timecodes[0];
     let mut cum: i32 = 0;
-    for i in 1..timecodes.len() {
-        let current_masked = timecodes[i];
+    for tc in timecodes.iter_mut().skip(1) {
+        let current_masked = *tc;
         if current_masked < prev_masked {
             cum += 65536;
         }
         prev_masked = current_masked;
-        timecodes[i] += cum;
+        *tc += cum;
     }
 }
 

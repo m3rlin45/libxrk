@@ -133,7 +133,8 @@ pub fn extract_metadata(py: Python<'_>, result: &ParseResult) -> PyResult<Py<PyA
 
         // Enrich with hardware IDs from iSLV messages (positional match)
         if let Some(islv_msgs) = msgs.get(&tokens::islv()) {
-            let slave_idns: Vec<_> = islv_msgs.iter()
+            let slave_idns: Vec<_> = islv_msgs
+                .iter()
                 .filter_map(|m| {
                     let payload = messages::dispatch_payload(m);
                     if let Payload::EmbeddedIdn(idn) = payload {
@@ -162,10 +163,8 @@ pub fn extract_metadata(py: Python<'_>, result: &ParseResult) -> PyResult<Py<PyA
     if let Some(msg_list) = msgs.get(&tokens::racm()) {
         for msg in msg_list {
             let payload = messages::dispatch_payload(msg);
-            if let Payload::Racm(racm) = payload {
-                if let crate::payloads::racm::RacmPayload::Mode(mode) = racm {
-                    dict.set_item("Race Mode", &mode)?;
-                }
+            if let Payload::Racm(crate::payloads::racm::RacmPayload::Mode(mode)) = payload {
+                dict.set_item("Race Mode", &mode)?;
             }
         }
     }
