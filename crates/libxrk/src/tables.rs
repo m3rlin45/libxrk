@@ -164,15 +164,6 @@ pub fn decoder_info(decoder_type: u8) -> Option<DecoderInfo> {
     }
 }
 
-/// Logger model ID to name mapping.
-pub fn logger_model_name(model_id: u16) -> Option<&'static str> {
-    match model_id {
-        649 => Some("MXP 1.3"),
-        793 => Some("MXm"),
-        _ => None,
-    }
-}
-
 /// Resolve the channel function string from CHS fields.
 ///
 /// Uses `(maybe_display_format, unit_type_byte)` as the primary lookup key,
@@ -233,5 +224,14 @@ pub fn resolve_function(display_format: u8, unit_type_byte: u8, config_flags: u1
         (130, 0x0e) => "Brake Circuit Pressure",
         (169, 0x8c) => "LF Shock Position",
         _ => "",
+    }
+}
+
+/// Logger model ID to name mapping.
+pub fn logger_model_name(model_id: u16) -> Option<&'static str> {
+    match model_id {
+        649 => Some("MXP 1.3"),
+        793 => Some("MXm"),
+        _ => None,
     }
 }
