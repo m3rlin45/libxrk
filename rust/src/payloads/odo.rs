@@ -10,8 +10,8 @@ use crate::messages::nullterm_string;
 #[derive(Debug, Clone)]
 pub struct OdoRecord {
     pub name: String,
-    pub time: u32,  // seconds
-    pub dist: u32,  // meters
+    pub time: u32, // seconds
+    pub dist: u32, // meters
 }
 
 /// ODO payload — collection of odometer records.
@@ -30,10 +30,16 @@ impl OdoPayload {
             // Skip Fuel records (matches Python behavior)
             if !name.starts_with("Fuel") {
                 let time = u32::from_le_bytes([
-                    data[offset + 16], data[offset + 17], data[offset + 18], data[offset + 19],
+                    data[offset + 16],
+                    data[offset + 17],
+                    data[offset + 18],
+                    data[offset + 19],
                 ]);
                 let dist = u32::from_le_bytes([
-                    data[offset + 20], data[offset + 21], data[offset + 22], data[offset + 23],
+                    data[offset + 20],
+                    data[offset + 21],
+                    data[offset + 22],
+                    data[offset + 23],
                 ]);
                 records.insert(name.clone(), OdoRecord { name, time, dist });
             }

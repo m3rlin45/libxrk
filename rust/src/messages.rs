@@ -174,46 +174,122 @@ pub enum Payload {
 pub mod tokens {
     use super::tokdec;
 
-    pub fn gps() -> u32 { tokdec("GPS") }
-    pub fn gps1() -> u32 { tokdec("GPS1") }
-    pub fn gnfi() -> u32 { tokdec("GNFI") }
-    pub fn chs() -> u32 { tokdec("CHS") }
-    pub fn grp() -> u32 { tokdec("GRP") }
-    pub fn lap() -> u32 { tokdec("LAP") }
-    pub fn idn() -> u32 { tokdec("idn") }
-    pub fn trk() -> u32 { tokdec("TRK") }
-    pub fn gpsr() -> u32 { tokdec("GPSR") }
-    pub fn cal() -> u32 { tokdec("CAL") }
-    pub fn odo() -> u32 { tokdec("ODO") }
-    pub fn cnf() -> u32 { tokdec("CNF") }
-    pub fn enf() -> u32 { tokdec("ENF") }
-    pub fn islv() -> u32 { tokdec("iSLV") }
-    pub fn src() -> u32 { tokdec("SRC") }
-    pub fn racm() -> u32 { tokdec("RACM") }
-    pub fn vet() -> u32 { tokdec("VET") }
-    pub fn cde() -> u32 { tokdec("CDE") }
+    pub fn gps() -> u32 {
+        tokdec("GPS")
+    }
+    pub fn gps1() -> u32 {
+        tokdec("GPS1")
+    }
+    pub fn gnfi() -> u32 {
+        tokdec("GNFI")
+    }
+    pub fn chs() -> u32 {
+        tokdec("CHS")
+    }
+    pub fn grp() -> u32 {
+        tokdec("GRP")
+    }
+    pub fn lap() -> u32 {
+        tokdec("LAP")
+    }
+    pub fn idn() -> u32 {
+        tokdec("idn")
+    }
+    pub fn trk() -> u32 {
+        tokdec("TRK")
+    }
+    pub fn gpsr() -> u32 {
+        tokdec("GPSR")
+    }
+    pub fn cal() -> u32 {
+        tokdec("CAL")
+    }
+    pub fn odo() -> u32 {
+        tokdec("ODO")
+    }
+    pub fn cnf() -> u32 {
+        tokdec("CNF")
+    }
+    pub fn enf() -> u32 {
+        tokdec("ENF")
+    }
+    pub fn islv() -> u32 {
+        tokdec("iSLV")
+    }
+    pub fn src() -> u32 {
+        tokdec("SRC")
+    }
+    pub fn racm() -> u32 {
+        tokdec("RACM")
+    }
+    pub fn vet() -> u32 {
+        tokdec("VET")
+    }
+    pub fn cde() -> u32 {
+        tokdec("CDE")
+    }
 
     // String message tokens
-    pub fn rcr() -> u32 { tokdec("RCR") }
-    pub fn veh() -> u32 { tokdec("VEH") }
-    pub fn cmp() -> u32 { tokdec("CMP") }
-    pub fn vty() -> u32 { tokdec("VTY") }
-    pub fn ndv() -> u32 { tokdec("NDV") }
-    pub fn tmd() -> u32 { tokdec("TMD") }
-    pub fn tmt() -> u32 { tokdec("TMT") }
-    pub fn dbun() -> u32 { tokdec("DBUN") }
-    pub fn dbut() -> u32 { tokdec("DBUT") }
-    pub fn dver() -> u32 { tokdec("DVER") }
-    pub fn manl() -> u32 { tokdec("MANL") }
-    pub fn modl() -> u32 { tokdec("MODL") }
-    pub fn mani() -> u32 { tokdec("MANI") }
-    pub fn modi() -> u32 { tokdec("MODI") }
-    pub fn hwnf() -> u32 { tokdec("HWNF") }
-    pub fn pdlt() -> u32 { tokdec("PDLT") }
-    pub fn nte() -> u32 { tokdec("NTE") }
-    pub fn plm() -> u32 { tokdec("+LM") }
-    pub fn man() -> u32 { tokdec("MAN") }
-    pub fn mod_() -> u32 { tokdec("MOD") }
+    pub fn rcr() -> u32 {
+        tokdec("RCR")
+    }
+    pub fn veh() -> u32 {
+        tokdec("VEH")
+    }
+    pub fn cmp() -> u32 {
+        tokdec("CMP")
+    }
+    pub fn vty() -> u32 {
+        tokdec("VTY")
+    }
+    pub fn ndv() -> u32 {
+        tokdec("NDV")
+    }
+    pub fn tmd() -> u32 {
+        tokdec("TMD")
+    }
+    pub fn tmt() -> u32 {
+        tokdec("TMT")
+    }
+    pub fn dbun() -> u32 {
+        tokdec("DBUN")
+    }
+    pub fn dbut() -> u32 {
+        tokdec("DBUT")
+    }
+    pub fn dver() -> u32 {
+        tokdec("DVER")
+    }
+    pub fn manl() -> u32 {
+        tokdec("MANL")
+    }
+    pub fn modl() -> u32 {
+        tokdec("MODL")
+    }
+    pub fn mani() -> u32 {
+        tokdec("MANI")
+    }
+    pub fn modi() -> u32 {
+        tokdec("MODI")
+    }
+    pub fn hwnf() -> u32 {
+        tokdec("HWNF")
+    }
+    pub fn pdlt() -> u32 {
+        tokdec("PDLT")
+    }
+    pub fn nte() -> u32 {
+        tokdec("NTE")
+    }
+    pub fn plm() -> u32 {
+        tokdec("+LM")
+    }
+    pub fn man() -> u32 {
+        tokdec("MAN")
+    }
+    pub fn mod_() -> u32 {
+        tokdec("MOD")
+    }
 }
 
 /// Check if a token is a string message type.
@@ -361,7 +437,9 @@ mod tests {
 
     #[test]
     fn test_tokdec_tokenc_roundtrip() {
-        for s in ["GPS", "CHS", "GRP", "LAP", "idn", "GNFI", "CNF", "ENF", "TRK"] {
+        for s in [
+            "GPS", "CHS", "GRP", "LAP", "idn", "GNFI", "CNF", "ENF", "TRK",
+        ] {
             let encoded = tokdec(s);
             let decoded = tokenc(encoded);
             assert_eq!(s, decoded, "roundtrip failed for {s}");

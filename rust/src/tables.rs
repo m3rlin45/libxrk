@@ -55,27 +55,111 @@ pub struct DecoderInfo {
 
 pub fn decoder_info(decoder_type: u8) -> Option<DecoderInfo> {
     match decoder_type {
-        0 => Some(DecoderInfo { format: 'i', interpolate: false, byte_size: 4 }),
-        1 => Some(DecoderInfo { format: 'H', interpolate: true, byte_size: 2 }),
-        3 => Some(DecoderInfo { format: 'i', interpolate: false, byte_size: 4 }),
-        4 => Some(DecoderInfo { format: 'h', interpolate: false, byte_size: 2 }),
-        6 => Some(DecoderInfo { format: 'f', interpolate: true, byte_size: 4 }),
-        8 => Some(DecoderInfo { format: 'i', interpolate: false, byte_size: 4 }),
-        11 => Some(DecoderInfo { format: 'h', interpolate: false, byte_size: 2 }),
-        12 => Some(DecoderInfo { format: 'i', interpolate: false, byte_size: 4 }),
-        13 => Some(DecoderInfo { format: 'B', interpolate: false, byte_size: 1 }),
-        15 => Some(DecoderInfo { format: 'H', interpolate: false, byte_size: 2 }),
-        20 => Some(DecoderInfo { format: 'H', interpolate: true, byte_size: 2 }),
-        22 => Some(DecoderInfo { format: 'i', interpolate: false, byte_size: 4 }),
-        24 => Some(DecoderInfo { format: 'i', interpolate: false, byte_size: 4 }),
-        26 => Some(DecoderInfo { format: 'i', interpolate: false, byte_size: 4 }),
-        27 => Some(DecoderInfo { format: 'i', interpolate: false, byte_size: 4 }),
-        31 => Some(DecoderInfo { format: 'i', interpolate: false, byte_size: 4 }),
-        32 => Some(DecoderInfo { format: 'i', interpolate: false, byte_size: 4 }),
-        33 => Some(DecoderInfo { format: 'i', interpolate: false, byte_size: 4 }),
-        37 => Some(DecoderInfo { format: 'i', interpolate: false, byte_size: 4 }),
-        38 => Some(DecoderInfo { format: 'i', interpolate: false, byte_size: 4 }),
-        39 => Some(DecoderInfo { format: 'i', interpolate: false, byte_size: 4 }),
+        0 => Some(DecoderInfo {
+            format: 'i',
+            interpolate: false,
+            byte_size: 4,
+        }),
+        1 => Some(DecoderInfo {
+            format: 'H',
+            interpolate: true,
+            byte_size: 2,
+        }),
+        3 => Some(DecoderInfo {
+            format: 'i',
+            interpolate: false,
+            byte_size: 4,
+        }),
+        4 => Some(DecoderInfo {
+            format: 'h',
+            interpolate: false,
+            byte_size: 2,
+        }),
+        6 => Some(DecoderInfo {
+            format: 'f',
+            interpolate: true,
+            byte_size: 4,
+        }),
+        8 => Some(DecoderInfo {
+            format: 'i',
+            interpolate: false,
+            byte_size: 4,
+        }),
+        11 => Some(DecoderInfo {
+            format: 'h',
+            interpolate: false,
+            byte_size: 2,
+        }),
+        12 => Some(DecoderInfo {
+            format: 'i',
+            interpolate: false,
+            byte_size: 4,
+        }),
+        13 => Some(DecoderInfo {
+            format: 'B',
+            interpolate: false,
+            byte_size: 1,
+        }),
+        15 => Some(DecoderInfo {
+            format: 'H',
+            interpolate: false,
+            byte_size: 2,
+        }),
+        20 => Some(DecoderInfo {
+            format: 'H',
+            interpolate: true,
+            byte_size: 2,
+        }),
+        22 => Some(DecoderInfo {
+            format: 'i',
+            interpolate: false,
+            byte_size: 4,
+        }),
+        24 => Some(DecoderInfo {
+            format: 'i',
+            interpolate: false,
+            byte_size: 4,
+        }),
+        26 => Some(DecoderInfo {
+            format: 'i',
+            interpolate: false,
+            byte_size: 4,
+        }),
+        27 => Some(DecoderInfo {
+            format: 'i',
+            interpolate: false,
+            byte_size: 4,
+        }),
+        31 => Some(DecoderInfo {
+            format: 'i',
+            interpolate: false,
+            byte_size: 4,
+        }),
+        32 => Some(DecoderInfo {
+            format: 'i',
+            interpolate: false,
+            byte_size: 4,
+        }),
+        33 => Some(DecoderInfo {
+            format: 'i',
+            interpolate: false,
+            byte_size: 4,
+        }),
+        37 => Some(DecoderInfo {
+            format: 'i',
+            interpolate: false,
+            byte_size: 4,
+        }),
+        38 => Some(DecoderInfo {
+            format: 'i',
+            interpolate: false,
+            byte_size: 4,
+        }),
+        39 => Some(DecoderInfo {
+            format: 'i',
+            interpolate: false,
+            byte_size: 4,
+        }),
         _ => None,
     }
 }

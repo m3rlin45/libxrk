@@ -5,7 +5,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow::array::{Array, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, RecordBatch, UInt8Array, UInt16Array, UInt32Array};
+use arrow::array::{
+    Array, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, RecordBatch,
+    UInt16Array, UInt32Array, UInt8Array,
+};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::pyarrow::ToPyArrow;
 use pyo3::prelude::*;
@@ -34,25 +37,37 @@ pub fn build_channel_table(
     let mut metadata = HashMap::new();
     metadata.insert("units".to_string(), units);
     metadata.insert("dec_pts".to_string(), chs.dec_pts().to_string());
-    metadata.insert("interpolate".to_string(), if chs.interpolate() { "True" } else { "False" }.to_string());
+    metadata.insert(
+        "interpolate".to_string(),
+        if chs.interpolate() { "True" } else { "False" }.to_string(),
+    );
     metadata.insert("function".to_string(), chs.function().to_string());
     metadata.insert("source_type".to_string(), chs.source_type.to_string());
-    metadata.insert("source_channel_id".to_string(), chs.source_channel_id.to_string());
+    metadata.insert(
+        "source_channel_id".to_string(),
+        chs.source_channel_id.to_string(),
+    );
     metadata.insert("device_tag".to_string(), chs.device_tag());
     metadata.insert("cal_value_1".to_string(), format_float(chs.cal_value_1));
     metadata.insert("cal_value_2".to_string(), format_float(chs.cal_value_2));
-    metadata.insert("display_range_min".to_string(), format_float(chs.display_range_min));
-    metadata.insert("display_range_max".to_string(), format_float(chs.display_range_max));
+    metadata.insert(
+        "display_range_min".to_string(),
+        format_float(chs.display_range_min),
+    );
+    metadata.insert(
+        "display_range_max".to_string(),
+        format_float(chs.display_range_max),
+    );
 
     // Build typed Arrow array matching the native decoder type (parity with Cython)
     let timecodes = Int64Array::from(ch_data.timecodes);
 
     let (values_col, data_type): (Arc<dyn Array>, DataType) = match ch_data.values {
-        ChannelValues::UInt8(v)   => (Arc::new(UInt8Array::from(v)),   DataType::UInt8),
-        ChannelValues::UInt16(v)  => (Arc::new(UInt16Array::from(v)),  DataType::UInt16),
-        ChannelValues::Int16(v)   => (Arc::new(Int16Array::from(v)),   DataType::Int16),
-        ChannelValues::Int32(v)   => (Arc::new(Int32Array::from(v)),   DataType::Int32),
-        ChannelValues::UInt32(v)  => (Arc::new(UInt32Array::from(v)),  DataType::UInt32),
+        ChannelValues::UInt8(v) => (Arc::new(UInt8Array::from(v)), DataType::UInt8),
+        ChannelValues::UInt16(v) => (Arc::new(UInt16Array::from(v)), DataType::UInt16),
+        ChannelValues::Int16(v) => (Arc::new(Int16Array::from(v)), DataType::Int16),
+        ChannelValues::Int32(v) => (Arc::new(Int32Array::from(v)), DataType::Int32),
+        ChannelValues::UInt32(v) => (Arc::new(UInt32Array::from(v)), DataType::UInt32),
         ChannelValues::Float32(v) => (Arc::new(Float32Array::from(v)), DataType::Float32),
         ChannelValues::Float64(v) => (Arc::new(Float64Array::from(v)), DataType::Float64),
     };
@@ -62,10 +77,8 @@ pub fn build_channel_table(
         Field::new(name, data_type, false).with_metadata(metadata),
     ]);
 
-    let batch = RecordBatch::try_new(
-        Arc::new(schema),
-        vec![Arc::new(timecodes), values_col],
-    ).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(timecodes), values_col])
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
     // Convert to PyArrow via C Data Interface (zero-copy)
     batch
@@ -77,10 +90,7 @@ pub fn build_channel_table(
 /// Build a PyArrow table for laps.
 ///
 /// Returns a RecordBatch with columns: num (Int32), start_time (Int64), end_time (Int64).
-pub fn build_laps_table(
-    py: Python<'_>,
-    laps: &[ProcessedLap],
-) -> PyResult<Py<PyAny>> {
+pub fn build_laps_table(py: Python<'_>, laps: &[ProcessedLap]) -> PyResult<Py<PyAny>> {
     let nums: Vec<i32> = laps.iter().map(|l| l.num).collect();
     let starts: Vec<i64> = laps.iter().map(|l| l.start_time).collect();
     let ends: Vec<i64> = laps.iter().map(|l| l.end_time).collect();
@@ -98,7 +108,8 @@ pub fn build_laps_table(
             Arc::new(Int64Array::from(starts)),
             Arc::new(Int64Array::from(ends)),
         ],
-    ).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    )
+    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
     batch
         .to_pyarrow(py)
@@ -215,7 +226,8 @@ pub fn build_gps_channel_tables(
         inline_acc,
         lateral_acc,
         yaw_rate,
-    ].into_iter();
+    ]
+    .into_iter();
 
     for def in GPS_CHANNEL_DEFS {
         // Timecodes are shared across all 12 GPS channels, so clone is unavoidable
@@ -291,8 +303,11 @@ pub fn arrow_metadata_roundtrip_test(py: Python<'_>) -> PyResult<Py<PyAny>> {
     let timecodes = Int64Array::from(vec![0i64, 100, 200, 300]);
     let values = Float32Array::from(vec![800.0f32, 3200.0, 5600.0, 4100.0]);
 
-    let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(timecodes), Arc::new(values)])
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    let batch = RecordBatch::try_new(
+        Arc::new(schema),
+        vec![Arc::new(timecodes), Arc::new(values)],
+    )
+    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
     let bound = batch
         .to_pyarrow(py)
