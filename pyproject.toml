@@ -135,6 +135,7 @@ module = "yaml.*"
 ignore_missing_imports = true
 
 [tool.maturin]
+manifest-path = "crates/libxrk-python/Cargo.toml"
 python-source = "src"
 module-name = "libxrk._aim_xrk_rs"
 features = ["pyo3/extension-module"]

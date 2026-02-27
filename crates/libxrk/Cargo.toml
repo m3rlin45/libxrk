@@ -1,0 +1,22 @@
+[package]
+name = "libxrk"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Pure Rust library for reading AIM XRK/XRZ motorsports telemetry files"
+
+[features]
+default = []
+arrow = ["dep:arrow"]
+
+[dependencies]
+binrw = { workspace = true }
+flate2 = { workspace = true }
+
+[dependencies.arrow]
+workspace = true
+optional = true
+
+[[bin]]
+name = "bench_parse"
+path = "src/bin/bench_parse.rs"
