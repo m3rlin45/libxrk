@@ -61,42 +61,56 @@ pub fn decode_sample(decoder_type: u8, data: &[u8]) -> Option<SampleValue> {
     match decoder_type {
         // int32 types
         0 | 3 | 8 | 12 | 22 | 24 | 26 | 27 | 31 | 32 | 33 | 37 | 38 | 39 => {
-            if data.len() < 4 { return None; }
+            if data.len() < 4 {
+                return None;
+            }
             let v = i32::from_le_bytes([data[0], data[1], data[2], data[3]]);
             Some(SampleValue::Int32(v))
         }
         // uint16 with interpolation (type 1)
         1 => {
-            if data.len() < 2 { return None; }
+            if data.len() < 2 {
+                return None;
+            }
             let v = u16::from_le_bytes([data[0], data[1]]);
             Some(SampleValue::UInt16(v))
         }
         // int16 types (type 4, 11)
         4 | 11 => {
-            if data.len() < 2 { return None; }
+            if data.len() < 2 {
+                return None;
+            }
             let v = i16::from_le_bytes([data[0], data[1]]);
             Some(SampleValue::Int16(v))
         }
         // float32 (type 6)
         6 => {
-            if data.len() < 4 { return None; }
+            if data.len() < 4 {
+                return None;
+            }
             let v = f32::from_le_bytes([data[0], data[1], data[2], data[3]]);
             Some(SampleValue::Float32(v))
         }
         // uint8 (type 13)
         13 => {
-            if data.len() < 1 { return None; }
+            if data.is_empty() {
+                return None;
+            }
             Some(SampleValue::UInt8(data[0]))
         }
         // uint16 gear lookup (type 15)
         15 => {
-            if data.len() < 2 { return None; }
+            if data.len() < 2 {
+                return None;
+            }
             let v = u16::from_le_bytes([data[0], data[1]]);
             Some(SampleValue::UInt16(gear_lookup(v)))
         }
         // float16 encoded as uint16 (type 20)
         20 => {
-            if data.len() < 2 { return None; }
+            if data.len() < 2 {
+                return None;
+            }
             let bits = u16::from_le_bytes([data[0], data[1]]);
             let f = half_to_f32(bits);
             Some(SampleValue::Float32(f))
@@ -111,8 +125,9 @@ pub fn decode_manual_gear(data: &[u8]) -> Option<SampleValue> {
     if data.len() < 8 {
         return None;
     }
-    let v = u64::from_le_bytes([data[0], data[1], data[2], data[3],
-                                data[4], data[5], data[6], data[7]]);
+    let v = u64::from_le_bytes([
+        data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
+    ]);
     let gear = if v & 0x80000 != 0 {
         0u32
     } else {
