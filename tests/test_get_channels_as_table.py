@@ -397,7 +397,9 @@ class TestChannelMerge(unittest.TestCase):
         )
         # Add interpolate=True metadata
         channel_a_field = channel_a.schema.field("ChannelA")
-        channel_a_field_with_meta = channel_a_field.with_metadata({b"interpolate": b"True"})
+        channel_a_field_with_meta = channel_a_field.with_metadata(
+            ChannelMetadata(interpolate=True).to_field_metadata()
+        )
         new_schema_a = pa.schema([channel_a.schema.field("timecodes"), channel_a_field_with_meta])
         channel_a = channel_a.cast(new_schema_a)
 
@@ -409,7 +411,9 @@ class TestChannelMerge(unittest.TestCase):
         )
         # Add interpolate=True metadata
         channel_b_field = channel_b.schema.field("ChannelB")
-        channel_b_field_with_meta = channel_b_field.with_metadata({b"interpolate": b"True"})
+        channel_b_field_with_meta = channel_b_field.with_metadata(
+            ChannelMetadata(interpolate=True).to_field_metadata()
+        )
         new_schema_b = pa.schema([channel_b.schema.field("timecodes"), channel_b_field_with_meta])
         channel_b = channel_b.cast(new_schema_b)
 
@@ -459,7 +463,9 @@ class TestChannelMerge(unittest.TestCase):
             }
         )
         channel_a_field = channel_a.schema.field("ChannelA")
-        channel_a_field_with_meta = channel_a_field.with_metadata({b"interpolate": b"True"})
+        channel_a_field_with_meta = channel_a_field.with_metadata(
+            ChannelMetadata(interpolate=True).to_field_metadata()
+        )
         new_schema_a = pa.schema([channel_a.schema.field("timecodes"), channel_a_field_with_meta])
         channel_a = channel_a.cast(new_schema_a)
 
@@ -471,7 +477,9 @@ class TestChannelMerge(unittest.TestCase):
             }
         )
         channel_b_field = channel_b.schema.field("ChannelB")
-        channel_b_field_with_meta = channel_b_field.with_metadata({b"interpolate": b"False"})
+        channel_b_field_with_meta = channel_b_field.with_metadata(
+            ChannelMetadata(interpolate=False).to_field_metadata()
+        )
         new_schema_b = pa.schema([channel_b.schema.field("timecodes"), channel_b_field_with_meta])
         channel_b = channel_b.cast(new_schema_b)
 
@@ -509,7 +517,7 @@ class TestInterpolationTypePromotion(unittest.TestCase):
             }
         )
         field = channel.schema.field("Sensor")
-        field_with_meta = field.with_metadata({b"interpolate": b"True"})
+        field_with_meta = field.with_metadata(ChannelMetadata(interpolate=True).to_field_metadata())
         schema = pa.schema([channel.schema.field("timecodes"), field_with_meta])
         channel = channel.cast(schema)
 
@@ -544,7 +552,9 @@ class TestInterpolationTypePromotion(unittest.TestCase):
             }
         )
         field = channel.schema.field("Counter")
-        field_with_meta = field.with_metadata({b"interpolate": b"False"})
+        field_with_meta = field.with_metadata(
+            ChannelMetadata(interpolate=False).to_field_metadata()
+        )
         schema = pa.schema([channel.schema.field("timecodes"), field_with_meta])
         channel = channel.cast(schema)
 
@@ -573,7 +583,7 @@ class TestInterpolationTypePromotion(unittest.TestCase):
             }
         )
         field = channel.schema.field("Speed")
-        field_with_meta = field.with_metadata({b"interpolate": b"True"})
+        field_with_meta = field.with_metadata(ChannelMetadata(interpolate=True).to_field_metadata())
         schema = pa.schema([channel.schema.field("timecodes"), field_with_meta])
         channel = channel.cast(schema)
 

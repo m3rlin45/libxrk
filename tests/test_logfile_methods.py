@@ -100,10 +100,10 @@ class TestSelectChannels(unittest.TestCase):
 
         result = log.select_channels(["ChannelA"])
 
-        field = result.channels["ChannelA"].schema.field("ChannelA")
-        self.assertEqual(field.metadata.get(b"units"), b"m/s")
-        self.assertEqual(field.metadata.get(b"dec_pts"), b"2")
-        self.assertEqual(field.metadata.get(b"interpolate"), b"True")
+        meta = ChannelMetadata.from_channel_table(result.channels["ChannelA"], "ChannelA")
+        self.assertEqual(meta.units, "m/s")
+        self.assertEqual(meta.dec_pts, 2)
+        self.assertTrue(meta.interpolate)
 
 
 class TestFilterByTimeRange(unittest.TestCase):
@@ -149,9 +149,9 @@ class TestFilterByTimeRange(unittest.TestCase):
 
         result = log.filter_by_time_range(0, 150)
 
-        field = result.channels["ChannelA"].schema.field("ChannelA")
-        self.assertEqual(field.metadata.get(b"units"), b"rpm")
-        self.assertEqual(field.metadata.get(b"interpolate"), b"True")
+        meta = ChannelMetadata.from_channel_table(result.channels["ChannelA"], "ChannelA")
+        self.assertEqual(meta.units, "rpm")
+        self.assertTrue(meta.interpolate)
 
     def test_filter_by_time_range_empty_result(self):
         """Test filtering that results in empty channels."""
@@ -314,10 +314,10 @@ class TestResampleToTimecodes(unittest.TestCase):
         target = pa.array([0, 50, 100], type=pa.int64())
         result = log.resample_to_timecodes(target)
 
-        field = result.channels["ChannelA"].schema.field("ChannelA")
-        self.assertEqual(field.metadata.get(b"units"), b"m/s")
-        self.assertEqual(field.metadata.get(b"dec_pts"), b"2")
-        self.assertEqual(field.metadata.get(b"interpolate"), b"True")
+        meta = ChannelMetadata.from_channel_table(result.channels["ChannelA"], "ChannelA")
+        self.assertEqual(meta.units, "m/s")
+        self.assertEqual(meta.dec_pts, 2)
+        self.assertTrue(meta.interpolate)
 
     def test_resample_to_timecodes_with_channel_names(self):
         """Test resampling specific channels only."""
@@ -423,9 +423,9 @@ class TestGetChannelsAsTableRefactored(unittest.TestCase):
 
         result = log.get_channels_as_table()
 
-        field = result.schema.field("ChannelA")
-        self.assertEqual(field.metadata.get(b"units"), b"m/s")
-        self.assertEqual(field.metadata.get(b"interpolate"), b"True")
+        meta = ChannelMetadata.from_field(result.schema.field("ChannelA"))
+        self.assertEqual(meta.units, "m/s")
+        self.assertTrue(meta.interpolate)
 
     def test_get_channels_as_table_empty(self):
         """Test that empty channels returns empty table."""
