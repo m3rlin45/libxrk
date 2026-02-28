@@ -1,25 +1,11 @@
-[package]
-name = "libxrk"
-version = "0.10.1"
-edition = "2021"
-license = "MIT"
+[workspace]
+members = ["crates/libxrk", "crates/libxrk-python"]
+resolver = "2"
 
-[lib]
-name = "_aim_xrk_rs"
-crate-type = ["cdylib", "rlib"]
-path = "rust/src/lib.rs"
-
-[dependencies]
-pyo3 = { version = "0.26", features = ["extension-module"] }
+[workspace.dependencies]
+arrow = { version = "57", default-features = false }
 binrw = "0.14"
-arrow = { version = "57", default-features = false, features = ["pyarrow"] }
 flate2 = "1"
-ryu = "1"
-
-[[bin]]
-name = "bench_parse"
-path = "rust/src/bench_parse.rs"
-required-features = []
 
 [profile.release]
 lto = true
