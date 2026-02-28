@@ -110,6 +110,33 @@ df = (log
 
 All filtering and resampling methods return new `LogFile` instances (immutable pattern), enabling method chaining for complex analysis workflows.
 
+### Channel Metadata
+
+Each channel carries typed metadata accessible via `ChannelMetadata`:
+
+```python
+from libxrk import aim_xrk, ChannelMetadata
+
+log = aim_xrk('session.xrk')
+
+# Extract typed metadata from a channel
+meta = ChannelMetadata.from_channel_table(log.channels['Engine RPM'])
+print(meta.units)        # "rpm"
+print(meta.dec_pts)      # 0
+print(meta.interpolate)  # True
+print(meta.function)     # "Engine RPM"
+
+# Or from a PyArrow field directly
+field = log.channels['Engine RPM'].schema.field('Engine RPM')
+meta = ChannelMetadata.from_field(field)
+
+# Create metadata for custom channels
+meta = ChannelMetadata(units="m/s", dec_pts=1, interpolate=True)
+field = pa.field("speed", pa.float32(), metadata=meta.to_field_metadata())
+```
+
+Available fields: `units`, `dec_pts`, `interpolate`, `function`, `source_type`, `source_channel_id`, `device_tag`, `cal_value_1`, `cal_value_2`, `display_range_min`, `display_range_max`.
+
 ## Development
 
 ### Quick Check

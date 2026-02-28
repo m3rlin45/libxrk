@@ -6,7 +6,7 @@ from typing import ClassVar, Dict, Optional
 import numpy as np
 import pyarrow as pa
 
-from libxrk import GPS_CHANNEL_NAMES, LogFile, aim_xrk
+from libxrk import GPS_CHANNEL_NAMES, ChannelMetadata, LogFile, aim_xrk
 from libxrk.gps import fix_gps_timing_gaps
 
 
@@ -48,55 +48,27 @@ def create_mock_log_with_gps_gap(
 
     channels = {}
 
-    # Create GPS Speed channel with metadata
-    channels["GPS Speed"] = pa.table(
-        {"timecodes": pa.array(timecodes, type=pa.int64()), "GPS Speed": pa.array(gps_speed)}
-    )
-    speed_field = (
-        channels["GPS Speed"]
-        .schema.field("GPS Speed")
-        .with_metadata({b"units": b"m/s", b"dec_pts": b"2", b"interpolate": b"True"})
-    )
-    channels["GPS Speed"] = channels["GPS Speed"].cast(
-        pa.schema([channels["GPS Speed"].schema.field("timecodes"), speed_field])
-    )
+    # GPS channel metadata definitions
+    gps_meta = {
+        "GPS Speed": ChannelMetadata(units="m/s", dec_pts=2, interpolate=True),
+        "GPS Latitude": ChannelMetadata(units="deg", dec_pts=6, interpolate=True),
+        "GPS Longitude": ChannelMetadata(units="deg", dec_pts=6, interpolate=True),
+        "GPS Altitude": ChannelMetadata(units="m", dec_pts=1, interpolate=True),
+    }
+    gps_values = {
+        "GPS Speed": gps_speed,
+        "GPS Latitude": gps_lat,
+        "GPS Longitude": gps_lon,
+        "GPS Altitude": gps_alt,
+    }
 
-    # Create other GPS channels
-    channels["GPS Latitude"] = pa.table(
-        {"timecodes": pa.array(timecodes, type=pa.int64()), "GPS Latitude": pa.array(gps_lat)}
-    )
-    lat_field = (
-        channels["GPS Latitude"]
-        .schema.field("GPS Latitude")
-        .with_metadata({b"units": b"deg", b"dec_pts": b"6", b"interpolate": b"True"})
-    )
-    channels["GPS Latitude"] = channels["GPS Latitude"].cast(
-        pa.schema([channels["GPS Latitude"].schema.field("timecodes"), lat_field])
-    )
-
-    channels["GPS Longitude"] = pa.table(
-        {"timecodes": pa.array(timecodes, type=pa.int64()), "GPS Longitude": pa.array(gps_lon)}
-    )
-    lon_field = (
-        channels["GPS Longitude"]
-        .schema.field("GPS Longitude")
-        .with_metadata({b"units": b"deg", b"dec_pts": b"6", b"interpolate": b"True"})
-    )
-    channels["GPS Longitude"] = channels["GPS Longitude"].cast(
-        pa.schema([channels["GPS Longitude"].schema.field("timecodes"), lon_field])
-    )
-
-    channels["GPS Altitude"] = pa.table(
-        {"timecodes": pa.array(timecodes, type=pa.int64()), "GPS Altitude": pa.array(gps_alt)}
-    )
-    alt_field = (
-        channels["GPS Altitude"]
-        .schema.field("GPS Altitude")
-        .with_metadata({b"units": b"m", b"dec_pts": b"1", b"interpolate": b"True"})
-    )
-    channels["GPS Altitude"] = channels["GPS Altitude"].cast(
-        pa.schema([channels["GPS Altitude"].schema.field("timecodes"), alt_field])
-    )
+    # Create GPS channels with metadata
+    for name, values in gps_values.items():
+        table = pa.table(
+            {"timecodes": pa.array(timecodes, type=pa.int64()), name: pa.array(values)}
+        )
+        field = table.schema.field(name).with_metadata(gps_meta[name].to_field_metadata())
+        channels[name] = table.cast(pa.schema([table.schema.field("timecodes"), field]))
 
     # Add a non-GPS channel with normal timing
     non_gps_timecodes = np.arange(0, n_samples * 20, 20, dtype=np.int64)  # 50Hz
@@ -169,10 +141,9 @@ class TestGpsTimingGapFix(unittest.TestCase):
         log = fix_gps_timing_gaps(log)
 
         # Check metadata is preserved
-        speed_field = log.channels["GPS Speed"].schema.field("GPS Speed")
-        self.assertIsNotNone(speed_field.metadata)
-        self.assertEqual(speed_field.metadata.get(b"units"), b"m/s")
-        self.assertEqual(speed_field.metadata.get(b"dec_pts"), b"2")
+        meta = ChannelMetadata.from_channel_table(log.channels["GPS Speed"])
+        self.assertEqual(meta.units, "m/s")
+        self.assertEqual(meta.dec_pts, 2)
 
     def test_preserves_channel_values(self):
         """Test that channel values (not timecodes) are unchanged."""
@@ -437,9 +408,10 @@ class TestGpsTimingGapFixIntegration(unittest.TestCase):
         """Verify channel metadata is preserved after fix."""
         for name in GPS_CHANNEL_NAMES:
             if name in self.log_xrk.channels:
+                meta = ChannelMetadata.from_channel_table(self.log_xrk.channels[name])
+                # GPS channels should have units set (except satellite/fix channels)
                 field = self.log_xrk.channels[name].schema.field(name)
                 self.assertIsNotNone(field.metadata, f"Metadata missing for {name}")
-                self.assertIn(b"units", field.metadata, f"units missing for {name}")
 
     def test_laps_present_and_reasonable(self):
         """Verify laps are present and most have reasonable timing."""

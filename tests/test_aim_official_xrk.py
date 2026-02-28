@@ -14,7 +14,7 @@ from typing import ClassVar
 import numpy as np
 
 from libxrk import aim_xrk
-from libxrk.base import LogFile
+from libxrk.base import ChannelMetadata, LogFile
 
 
 # Path to test data
@@ -213,15 +213,17 @@ class TestAIMOfficialCrossBackend(unittest.TestCase):
     def test_channel_metadata_match(self) -> None:
         """Channel metadata (units, dec_pts, interpolate) should match between backends."""
         for name in self.rust_log.channels:
-            rust_meta = self.rust_log.channels[name].schema.field(name).metadata or {}
-            cython_meta = self.cython_log.channels[name].schema.field(name).metadata or {}
-            for key in (b"units", b"dec_pts", b"interpolate"):
-                self.assertEqual(
-                    rust_meta.get(key),
-                    cython_meta.get(key),
-                    f"Channel {name!r} metadata {key!r}: "
-                    f"rust={rust_meta.get(key)!r} != cython={cython_meta.get(key)!r}",
-                )
+            rust_meta = ChannelMetadata.from_channel_table(self.rust_log.channels[name])
+            cython_meta = ChannelMetadata.from_channel_table(self.cython_log.channels[name])
+            self.assertEqual(rust_meta.units, cython_meta.units, f"Channel {name!r} units mismatch")
+            self.assertEqual(
+                rust_meta.dec_pts, cython_meta.dec_pts, f"Channel {name!r} dec_pts mismatch"
+            )
+            self.assertEqual(
+                rust_meta.interpolate,
+                cython_meta.interpolate,
+                f"Channel {name!r} interpolate mismatch",
+            )
 
 
 if __name__ == "__main__":

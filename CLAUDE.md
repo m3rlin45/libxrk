@@ -100,7 +100,7 @@ After modifying Rust source in `crates/`, run `just rust-build` (release) or `ju
 - Each channel is a PyArrow table with `timecodes` + value columns
 - Different channels have different sample rates
 - `get_channels_as_table()` merges via full outer join with interpolation/forward-fill
-- Channel metadata stored in PyArrow field.metadata (bytes keys: `b"units"`, `b"dec_pts"`, `b"interpolate"`, `b"function"`)
+- Channel metadata stored in PyArrow field.metadata; use `ChannelMetadata.from_field()` for typed access
 - GPS timing fix auto-corrects 65533ms gaps (AIM firmware bug)
 - All filtering/resampling methods return new `LogFile` instances (immutable pattern)
 - `resample_to_timecodes()` is the core resampling logic, other methods delegate to it
