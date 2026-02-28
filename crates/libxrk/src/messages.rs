@@ -8,7 +8,7 @@
 //!   payload_len   int32 LE
 //!   version       uint8
 //!   `>`           close bracket (0x3E)
-//!   [payload]     payload_len bytes
+//!   \[payload\]     payload_len bytes
 //!   `<`           footer open (0x3C)
 //!   token         uint32 LE (must match header)
 //!   checksum      uint16 LE (sum of payload bytes, truncated to u16)
@@ -112,8 +112,8 @@ impl HeaderMessage {
         // Payload
         let payload = &d[payload_start..payload_end];
 
-        // Checksum: sum of payload bytes truncated to u16
-        let checksum: u16 = payload.iter().map(|&b| b as u16).sum::<u16>();
+        // Checksum: sum of payload bytes truncated to u16 (wrapping is intentional)
+        let checksum: u16 = payload.iter().fold(0u16, |acc, &b| acc.wrapping_add(b as u16));
 
         // Footer
         let ftr = &d[payload_end..];

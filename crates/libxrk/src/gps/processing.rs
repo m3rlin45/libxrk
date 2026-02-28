@@ -5,7 +5,7 @@
 
 use std::f64::consts::PI;
 
-use crate::gps_utils;
+use crate::gps::utils as gps_utils;
 
 /// Result of GPS decoding: 12 GPS channels with shared timecodes.
 pub struct GpsDecodeResult {
@@ -351,13 +351,14 @@ fn fix_timecodes(timecodes: &mut [i32]) {
     // Step 2: fix wrap-arounds (track previous unmodified value)
     let mut prev_masked = timecodes[0];
     let mut cum: i32 = 0;
-    for tc in timecodes.iter_mut().skip(1) {
-        let current_masked = *tc;
+    #[allow(clippy::needless_range_loop)]
+    for i in 1..timecodes.len() {
+        let current_masked = timecodes[i];
         if current_masked < prev_masked {
             cum += 65536;
         }
         prev_masked = current_masked;
-        *tc += cum;
+        timecodes[i] += cum;
     }
 }
 
