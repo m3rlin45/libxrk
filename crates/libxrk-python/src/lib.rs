@@ -212,7 +212,7 @@ fn aim_xrk(py: Python<'_>, fname: Py<PyAny>, progress: Option<Py<PyAny>>) -> PyR
 
     // Build GPS Arrow tables after lap detection (consumes gps_result by value)
     if let Some(gps) = gps_result {
-        let gps_batches = libxrk::arrow::build_gps_channel_batches(gps)
+        let gps_batches = libxrk::arrow::build_gps_channel_batches(gps, arrow_bridge::format_float)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
         for (name, batch) in gps_batches {
             let py_batch = arrow_bridge::batch_to_pyarrow(py, batch)?;

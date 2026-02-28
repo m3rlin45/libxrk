@@ -64,15 +64,49 @@ Channels have different sample rates. Use `get_channels_as_table()` to merge.
 
 ## Channel Metadata
 
+Use the `ChannelMetadata` dataclass for typed access to channel metadata:
+
 ```python
-field = log.channels['Engine RPM'].schema.field('Engine RPM')
-units = field.metadata.get(b'units', b'').decode()  # e.g., "rpm"
-function = field.metadata.get(b'function', b'').decode()  # e.g., "Engine RPM"
+from libxrk import ChannelMetadata
+
+meta = ChannelMetadata.from_channel_table(log.channels['Engine RPM'], 'Engine RPM')
+meta.units        # "rpm"
+meta.dec_pts      # 0
+meta.interpolate  # True
+meta.function     # "Engine RPM"
 ```
 
-Keys: `b"units"`, `b"dec_pts"`, `b"interpolate"`, `b"function"`, `b"source_type"`, `b"source_channel_id"`, `b"device_tag"`, `b"cal_value_1"`, `b"cal_value_2"`, `b"display_range_min"`, `b"display_range_max"`
+Or extract from a PyArrow field directly:
 
-The `b"function"` key contains the RS3 channel function classification (e.g., "Temperature", "Engine RPM", "Lateral Acceleration"). This is a best-effort lookup derived from `(maybe_display_format, unit_type_byte, config_flags)` in the CHS binary. Empty string for GPS-derived channels and unrecognized combinations.
+```python
+field = log.channels['Engine RPM'].schema.field('Engine RPM')
+meta = ChannelMetadata.from_field(field)
+```
+
+To create metadata for new channels:
+
+```python
+meta = ChannelMetadata(units="m/s", dec_pts=1, interpolate=True)
+field = pa.field("speed", pa.float32(), metadata=meta.to_field_metadata())
+```
+
+### ChannelMetadata Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `units` | str | `""` | Unit string (e.g., "rpm", "m/s") |
+| `dec_pts` | int | `0` | Display decimal places |
+| `interpolate` | bool | `False` | Linear interpolation when resampling |
+| `function` | str | `""` | RS3 function classification |
+| `source_type` | int | `0` | Source type (1=internal, 5=GPS, 9=CAN) |
+| `source_channel_id` | int | `0` | Channel ID within device |
+| `device_tag` | str | `""` | Device identifier (e.g., "@AIM") |
+| `cal_value_1` | float | `0.0` | Calibration offset |
+| `cal_value_2` | float | `1.0` | Calibration scale |
+| `display_range_min` | float | `0.0` | Min display range |
+| `display_range_max` | float | `0.0` | Max display range |
+
+The `function` field contains the RS3 channel function classification (e.g., "Temperature", "Engine RPM", "Lateral Acceleration"). This is a best-effort lookup derived from `(maybe_display_format, unit_type_byte, config_flags)` in the CHS binary. Empty string for GPS-derived channels and unrecognized combinations.
 
 ## LogFile Methods
 

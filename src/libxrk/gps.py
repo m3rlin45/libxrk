@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pyarrow as pa
 
+from .base import ChannelMetadata
+
 if TYPE_CHECKING:
     from .base import LogFile
 
@@ -452,7 +454,7 @@ def fix_gps_timing_gaps(
         table = new_channels[name]
         value_column = table.column(name)
         field = table.schema.field(name)
-        metadata = field.metadata
+        meta = ChannelMetadata.from_field(field)
 
         new_table = pa.table(
             {
@@ -461,10 +463,10 @@ def fix_gps_timing_gaps(
             }
         )
 
-        if metadata:
-            new_field = new_table.schema.field(name).with_metadata(metadata)
-            new_schema = pa.schema([new_table.schema.field("timecodes"), new_field])
-            new_table = new_table.cast(new_schema)
+        metadata = meta.to_field_metadata()
+        new_field = new_table.schema.field(name).with_metadata(metadata)
+        new_schema = pa.schema([new_table.schema.field("timecodes"), new_field])
+        new_table = new_table.cast(new_schema)
 
         new_channels[name] = new_table
 

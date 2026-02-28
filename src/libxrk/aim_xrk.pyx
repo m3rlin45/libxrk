@@ -1220,19 +1220,20 @@ def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
 def _channel_to_table(ch):
     """Convert a Channel object to a PyArrow table with metadata."""
     # Create metadata dict for the channel data field (without name, as it's the column name)
-    metadata = {
-        b'units': (ch.units if ch.size != 1 else '').encode('utf-8'),
-        b'dec_pts': str(ch.dec_pts).encode('utf-8'),
-        b'interpolate': str(ch.interpolate).encode('utf-8'),
-        b'function': ch.function.encode('utf-8'),
-        b'source_type': str(ch.source_type).encode('utf-8'),
-        b'source_channel_id': str(ch.source_channel_id).encode('utf-8'),
-        b'device_tag': ch.device_tag.encode('utf-8'),
-        b'cal_value_1': str(ch.cal_value_1).encode('utf-8'),
-        b'cal_value_2': str(ch.cal_value_2).encode('utf-8'),
-        b'display_range_min': str(ch.display_range_min).encode('utf-8'),
-        b'display_range_max': str(ch.display_range_max).encode('utf-8'),
-    }
+    meta = base.ChannelMetadata(
+        units=ch.units if ch.size != 1 else '',
+        dec_pts=ch.dec_pts,
+        interpolate=ch.interpolate,
+        function=ch.function,
+        source_type=ch.source_type,
+        source_channel_id=ch.source_channel_id,
+        device_tag=ch.device_tag,
+        cal_value_1=ch.cal_value_1,
+        cal_value_2=ch.cal_value_2,
+        display_range_min=ch.display_range_min,
+        display_range_max=ch.display_range_max,
+    )
+    metadata = meta.to_field_metadata()
     
     # Determine the appropriate type for values based on the data
     if isinstance(ch.sampledata, memoryview):
