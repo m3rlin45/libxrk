@@ -30,12 +30,13 @@ if _backend == "rust":
 else:
     from .aim_xrk import aim_xrk, aim_track_dbg
 
-from .base import LogFile
+from .base import ChannelMetadata, LogFile
 from .gps import GPS_CHANNEL_NAMES
 
 __all__ = [
     "aim_xrk",
     "aim_track_dbg",
+    "ChannelMetadata",
     "LogFile",
     "GPS_CHANNEL_NAMES",
 ]
