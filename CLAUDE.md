@@ -31,9 +31,12 @@ uv build             # Build wheel
 The library has two parser backends with identical APIs. Both are included in all published wheels.
 
 - **Cython** (default): `src/libxrk/aim_xrk.pyx` — mature, well-tested
-- **Rust**: `crates/` — ~2x faster, used automatically in Pyodide/WASM
+- **Rust**: `crates/` — ~2x faster
 
-Set `LIBXRK_BACKEND=rust` to use the Rust parser. Default is Cython; no automatic fallback.
+Both backends are always included in all build types (CPython wheels, Pyodide/WASM wheels, sdist).
+A failure to build either backend fails the whole build. There is no automatic fallback.
+
+Set `LIBXRK_BACKEND=rust` to use the Rust parser. Default is Cython on all platforms, including Pyodide.
 
 ```bash
 just rust-build                        # Build Rust extension
@@ -93,7 +96,7 @@ After modifying `src/libxrk/aim_xrk.pyx`, you **must** run `uv sync --reinstall-
 
 ## Rust Rebuild
 
-After modifying Rust source in `crates/`, run `just rust-build` (release) or `just rust-build-debug` (faster compile). The Rust extension coexists with Cython — both can be installed simultaneously.
+After modifying Rust source in `crates/`, run `just rust-build` (release) or `just rust-build-debug` (faster compile). Both backends are always installed together — a failure to build either fails the whole build.
 
 ## Architecture Notes
 

@@ -91,7 +91,7 @@ pub fn read_xrk_with_progress(
     let data = decompress_if_zlib(data);
 
     // Parse with the Rust streaming parser
-    let mut result = parser::parse_xrk(&data, progress);
+    let mut result = parser::parse_xrk(&data, progress)?;
 
     // Compute non-GPS max end time before moving channel_data out
     let non_gps_max_end_time: Option<i64> = result
@@ -135,7 +135,7 @@ pub fn read_xrk_with_progress(
         .collect();
 
     // Decode GPS channels
-    let mut gps_result = gps::decode_gps(&result.gps_data, result.time_offset);
+    let mut gps_result = gps::decode_gps(&result.gps_data, result.time_offset)?;
 
     // Apply GPS timing fix
     if let Some(ref mut gps) = gps_result {
@@ -173,7 +173,7 @@ pub fn read_xrk_with_progress(
     let metadata = metadata::extract_metadata(&result);
 
     // Build laps — GPS timing fix was applied above
-    let mut processed_laps = parser::get_processed_laps(&result);
+    let mut processed_laps = parser::get_processed_laps(&result)?;
 
     // Validate LAP-message-based laps
     if processed_laps
@@ -259,5 +259,52 @@ pub fn decompress_if_zlib(data: &[u8]) -> Vec<u8> {
         }
     } else {
         data.to_vec()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_decompress_if_zlib_passthrough_non_zlib() {
+        let data = b"hello world";
+        let result = decompress_if_zlib(data);
+        assert_eq!(result, data);
+    }
+
+    #[test]
+    fn test_decompress_if_zlib_empty() {
+        let result = decompress_if_zlib(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_decompress_if_zlib_single_byte() {
+        let result = decompress_if_zlib(&[0x78]);
+        assert_eq!(result, vec![0x78]);
+    }
+
+    #[test]
+    fn test_decompress_if_zlib_valid_zlib() {
+        use std::io::Write;
+        // Compress some data with zlib
+        let original = b"test data for compression";
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(original).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let result = decompress_if_zlib(&compressed);
+        assert_eq!(result, original);
+    }
+
+    #[test]
+    fn test_decompress_if_zlib_fake_header() {
+        // Starts with zlib magic but isn't valid zlib — should return original data
+        let data = [0x78, 0x9C, 0xFF, 0xFF, 0xFF, 0xFF];
+        let result = decompress_if_zlib(&data);
+        // Returns original since decompression fails and partial is empty
+        assert_eq!(result, data);
     }
 }
