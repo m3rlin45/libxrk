@@ -465,4 +465,159 @@ mod tests {
         assert_eq!(nullterm_string(b"noterm"), "noterm");
         assert_eq!(nullterm_string(b"\0"), "");
     }
+
+    /// Build a valid header message frame for testing.
+    fn make_test_frame(token_str: &str, version: u8, payload: &[u8]) -> Vec<u8> {
+        let wire_token = tokdec(token_str);
+        let wire_token = if token_str.len() == 3 {
+            wire_token | (0x20 << 24)
+        } else {
+            wire_token
+        };
+        let payload_len = payload.len() as i32;
+        let checksum: u16 = payload
+            .iter()
+            .fold(0u16, |acc, &b| acc.wrapping_add(b as u16));
+
+        let mut frame = Vec::new();
+        frame.push(0x3C);
+        frame.push(0x68);
+        frame.extend_from_slice(&wire_token.to_le_bytes());
+        frame.extend_from_slice(&payload_len.to_le_bytes());
+        frame.push(version);
+        frame.push(0x3E);
+        frame.extend_from_slice(payload);
+        frame.push(0x3C);
+        frame.extend_from_slice(&wire_token.to_le_bytes());
+        frame.extend_from_slice(&checksum.to_le_bytes());
+        frame.push(0x3E);
+        frame
+    }
+
+    #[test]
+    fn test_header_message_parse_valid() {
+        let payload = b"test payload";
+        let frame = make_test_frame("TST", 1, payload);
+        let (msg, consumed) = HeaderMessage::parse(&frame, 0).unwrap();
+        assert_eq!(msg.version, 1);
+        assert_eq!(msg.payload, payload);
+        assert_eq!(consumed, frame.len());
+    }
+
+    #[test]
+    fn test_header_message_parse_empty_payload() {
+        let frame = make_test_frame("TST", 0, b"");
+        let (msg, consumed) = HeaderMessage::parse(&frame, 0).unwrap();
+        assert!(msg.payload.is_empty());
+        assert_eq!(consumed, frame.len());
+    }
+
+    #[test]
+    fn test_header_message_parse_too_short() {
+        let frame = vec![0x3C, 0x68, 0, 0, 0]; // only 5 bytes
+        assert!(matches!(
+            HeaderMessage::parse(&frame, 0),
+            Err(HeaderError::TooShort)
+        ));
+    }
+
+    #[test]
+    fn test_header_message_parse_bad_opcode() {
+        let mut frame = make_test_frame("TST", 0, b"x");
+        frame[0] = 0xFF; // corrupt opcode
+        assert!(matches!(
+            HeaderMessage::parse(&frame, 0),
+            Err(HeaderError::BadOpcode)
+        ));
+    }
+
+    #[test]
+    fn test_header_message_parse_bad_checksum() {
+        let mut frame = make_test_frame("TST", 0, b"test");
+        // Corrupt the checksum (2nd-to-last and 3rd-to-last bytes before final >)
+        let cksum_pos = frame.len() - 3;
+        frame[cksum_pos] ^= 0xFF;
+        assert!(matches!(
+            HeaderMessage::parse(&frame, 0),
+            Err(HeaderError::ChecksumMismatch)
+        ));
+    }
+
+    #[test]
+    fn test_header_message_parse_with_offset() {
+        let padding = vec![0u8; 10]; // some padding before the frame
+        let payload = b"data";
+        let frame = make_test_frame("TST", 0, payload);
+        let mut data = padding;
+        data.extend_from_slice(&frame);
+        let (msg, consumed) = HeaderMessage::parse(&data, 10).unwrap();
+        assert_eq!(msg.payload, payload);
+        assert_eq!(consumed, frame.len());
+    }
+
+    #[test]
+    fn test_header_message_token_stripped() {
+        let frame = make_test_frame("GPS", 0, b"x");
+        let (msg, _) = HeaderMessage::parse(&frame, 0).unwrap();
+        // 3-char token "GPS" should have padding stripped
+        assert_eq!(msg.token, tokdec("GPS"));
+    }
+
+    #[test]
+    fn test_header_message_4char_token() {
+        let frame = make_test_frame("GNFI", 0, b"x");
+        let (msg, _) = HeaderMessage::parse(&frame, 0).unwrap();
+        assert_eq!(msg.token, tokdec("GNFI"));
+    }
+
+    #[test]
+    fn test_dispatch_payload_string_msg() {
+        let msg = HeaderMessage {
+            token: tokens::rcr(),
+            version: 0,
+            payload: b"Driver Name\0".to_vec(),
+        };
+        match dispatch_payload(&msg) {
+            Payload::StringMsg(s) => assert_eq!(s, "Driver Name"),
+            _ => panic!("expected StringMsg"),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_payload_racm_mode() {
+        let msg = HeaderMessage {
+            token: tokens::racm(),
+            version: 0,
+            payload: b"speed\0".to_vec(),
+        };
+        match dispatch_payload(&msg) {
+            Payload::Racm(payloads::racm::RacmPayload::Mode(s)) => assert_eq!(s, "speed"),
+            _ => panic!("expected Racm Mode"),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_payload_unknown_token() {
+        let msg = HeaderMessage {
+            token: tokdec("XXXX"),
+            version: 0,
+            payload: vec![1, 2, 3],
+        };
+        match dispatch_payload(&msg) {
+            Payload::Unknown(data) => assert_eq!(data, vec![1, 2, 3]),
+            _ => panic!("expected Unknown"),
+        }
+    }
+
+    #[test]
+    fn test_token_constants() {
+        // Verify a few token constants round-trip
+        assert_eq!(tokenc(tokens::gps()), "GPS");
+        assert_eq!(tokenc(tokens::chs()), "CHS");
+        assert_eq!(tokenc(tokens::grp()), "GRP");
+        assert_eq!(tokenc(tokens::lap()), "LAP");
+        assert_eq!(tokenc(tokens::gnfi()), "GNFI");
+        assert_eq!(tokenc(tokens::cnf()), "CNF");
+        assert_eq!(tokenc(tokens::enf()), "ENF");
+    }
 }

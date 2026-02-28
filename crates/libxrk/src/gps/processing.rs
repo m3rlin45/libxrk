@@ -8,6 +8,7 @@ use std::f64::consts::PI;
 use crate::gps::utils as gps_utils;
 
 /// Result of GPS decoding: 12 GPS channels with shared timecodes.
+#[derive(Debug)]
 pub struct GpsDecodeResult {
     pub timecodes: Vec<i64>,
     // Float64 channels (position/speed)
@@ -128,12 +129,18 @@ pub const GPS_CHANNEL_DEFS: &[GpsChannelDef] = &[
 /// Each GPS message is 56 bytes:
 ///   - Bytes 0-3: AIM logger timecode (int32)
 ///   - Bytes 4-55: u-blox NAV-SOL payload (52 bytes)
-pub fn decode_gps(gps_data: &[u8], time_offset: i64) -> Option<GpsDecodeResult> {
+pub fn decode_gps(
+    gps_data: &[u8],
+    time_offset: i64,
+) -> Result<Option<GpsDecodeResult>, crate::Error> {
     if gps_data.is_empty() {
-        return None;
+        return Ok(None);
     }
     if !gps_data.len().is_multiple_of(56) {
-        return None;
+        return Err(crate::Error::InvalidData(format!(
+            "GPS data length {} is not a multiple of 56",
+            gps_data.len()
+        )));
     }
 
     let n = gps_data.len() / 56;
@@ -310,7 +317,7 @@ pub fn decode_gps(gps_data: &[u8], time_offset: i64) -> Option<GpsDecodeResult> 
     let position_accuracy: Vec<f32> = posacc_cm.iter().map(|&v| v as f32 / 100.0).collect();
     let velocity_accuracy: Vec<f32> = velacc_cms.iter().map(|&v| v as f32 / 100.0).collect();
 
-    Some(GpsDecodeResult {
+    Ok(Some(GpsDecodeResult {
         timecodes,
         speed,
         latitude,
@@ -324,7 +331,7 @@ pub fn decode_gps(gps_data: &[u8], time_offset: i64) -> Option<GpsDecodeResult> 
         inline_acc,
         lateral_acc,
         yaw_rate,
-    })
+    }))
 }
 
 /// Fix timecodes for old MXP firmware that butchers the upper 16 bits.
@@ -393,5 +400,131 @@ impl GpsDecodeResult {
                 [x, y, z]
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Create a minimal 56-byte GPS NAV-SOL record with the given timecode.
+    fn make_gps_record(timecode: i32) -> Vec<u8> {
+        let mut record = vec![0u8; 56];
+        record[0..4].copy_from_slice(&timecode.to_le_bytes());
+        record[14] = 3; // GPS fix type (3D)
+        let ecef_x: i32 = 637_813_700; // ~6378137m in cm
+        record[16..20].copy_from_slice(&ecef_x.to_le_bytes());
+        record[20..24].copy_from_slice(&0i32.to_le_bytes());
+        record[24..28].copy_from_slice(&0i32.to_le_bytes());
+        record[28..32].copy_from_slice(&100u32.to_le_bytes()); // pos acc 1m
+        record[44..48].copy_from_slice(&50u32.to_le_bytes()); // vel acc 0.5 m/s
+        record[48..50].copy_from_slice(&150u16.to_le_bytes()); // pDOP 1.50
+        record[51] = 12; // 12 satellites
+        record
+    }
+
+    #[test]
+    fn test_decode_gps_empty_returns_none() {
+        let result = decode_gps(&[], 0).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_decode_gps_invalid_length_returns_error() {
+        let data = vec![0u8; 57];
+        let result = decode_gps(&data, 0);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("not a multiple of 56"),
+            "error was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_decode_gps_invalid_length_55() {
+        let data = vec![0u8; 55];
+        assert!(decode_gps(&data, 0).is_err());
+    }
+
+    #[test]
+    fn test_decode_gps_single_record() {
+        let record = make_gps_record(1000);
+        let result = decode_gps(&record, 0).unwrap().unwrap();
+        assert_eq!(result.timecodes.len(), 1);
+        assert_eq!(result.timecodes[0], 1000);
+        assert_eq!(result.speed.len(), 1);
+        assert_eq!(result.latitude.len(), 1);
+        assert_eq!(result.longitude.len(), 1);
+        assert_eq!(result.altitude.len(), 1);
+        assert_eq!(result.satellites.len(), 1);
+        assert_eq!(result.fix.len(), 1);
+        assert_eq!(result.pdop.len(), 1);
+        assert_eq!(result.position_accuracy.len(), 1);
+        assert_eq!(result.velocity_accuracy.len(), 1);
+        assert_eq!(result.inline_acc.len(), 1);
+        assert_eq!(result.lateral_acc.len(), 1);
+        assert_eq!(result.yaw_rate.len(), 1);
+    }
+
+    #[test]
+    fn test_decode_gps_single_record_values() {
+        let record = make_gps_record(5000);
+        let result = decode_gps(&record, 1000).unwrap().unwrap();
+        assert_eq!(result.timecodes[0], 4000);
+        assert!(result.speed[0].abs() < 0.01);
+        assert_eq!(result.satellites[0], 12.0);
+        assert_eq!(result.fix[0], 3.0);
+        assert!((result.pdop[0] - 1.50).abs() < 0.01);
+        assert!((result.position_accuracy[0] - 1.0).abs() < 0.01);
+        assert!((result.velocity_accuracy[0] - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_decode_gps_two_records() {
+        let mut data = make_gps_record(1000);
+        data.extend_from_slice(&make_gps_record(2000));
+        let result = decode_gps(&data, 0).unwrap().unwrap();
+        assert_eq!(result.timecodes.len(), 2);
+        assert_eq!(result.timecodes[0], 1000);
+        assert_eq!(result.timecodes[1], 2000);
+    }
+
+    #[test]
+    fn test_decode_gps_time_offset_applied() {
+        let data = make_gps_record(5000);
+        let result = decode_gps(&data, 3000).unwrap().unwrap();
+        assert_eq!(result.timecodes[0], 2000);
+    }
+
+    #[test]
+    fn test_fix_timecodes_monotonic() {
+        let mut tcs = vec![100, 200, 300, 400];
+        fix_timecodes(&mut tcs);
+        assert_eq!(tcs, vec![100, 200, 300, 400]);
+    }
+
+    #[test]
+    fn test_fix_timecodes_backward_corrected() {
+        let mut tcs = vec![100, 200, 50, 150];
+        fix_timecodes(&mut tcs);
+        for w in tcs.windows(2) {
+            assert!(w[1] >= w[0], "timecodes not monotonic after fix: {:?}", tcs);
+        }
+    }
+
+    #[test]
+    fn test_fix_timecodes_single() {
+        let mut tcs = vec![100];
+        fix_timecodes(&mut tcs);
+        assert_eq!(tcs, vec![100]);
+    }
+
+    #[test]
+    fn test_fix_timecodes_empty() {
+        let mut tcs: Vec<i32> = vec![];
+        fix_timecodes(&mut tcs);
+        assert!(tcs.is_empty());
     }
 }

@@ -52,7 +52,7 @@ fn main() {
 
     // Warmup
     for _ in 0..2 {
-        let result = parser::parse_xrk(&data, None);
+        let result = parser::parse_xrk(&data, None).expect("parse failed");
         let _ = gps::decode_gps(&result.gps_data, result.time_offset);
         std::hint::black_box(&result);
     }
@@ -60,7 +60,7 @@ fn main() {
     let mut times = Vec::with_capacity(iterations);
     for _ in 0..iterations {
         let t0 = Instant::now();
-        let result = parser::parse_xrk(&data, None);
+        let result = parser::parse_xrk(&data, None).expect("parse failed");
         let _ = gps::decode_gps(&result.gps_data, result.time_offset);
         std::hint::black_box(&result);
         times.push(t0.elapsed().as_secs_f64() * 1000.0);

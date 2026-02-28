@@ -79,7 +79,8 @@ fn aim_xrk(py: Python<'_>, fname: Py<PyAny>, progress: Option<Py<PyAny>>) -> PyR
         closure
     });
 
-    let mut result = libxrk::parser::parse_xrk(&data, progress_cb.as_ref().map(|cb| cb.as_ref()));
+    let mut result = libxrk::parser::parse_xrk(&data, progress_cb.as_ref().map(|cb| cb.as_ref()))
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
     // Compute non-GPS max end time before moving channel_data out
     let non_gps_max_end_time: Option<i64> = result
@@ -111,7 +112,8 @@ fn aim_xrk(py: Python<'_>, fname: Py<PyAny>, progress: Option<Py<PyAny>>) -> PyR
     }
 
     // Decode GPS channels
-    let mut gps_result = libxrk::gps::decode_gps(&result.gps_data, result.time_offset);
+    let mut gps_result = libxrk::gps::decode_gps(&result.gps_data, result.time_offset)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
     // Apply GPS timing fix
     if let Some(ref mut gps) = gps_result {
@@ -167,7 +169,8 @@ fn aim_xrk(py: Python<'_>, fname: Py<PyAny>, progress: Option<Py<PyAny>>) -> PyR
     };
 
     // Build laps
-    let mut processed_laps = libxrk::parser::get_processed_laps(&result);
+    let mut processed_laps = libxrk::parser::get_processed_laps(&result)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
     // Validate LAP-message-based laps
     if processed_laps
@@ -241,7 +244,8 @@ fn aim_track_dbg(py: Python<'_>, fname: Py<PyAny>) -> PyResult<Py<PyAny>> {
     let raw_data = read_source_bytes(py, fname_bound)?;
     let data = libxrk::decompress_if_zlib(&raw_data);
 
-    let result = libxrk::parser::parse_xrk(&data, None);
+    let result = libxrk::parser::parse_xrk(&data, None)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
     let dict = PyDict::new(py);
     for (&tok, msgs) in &result.header_messages {

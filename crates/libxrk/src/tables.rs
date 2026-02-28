@@ -34,6 +34,37 @@ pub fn unit_map(unit_type: u8) -> (&'static str, u8) {
     }
 }
 
+/// Check if a unit type byte maps to a known unit in the unit map.
+/// Returns false for unit types not in the Cython `_unit_map` dictionary.
+pub fn is_known_unit(unit_type_byte: u8) -> bool {
+    matches!(
+        unit_type_byte & 0x7F,
+        1 | 3
+            | 4
+            | 5
+            | 6
+            | 9
+            | 11
+            | 12
+            | 14
+            | 15
+            | 16
+            | 17
+            | 18
+            | 19
+            | 20
+            | 21
+            | 22
+            | 24
+            | 26
+            | 27
+            | 30
+            | 31
+            | 33
+            | 43
+    )
+}
+
 /// Resolve the display unit, handling the calibrated flag (high bit of unit_type_byte).
 /// When the calibrated flag is set and base unit is "mV", display as "V".
 pub fn resolve_unit(unit_type_byte: u8) -> &'static str {
@@ -233,5 +264,124 @@ pub fn logger_model_name(model_id: u16) -> Option<&'static str> {
         649 => Some("MXP 1.3"),
         793 => Some("MXm"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_unit_map_known_types() {
+        assert_eq!(unit_map(15), ("rpm", 0));
+        assert_eq!(unit_map(17), ("C", 1));
+        assert_eq!(unit_map(1), ("%", 2));
+        assert_eq!(unit_map(14), ("bar", 2));
+        assert_eq!(unit_map(21), ("mV", 1));
+        assert_eq!(unit_map(43), ("kg", 3));
+    }
+
+    #[test]
+    fn test_unit_map_unknown_returns_empty() {
+        assert_eq!(unit_map(99), ("", 0));
+        assert_eq!(unit_map(0), ("", 0));
+        assert_eq!(unit_map(2), ("", 0));
+    }
+
+    #[test]
+    fn test_unit_map_masks_high_bit() {
+        // unit_type_byte with high bit set should still look up correctly
+        assert_eq!(unit_map(0x80 | 15), ("rpm", 0));
+        assert_eq!(unit_map(0x80 | 21), ("mV", 1));
+    }
+
+    #[test]
+    fn test_is_known_unit() {
+        assert!(is_known_unit(15)); // rpm
+        assert!(is_known_unit(1)); // %
+        assert!(is_known_unit(43)); // kg
+        assert!(!is_known_unit(0));
+        assert!(!is_known_unit(2));
+        assert!(!is_known_unit(99));
+    }
+
+    #[test]
+    fn test_is_known_unit_masks_high_bit() {
+        assert!(is_known_unit(0x80 | 15));
+        assert!(!is_known_unit(0x80 | 2));
+    }
+
+    #[test]
+    fn test_resolve_unit_calibrated_mv_to_v() {
+        // unit_type_byte=21 is mV; with high bit set (calibrated) → "V"
+        assert_eq!(resolve_unit(0x80 | 21), "V");
+    }
+
+    #[test]
+    fn test_resolve_unit_uncalibrated_mv_stays_mv() {
+        assert_eq!(resolve_unit(21), "mV");
+    }
+
+    #[test]
+    fn test_resolve_unit_calibrated_non_mv() {
+        // High bit set but not mV — should return base unit
+        assert_eq!(resolve_unit(0x80 | 15), "rpm");
+    }
+
+    #[test]
+    fn test_decoder_info_known_types() {
+        let d = decoder_info(0).unwrap();
+        assert_eq!(d.format, 'i');
+        assert!(!d.interpolate);
+        assert_eq!(d.byte_size, 4);
+
+        let d = decoder_info(1).unwrap();
+        assert_eq!(d.format, 'H');
+        assert!(d.interpolate);
+        assert_eq!(d.byte_size, 2);
+
+        let d = decoder_info(6).unwrap();
+        assert_eq!(d.format, 'f');
+        assert!(d.interpolate);
+        assert_eq!(d.byte_size, 4);
+
+        let d = decoder_info(13).unwrap();
+        assert_eq!(d.format, 'B');
+        assert!(!d.interpolate);
+        assert_eq!(d.byte_size, 1);
+    }
+
+    #[test]
+    fn test_decoder_info_unknown_returns_none() {
+        assert!(decoder_info(2).is_none());
+        assert!(decoder_info(5).is_none());
+        assert!(decoder_info(255).is_none());
+    }
+
+    #[test]
+    fn test_resolve_function_known() {
+        assert_eq!(resolve_function(0, 0x0f, 0), "Engine RPM");
+        assert_eq!(resolve_function(0, 0x11, 0), "Temperature");
+        assert_eq!(resolve_function(6, 0x06, 0), "Gear");
+        assert_eq!(resolve_function(128, 0x10, 0), "Vehicle Speed");
+    }
+
+    #[test]
+    fn test_resolve_function_device_temperature_override() {
+        assert_eq!(resolve_function(0, 0x11, 1), "Device Temperature");
+        // Same display_format+unit_type but different config_flags → generic
+        assert_eq!(resolve_function(0, 0x11, 0), "Temperature");
+    }
+
+    #[test]
+    fn test_resolve_function_unknown() {
+        assert_eq!(resolve_function(255, 255, 0), "");
+    }
+
+    #[test]
+    fn test_logger_model_name() {
+        assert_eq!(logger_model_name(649), Some("MXP 1.3"));
+        assert_eq!(logger_model_name(793), Some("MXm"));
+        assert_eq!(logger_model_name(0), None);
     }
 }

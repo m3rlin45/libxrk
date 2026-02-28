@@ -51,3 +51,42 @@ impl From<arrow::error::ArrowError> for Error {
         Error::Arrow(e)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_display_invalid_data() {
+        let e = Error::InvalidData("bad stuff".into());
+        assert_eq!(e.to_string(), "invalid data: bad stuff");
+    }
+
+    #[test]
+    fn test_display_decompression() {
+        let e = Error::Decompression("corrupt".into());
+        assert_eq!(e.to_string(), "decompression error: corrupt");
+    }
+
+    #[test]
+    fn test_display_io() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
+        let e = Error::from(io_err);
+        assert!(e.to_string().starts_with("I/O error:"));
+    }
+
+    #[test]
+    fn test_source_io() {
+        use std::error::Error as StdError;
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
+        let e = Error::from(io_err);
+        assert!(e.source().is_some());
+    }
+
+    #[test]
+    fn test_source_invalid_data() {
+        use std::error::Error as StdError;
+        let e = Error::InvalidData("test".into());
+        assert!(e.source().is_none());
+    }
+}
