@@ -416,7 +416,7 @@ impl ParserState {
         for acc in &self.gc_data[3] {
             if !acc.timecodes.is_empty() {
                 tc_min_candidates.push(acc.timecodes[0] as i64);
-                tc_max_candidates.push(*acc.timecodes.last().unwrap() as i64);
+                tc_max_candidates.push(*acc.timecodes.last().unwrap_or(&0) as i64);
             }
         }
 
@@ -1131,12 +1131,23 @@ fn decode_all_channels(
     result
 }
 
-/// Process LAP messages with segment filtering, dedup, gap-fill, 0-based normalization.
+/// Raw parsed lap data: parallel vectors of (lap_num, start_time, end_time).
+/// Lap nums are normalized to 0-based indexing.
+struct RawLapData {
+    lap_nums: Vec<i32>,
+    start_times: Vec<i64>,
+    end_times: Vec<i64>,
+}
+
+/// Parse LAP messages with segment filtering, dedup, gap-fill, 0-based normalization.
+///
+/// This is the shared core logic used by both `process_laps` (internal `LapInfo`)
+/// and `get_processed_laps` (public `ProcessedLap`).
 /// Matches aim_xrk.pyx:_get_laps (LAP message branch).
-fn process_laps(
+fn parse_lap_messages(
     header_messages: &HashMap<u32, Vec<HeaderMessage>>,
     time_offset: i64,
-) -> Vec<LapInfo> {
+) -> RawLapData {
     use binrw::BinRead;
     use std::io::Cursor;
 
@@ -1162,20 +1173,23 @@ fn process_laps(
                 continue;
             }
 
-            if lap_nums.is_empty() {
-                // First lap — accept
-            } else if *lap_nums.last().unwrap() == lap_num {
-                // Duplicate — skip
-                continue;
-            } else if *lap_nums.last().unwrap() + 1 == lap_num {
-                // Sequential — accept
-            } else if *lap_nums.last().unwrap() + 2 == lap_num {
-                // Gap of 1 — emit inferred lap
-                lap_nums.push(lap_num - 1);
-                start_times.push(*end_times.last().unwrap());
-                end_times.push(end_time - duration);
+            // Compare with the last lap number we've seen.
+            // Using .last() which returns Option — no unwrap needed.
+            if let Some(&last_num) = lap_nums.last() {
+                if last_num == lap_num {
+                    // Duplicate — skip
+                    continue;
+                } else if last_num + 2 == lap_num {
+                    // Gap of 1 — emit inferred lap
+                    let inferred_start = end_times.last().copied().unwrap_or(0);
+                    lap_nums.push(lap_num - 1);
+                    start_times.push(inferred_start);
+                    end_times.push(end_time - duration);
+                }
+                // last_num + 1 == lap_num: sequential — accept (fall through)
+                // else: unexpected gap, skip silently (Cython asserts but we don't)
             }
-            // else: unexpected gap, skip silently (Cython asserts but we don't)
+            // else: first lap — accept (fall through)
 
             lap_nums.push(lap_num);
             start_times.push(end_time - duration);
@@ -1184,21 +1198,35 @@ fn process_laps(
     }
 
     // Normalize to 0-based indexing
-    if !lap_nums.is_empty() {
-        let min_lap = *lap_nums.iter().min().unwrap();
+    if let Some(&min_lap) = lap_nums.iter().min() {
         for n in &mut lap_nums {
             *n -= min_lap;
         }
     }
 
-    lap_nums
+    RawLapData {
+        lap_nums,
+        start_times,
+        end_times,
+    }
+}
+
+/// Process LAP messages with segment filtering, dedup, gap-fill, 0-based normalization.
+/// Returns internal `LapInfo` structs stored in `ParseResult`.
+fn process_laps(
+    header_messages: &HashMap<u32, Vec<HeaderMessage>>,
+    time_offset: i64,
+) -> Vec<LapInfo> {
+    let raw = parse_lap_messages(header_messages, time_offset);
+
+    raw.lap_nums
         .iter()
         .enumerate()
         .map(|(i, &n)| LapInfo {
             segment: 0,
             lap_num: n as u16,
-            duration: (end_times[i] - start_times[i]) as u32,
-            end_time: end_times[i] as u32,
+            duration: (raw.end_times[i] - raw.start_times[i]) as u32,
+            end_time: raw.end_times[i] as u32,
         })
         .collect()
 }
@@ -1214,63 +1242,15 @@ pub struct ProcessedLap {
 
 /// Get processed laps from ParseResult (with proper start/end times).
 pub fn get_processed_laps(result: &ParseResult) -> Vec<ProcessedLap> {
-    use binrw::BinRead;
-    use std::io::Cursor;
+    let raw = parse_lap_messages(&result.header_messages, result.time_offset);
 
-    let mut lap_nums: Vec<i32> = Vec::new();
-    let mut start_times: Vec<i64> = Vec::new();
-    let mut end_times: Vec<i64> = Vec::new();
-
-    if let Some(lap_msgs) = result.header_messages.get(&tokens::lap()) {
-        for m in lap_msgs {
-            if m.payload.len() < 20 {
-                continue;
-            }
-            let Ok(lap) = LapPayload::read(&mut Cursor::new(&m.payload)) else {
-                continue;
-            };
-
-            let end_time = lap.end_time as i64 - result.time_offset;
-            let duration = lap.duration as i64;
-            let lap_num = lap.lap_num as i32;
-
-            if lap.segment != 0 {
-                continue;
-            }
-
-            if lap_nums.is_empty() {
-                // accept
-            } else if *lap_nums.last().unwrap() == lap_num {
-                continue;
-            } else if *lap_nums.last().unwrap() + 1 == lap_num {
-                // accept
-            } else if *lap_nums.last().unwrap() + 2 == lap_num {
-                lap_nums.push(lap_num - 1);
-                start_times.push(*end_times.last().unwrap());
-                end_times.push(end_time - duration);
-            }
-
-            lap_nums.push(lap_num);
-            start_times.push(end_time - duration);
-            end_times.push(end_time);
-        }
-    }
-
-    // Normalize to 0-based
-    if !lap_nums.is_empty() {
-        let min_lap = *lap_nums.iter().min().unwrap();
-        for n in &mut lap_nums {
-            *n -= min_lap;
-        }
-    }
-
-    lap_nums
+    raw.lap_nums
         .iter()
         .enumerate()
         .map(|(i, &n)| ProcessedLap {
             num: n,
-            start_time: start_times[i],
-            end_time: end_times[i],
+            start_time: raw.start_times[i],
+            end_time: raw.end_times[i],
         })
         .collect()
 }

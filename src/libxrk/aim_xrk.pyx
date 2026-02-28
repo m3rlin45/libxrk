@@ -9,7 +9,6 @@ import math
 import mmap
 import numpy as np
 import os
-from pprint import pprint # pylint: disable=unused-import
 import struct
 import sys
 import time
@@ -407,10 +406,14 @@ def _decode_sequence(s, progress=None):
                                            &sv[pos])
                     pos += 1
                 elif typ == ord_op_c:
-                    assert msg.c.unk1 == 0, '%x' % msg.c.unk1
-                    assert (msg.c.channel & 7) == 4, '%x' % (msg.c.channel & 7)
-                    assert msg.c.unk3 == 0x84, '%x' % msg.c.unk3
-                    assert msg.c.unk4 == 6, '%x' % msg.c.unk4
+                    if msg.c.unk1 != 0:
+                        raise ValueError('Unexpected c.unk1: %x' % msg.c.unk1)
+                    if (msg.c.channel & 7) != 4:
+                        raise ValueError('Unexpected c.channel low bits: %x' % (msg.c.channel & 7))
+                    if msg.c.unk3 != 0x84:
+                        raise ValueError('Unexpected c.unk3: %x' % msg.c.unk3)
+                    if msg.c.unk4 != 6:
+                        raise ValueError('Unexpected c.unk4: %x' % msg.c.unk4)
                     data_cat = &gc_data[2]
                     data_p = &dereference(data_cat)[msg.c.channel >> 3]
                     if data_p >= &dereference(data_cat.end()):
@@ -435,11 +438,13 @@ def _decode_sequence(s, progress=None):
                     if hlen >= len_s:
                         raise IndexError
                     ver = msg.h.ver
-                    assert msg.h.cl == ord_gt, "%s at %x" % (chr(msg.h.cl), pos+11)
+                    if msg.h.cl != ord_gt:
+                        raise ValueError("Expected '>' at %x, got %s" % (pos+11, chr(msg.h.cl)))
                     pos += 12
 
                     # get some "free" range checking here before we go walking data[]
-                    assert sv[pos+hlen] == ord_lt, "%s at %x" % (s[pos+hlen], pos+hlen)
+                    if sv[pos+hlen] != ord_lt:
+                        raise ValueError("Expected '<' at %x, got %s" % (pos+hlen, s[pos+hlen]))
 
                     bytesum: cython.ushort = accumulate[byte_ptr, cython.int](
                         &sv[pos], &sv[pos+hlen], 0)
@@ -447,9 +452,12 @@ def _decode_sequence(s, progress=None):
 
                     msgf = <hmsg_ftr *>&sv[pos]
 
-                    assert msgf.tok == tok, "%x vs %x at %x" % (msgf.tok, tok, pos+1)
-                    assert msgf.bytesum == bytesum, '%x vs %x at %x' % (msgf.bytesum, bytesum, pos+5)
-                    assert msgf.cl == ord_gt, "%s at %x" % (chr(msgf.cl), pos+7)
+                    if msgf.tok != tok:
+                        raise ValueError("Token mismatch: %x vs %x at %x" % (msgf.tok, tok, pos+1))
+                    if msgf.bytesum != bytesum:
+                        raise ValueError('Checksum mismatch: %x vs %x at %x' % (msgf.bytesum, bytesum, pos+5))
+                    if msgf.cl != ord_gt:
+                        raise ValueError("Expected '>' at %x, got %s" % (pos+7, chr(msgf.cl)))
                     pos += 8
 
                     if (tok >> 24) == 32:
@@ -485,8 +493,10 @@ def _decode_sequence(s, progress=None):
                                     gc_data[3][m.content.index].Mms = struct.unpack_from(
                                         '<I', m.content.unknown, 64)[0] // 1000
                                 else:
-                                    assert channels[m.content.index].short_name == m.content.short_name, "%s vs %s" % (channels[m.content.index].short_name, m.content.short_name)
-                                    assert channels[m.content.index].long_name == m.content.long_name
+                                    if channels[m.content.index].short_name != m.content.short_name:
+                                        raise ValueError("Channel short_name mismatch: %s vs %s" % (channels[m.content.index].short_name, m.content.short_name))
+                                    if channels[m.content.index].long_name != m.content.long_name:
+                                        raise ValueError("Channel long_name mismatch: %s vs %s" % (channels[m.content.index].long_name, m.content.long_name))
                             for m in data.get(_tokdec('GRP'), []):
                                 groups += [None] * (m.content.index - len(groups) + 1)
                                 groups[m.content.index] = m.content
@@ -504,7 +514,8 @@ def _decode_sequence(s, progress=None):
                                     channels[ch].size for ch in m.content.channels)
                         elif tok == _tokdec('GRP'):
                             data = memoryview(data).cast('H')
-                            assert data[1] == len(data[2:])
+                            if data[1] != len(data[2:]):
+                                raise ValueError("GRP channel count mismatch: %d vs %d" % (data[1], len(data[2:])))
                             data = Group(index = data[0], channels = data[2:])
                         elif tok == _tokdec('CDE'):
                             data = ['%02x' % x for x in data]
@@ -713,7 +724,7 @@ def _decode_sequence(s, progress=None):
                         except KeyError:
                             messages[tok] = [Message(tok, ver, data)]
                 else:
-                    assert False, "%02x%02x at %x" % (s[pos], s[pos+1], pos)
+                    raise ValueError("Unknown byte sequence %02x%02x at %x" % (s[pos], s[pos+1], pos))
         except Exception as _err: # pylint: disable=broad-exception-caught
             if oldpos != badpos + badbytes and badbytes:
                 if show_bad:
@@ -736,7 +747,8 @@ def _decode_sequence(s, progress=None):
                   ', '.join('%02x' % c for c in s[badpos:badpos + badbytes])
                   )
         badbytes = 0
-    assert pos == len(s)
+    if pos != len(s):
+        raise ValueError("Parser did not consume entire input: pos=%d, len=%d" % (pos, len(s)))
     # Compute time_offset and last_time from raw gc_data buffers and GPS data.
     # Channel timecodes are not yet populated (process_channel runs later), so we
     # scan the accumulated raw data vectors directly.
@@ -806,7 +818,8 @@ def _decode_sequence(s, progress=None):
                 stride_offset = 8
                 data_p = &gc_data[2][c.index]
             if data_p.data.size():
-                assert len(c.timecodes) == 0, "Can't have both S/c and M records for channel %s (index=%d, %d vs %d)" % (c.long_name, c.index, len(c.timecodes), data_p.data.size())
+                if len(c.timecodes) != 0:
+                    raise ValueError("Can't have both S/c and M records for channel %s (index=%d, %d vs %d)" % (c.long_name, c.index, len(c.timecodes), data_p.data.size()))
 
                 # TREAD LIGHTLY - raw pointers here
                 view = np.asarray(<cython.uchar[:data_p.data.size()]> &data_p.data[0])
@@ -1012,7 +1025,8 @@ def _decode_gps(gpsmsg, time_offset):
     """
     if not gpsmsg: return []
     alldata = memoryview(gpsmsg)
-    assert len(alldata) % 56 == 0
+    if len(alldata) % 56 != 0:
+        raise ValueError("GPS data length %d is not a multiple of 56" % len(alldata))
     timecodes = np.asarray(alldata[0:].cast('i')[::56//4])
     # certain old MXP firmware (and maybe others) would periodically
     # butcher the upper 16-bits of the timecode field.  If necessary,
@@ -1163,7 +1177,7 @@ def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
                 start_times.append(end_times[-1])
                 end_times.append(end_time - duration)
             else:
-                assert False, 'Lap gap from %d to %d' % (lap_nums[-1], lap)
+                raise ValueError('Lap gap from %d to %d' % (lap_nums[-1], lap))
             lap_nums.append(lap)
             start_times.append(end_time - duration)
             end_times.append(end_time)
@@ -1348,8 +1362,8 @@ def aim_xrk(fname, progress=None):
     # Pass GNFI timecodes for more robust detection (if available)
     # Only correct lap boundaries when laps came from GPS-based detection
     # (not from LAP messages, which use the internal clock unaffected by the bug)
-    fix_gps_timing_gaps(log, gnfi_timecodes=data.gnfi_timecodes,
-                        correct_laps=not data.has_lap_messages)
+    log = fix_gps_timing_gaps(log, gnfi_timecodes=data.gnfi_timecodes,
+                              correct_laps=not data.has_lap_messages)
 
     return log
 
