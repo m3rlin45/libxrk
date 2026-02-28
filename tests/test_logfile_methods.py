@@ -2,7 +2,7 @@
 
 import unittest
 import pyarrow as pa
-from libxrk.base import LogFile
+from libxrk.base import ChannelMetadata, LogFile
 
 
 def create_channel_with_metadata(
@@ -21,19 +21,16 @@ def create_channel_with_metadata(
         }
     )
 
-    metadata = {}
-    if units:
-        metadata[b"units"] = units.encode()
-    if dec_pts:
-        metadata[b"dec_pts"] = dec_pts.encode()
-    if interpolate:
-        metadata[b"interpolate"] = interpolate.encode()
-
-    if metadata:
-        field = table.schema.field(name)
-        new_field = field.with_metadata(metadata)
-        new_schema = pa.schema([table.schema.field("timecodes"), new_field])
-        table = table.cast(new_schema)
+    meta = ChannelMetadata(
+        units=units,
+        dec_pts=int(dec_pts) if dec_pts else 0,
+        interpolate=interpolate == "True",
+    )
+    metadata = meta.to_field_metadata()
+    field = table.schema.field(name)
+    new_field = field.with_metadata(metadata)
+    new_schema = pa.schema([table.schema.field("timecodes"), new_field])
+    table = table.cast(new_schema)
 
     return table
 
@@ -490,6 +487,71 @@ class TestMethodChaining(unittest.TestCase):
         self.assertAlmostEqual(a_values[1], 5.0, places=5)
         self.assertAlmostEqual(a_values[2], 10.0, places=5)
         self.assertAlmostEqual(a_values[3], 10.0, places=5)  # np.interp extrapolates edge value
+
+
+class TestChannelMetadata(unittest.TestCase):
+    """Tests for ChannelMetadata dataclass."""
+
+    def test_roundtrip(self):
+        """Construct → to_field_metadata() → attach to field → from_field() → equal."""
+        original = ChannelMetadata(
+            units="rpm",
+            dec_pts=2,
+            interpolate=True,
+            function="Engine RPM",
+            source_type=1,
+            source_channel_id=42,
+            device_tag="@AIM",
+            cal_value_1=0.5,
+            cal_value_2=2.0,
+            display_range_min=-100.0,
+            display_range_max=10000.0,
+        )
+
+        field = pa.field("test", pa.float32(), metadata=original.to_field_metadata())
+        restored = ChannelMetadata.from_field(field)
+
+        self.assertEqual(restored, original)
+
+    def test_defaults_roundtrip(self):
+        """Default ChannelMetadata should roundtrip correctly."""
+        original = ChannelMetadata()
+
+        field = pa.field("test", pa.float32(), metadata=original.to_field_metadata())
+        restored = ChannelMetadata.from_field(field)
+
+        self.assertEqual(restored, original)
+
+    def test_from_channel_table(self):
+        """ChannelMetadata.from_channel_table extracts metadata from a table."""
+        meta = ChannelMetadata(units="m/s", dec_pts=1, interpolate=True)
+        table = pa.table(
+            {
+                "timecodes": pa.array([0, 100], type=pa.int64()),
+                "speed": pa.array([1.0, 2.0], type=pa.float32()),
+            }
+        )
+        field = table.schema.field("speed").with_metadata(meta.to_field_metadata())
+        table = table.cast(pa.schema([table.schema.field("timecodes"), field]))
+
+        restored = ChannelMetadata.from_channel_table(table, "speed")
+
+        self.assertEqual(restored.units, "m/s")
+        self.assertEqual(restored.dec_pts, 1)
+        self.assertTrue(restored.interpolate)
+
+    def test_from_field_missing_metadata(self):
+        """from_field with no metadata should return defaults."""
+        field = pa.field("test", pa.float32())
+        meta = ChannelMetadata.from_field(field)
+
+        self.assertEqual(meta, ChannelMetadata())
+
+    def test_frozen(self):
+        """ChannelMetadata should be immutable."""
+        meta = ChannelMetadata(units="rpm")
+        with self.assertRaises(AttributeError):
+            meta.units = "m/s"  # type: ignore[misc]
 
 
 if __name__ == "__main__":
