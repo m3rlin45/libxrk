@@ -17,7 +17,10 @@ pub mod tables;
 fn _aim_xrk_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(aim_xrk, m)?)?;
     m.add_function(wrap_pyfunction!(aim_track_dbg, m)?)?;
-    m.add_function(wrap_pyfunction!(arrow_bridge::arrow_metadata_roundtrip_test, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        arrow_bridge::arrow_metadata_roundtrip_test,
+        m
+    )?)?;
     Ok(())
 }
 
@@ -72,7 +75,11 @@ fn decompress_if_zlib(data: Vec<u8>) -> Vec<u8> {
             Ok(_) => decompressed,
             Err(_) => {
                 // Truncated stream — return whatever we got
-                if decompressed.is_empty() { data } else { decompressed }
+                if decompressed.is_empty() {
+                    data
+                } else {
+                    decompressed
+                }
             }
         }
     } else {
@@ -83,11 +90,7 @@ fn decompress_if_zlib(data: Vec<u8>) -> Vec<u8> {
 /// Parse an AIM XRK/XRZ file and return a LogFile.
 #[pyfunction]
 #[pyo3(signature = (fname, progress=None))]
-fn aim_xrk(
-    py: Python<'_>,
-    fname: Py<PyAny>,
-    progress: Option<Py<PyAny>>,
-) -> PyResult<Py<PyAny>> {
+fn aim_xrk(py: Python<'_>, fname: Py<PyAny>, progress: Option<Py<PyAny>>) -> PyResult<Py<PyAny>> {
     let fname_bound = fname.bind(py);
 
     // Read raw bytes
@@ -106,19 +109,19 @@ fn aim_xrk(
         closure
     });
 
-    let mut result = parser::parse_xrk(
-        &data,
-        progress_cb.as_ref().map(|cb| cb.as_ref()),
-    );
+    let mut result = parser::parse_xrk(&data, progress_cb.as_ref().map(|cb| cb.as_ref()));
 
     // Compute non-GPS max end time before moving channel_data out
-    let non_gps_max_end_time: Option<i64> = result.channel_data.values()
+    let non_gps_max_end_time: Option<i64> = result
+        .channel_data
+        .values()
         .filter_map(|ch| ch.timecodes.last().copied())
         .max();
 
     // Move channel_data out of result (avoids cloning every channel)
     let channel_data = std::mem::take(&mut result.channel_data);
-    let channel_tables = arrow_bridge::build_all_channel_tables(py, channel_data, &result.channels)?;
+    let channel_tables =
+        arrow_bridge::build_all_channel_tables(py, channel_data, &result.channels)?;
 
     // Build channels dict
     let channels_dict = PyDict::new(py);
@@ -137,20 +140,24 @@ fn aim_xrk(
     // Apply GPS timing fix in Rust (before building Arrow tables)
     if let Some(ref mut gps) = gps_result {
         // Extract GNFI timecodes from raw data
-        let gnfi_timecodes: Vec<i64> = if !result.gnfi_data.is_empty() && result.gnfi_data.len() % 32 == 0 {
-            let n_records = result.gnfi_data.len() / 32;
-            (0..n_records)
-                .map(|i| {
-                    let offset = i * 32;
-                    i32::from_le_bytes([
-                        result.gnfi_data[offset], result.gnfi_data[offset + 1],
-                        result.gnfi_data[offset + 2], result.gnfi_data[offset + 3],
-                    ]) as i64 - result.time_offset
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let gnfi_timecodes: Vec<i64> =
+            if !result.gnfi_data.is_empty() && result.gnfi_data.len().is_multiple_of(32) {
+                let n_records = result.gnfi_data.len() / 32;
+                (0..n_records)
+                    .map(|i| {
+                        let offset = i * 32;
+                        i32::from_le_bytes([
+                            result.gnfi_data[offset],
+                            result.gnfi_data[offset + 1],
+                            result.gnfi_data[offset + 2],
+                            result.gnfi_data[offset + 3],
+                        ]) as i64
+                            - result.time_offset
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
         // Detect and apply corrections to GPS timecodes
         let corrections = gps_timing::detect_gap_corrections(
@@ -177,7 +184,9 @@ fn aim_xrk(
     } else if let Ok(s) = fname_bound.extract::<String>() {
         s
     } else if fname_bound.hasattr("__fspath__")? {
-        fname_bound.call_method0("__fspath__")?.extract::<String>()?
+        fname_bound
+            .call_method0("__fspath__")?
+            .extract::<String>()?
     } else {
         "<unknown>".to_string()
     };
@@ -188,7 +197,10 @@ fn aim_xrk(
     // Validate LAP-message-based laps: some AIM firmware writes relative end_times
     // (≈ duration) instead of absolute session times, producing negative start_times.
     // Fall back to GPS-based detection when this happens.
-    if processed_laps.iter().any(|l| l.start_time < 0 || l.end_time <= l.start_time) {
+    if processed_laps
+        .iter()
+        .any(|l| l.start_time < 0 || l.end_time <= l.start_time)
+    {
         processed_laps.clear();
     }
 
@@ -197,7 +209,10 @@ fn aim_xrk(
         if let Some(trk_marker) = get_trk_marker(&result) {
             if let Some(ref gps) = gps_result {
                 // Convert lat/lon to ECEF for lap detection
-                let xyz: Vec<[f64; 3]> = gps.latitude.iter().zip(gps.longitude.iter())
+                let xyz: Vec<[f64; 3]> = gps
+                    .latitude
+                    .iter()
+                    .zip(gps.longitude.iter())
                     .map(|(&lat, &lon)| {
                         let (x, y, z) = gps_utils::lla2ecef(lat, lon, 0.0);
                         [x, y, z]
@@ -237,12 +252,8 @@ fn aim_xrk(
 
     let base_module = py.import("libxrk.base")?;
     let logfile_class = base_module.getattr("LogFile")?;
-    let logfile = logfile_class.call1((
-        channels_dict,
-        laps_table,
-        metadata_dict.bind(py),
-        file_name,
-    ))?;
+    let logfile =
+        logfile_class.call1((channels_dict, laps_table, metadata_dict.bind(py), file_name))?;
 
     Ok(logfile.unbind())
 }
@@ -292,7 +303,9 @@ fn payload_to_python(py: Python<'_>, payload: &messages::Payload) -> PyResult<Py
             payloads::vet::VetPayload::Mode(s) => Ok(s.into_pyobject(py)?.into_any().unbind()),
             payloads::vet::VetPayload::Value(val) => Ok(val.into_pyobject(py)?.into_any().unbind()),
         },
-        messages::Payload::Unknown(data) => Ok(pyo3::types::PyBytes::new(py, data).into_any().unbind()),
+        messages::Payload::Unknown(data) => {
+            Ok(pyo3::types::PyBytes::new(py, data).into_any().unbind())
+        }
         _ => Ok(py.None()),
     }
 }

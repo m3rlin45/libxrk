@@ -8,10 +8,10 @@ use binrw::BinRead;
 #[derive(Debug, Clone, BinRead)]
 #[br(little)]
 pub struct LapPayload {
-    pub _pad: u8,         // [0]     padding
-    pub segment: u8,      // [1]     segment number
-    pub lap_num: u16,     // [2:4]   lap number
-    pub duration: u32,    // [4:8]   lap duration [ms]
+    pub _pad: u8,           // [0]     padding
+    pub segment: u8,        // [1]     segment number
+    pub lap_num: u16,       // [2:4]   lap number
+    pub duration: u32,      // [4:8]   lap duration [ms]
     pub _reserved: [u8; 8], // [8:16] reserved
-    pub end_time: u32,    // [16:20] lap end time [ms]
+    pub end_time: u32,      // [16:20] lap end time [ms]
 }

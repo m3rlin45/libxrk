@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use crate::messages::{self, HeaderMessage, Payload, tokens};
+use crate::messages::{self, tokens, HeaderMessage, Payload};
 use crate::payloads::chs::ChsPayload;
 use crate::payloads::grp::GrpPayload;
 use crate::payloads::lap::LapPayload;
@@ -324,18 +324,22 @@ impl ParserState {
         self.gc_data[3][idx].mms = chs.mms();
 
         // Store channel info
-        self.channels.entry(chs.index).or_insert_with(|| ChannelInfo {
-            chs: chs.clone(),
-            group_index: None,
-            group_offset: None,
-        });
+        self.channels
+            .entry(chs.index)
+            .or_insert_with(|| ChannelInfo {
+                chs: chs.clone(),
+                group_index: None,
+                group_offset: None,
+            });
     }
 
     fn register_grp(&mut self, grp: &GrpPayload) {
         let idx = grp.index as usize;
 
         // Compute group data size from member channels
-        let grp_size: usize = grp.channel_indices.iter()
+        let grp_size: usize = grp
+            .channel_indices
+            .iter()
             .map(|&ch| *self.channel_sizes.get(&ch).unwrap_or(&0) as usize)
             .sum();
 
@@ -356,7 +360,8 @@ impl ParserState {
             }
         }
 
-        self.groups.insert(grp.index, GroupInfo { grp: grp.clone() });
+        self.groups
+            .insert(grp.index, GroupInfo { grp: grp.clone() });
     }
 
     fn finalize(self) -> ParseResult {
@@ -376,10 +381,17 @@ impl ParserState {
             for acc in &self.gc_data[cat_idx] {
                 if !acc.data.is_empty() {
                     let stride = acc.add_helper - if cat_idx < 2 { 3 } else { 8 };
-                    if stride == 0 { continue; }
+                    if stride == 0 {
+                        continue;
+                    }
                     // First timecode
                     if acc.data.len() >= 4 {
-                        let tc = i32::from_le_bytes([acc.data[0], acc.data[1], acc.data[2], acc.data[3]]);
+                        let tc = i32::from_le_bytes([
+                            acc.data[0],
+                            acc.data[1],
+                            acc.data[2],
+                            acc.data[3],
+                        ]);
                         tc_min_candidates.push(tc as i64);
                     }
                     // Last timecode
@@ -388,8 +400,10 @@ impl ParserState {
                         let last_offset = (n_rows - 1) * stride;
                         if last_offset + 4 <= acc.data.len() {
                             let tc = i32::from_le_bytes([
-                                acc.data[last_offset], acc.data[last_offset + 1],
-                                acc.data[last_offset + 2], acc.data[last_offset + 3],
+                                acc.data[last_offset],
+                                acc.data[last_offset + 1],
+                                acc.data[last_offset + 2],
+                                acc.data[last_offset + 3],
                             ]);
                             tc_max_candidates.push(tc as i64);
                         }
@@ -409,13 +423,18 @@ impl ParserState {
         // GPS messages: 56-byte records, first 4 bytes = int32 timecode
         if self.gps_data.len() >= 56 {
             let tc = i32::from_le_bytes([
-                self.gps_data[0], self.gps_data[1], self.gps_data[2], self.gps_data[3],
+                self.gps_data[0],
+                self.gps_data[1],
+                self.gps_data[2],
+                self.gps_data[3],
             ]);
             tc_min_candidates.push(tc as i64);
             let last_offset = self.gps_data.len() - 56;
             let tc = i32::from_le_bytes([
-                self.gps_data[last_offset], self.gps_data[last_offset + 1],
-                self.gps_data[last_offset + 2], self.gps_data[last_offset + 3],
+                self.gps_data[last_offset],
+                self.gps_data[last_offset + 1],
+                self.gps_data[last_offset + 2],
+                self.gps_data[last_offset + 3],
             ]);
             tc_max_candidates.push(tc as i64);
         }
@@ -424,7 +443,8 @@ impl ParserState {
         let last_time = tc_max_candidates.into_iter().max().unwrap_or(0);
 
         // Now decode channels
-        let channel_data = decode_all_channels(&self.gc_data, &self.channels, &self.groups, time_offset);
+        let channel_data =
+            decode_all_channels(&self.gc_data, &self.channels, &self.groups, time_offset);
 
         // Extract and process lap info from LAP messages
         let laps = process_laps(&self.header_messages, time_offset);
@@ -470,7 +490,10 @@ fn prescan(data: &[u8], state: &mut ParserState) -> PrescanResult {
                         let index = u16::from_le_bytes([data[pos + 6], data[pos + 7]]) as usize;
                         if index < state.gc_data[0].len() {
                             let total_size = state.gc_data[0][index].add_helper;
-                            if total_size > 3 && pos + total_size <= len && data[pos + total_size - 1] == b')' {
+                            if total_size > 3
+                                && pos + total_size <= len
+                                && data[pos + total_size - 1] == b')'
+                            {
                                 hints.add_data_bytes(0, index, total_size - 3);
                                 pos += total_size;
                                 continue;
@@ -483,7 +506,10 @@ fn prescan(data: &[u8], state: &mut ParserState) -> PrescanResult {
                         let index = u16::from_le_bytes([data[pos + 6], data[pos + 7]]) as usize;
                         if index < state.gc_data[1].len() {
                             let total_size = state.gc_data[1][index].add_helper;
-                            if total_size > 3 && pos + total_size <= len && data[pos + total_size - 1] == b')' {
+                            if total_size > 3
+                                && pos + total_size <= len
+                                && data[pos + total_size - 1] == b')'
+                            {
                                 hints.add_data_bytes(1, index, total_size - 3);
                                 pos += total_size;
                                 continue;
@@ -516,7 +542,10 @@ fn prescan(data: &[u8], state: &mut ParserState) -> PrescanResult {
                         let index = (channel_field >> 3) as usize;
                         if index < state.gc_data[2].len() {
                             let total_size = state.gc_data[2][index].add_helper;
-                            if total_size > 8 && pos + total_size <= len && data[pos + total_size - 1] == b')' {
+                            if total_size > 8
+                                && pos + total_size <= len
+                                && data[pos + total_size - 1] == b')'
+                            {
                                 hints.add_data_bytes(2, index, total_size - 8);
                                 pos += total_size;
                                 continue;
@@ -556,12 +585,12 @@ fn prescan_header_message(msg: &HeaderMessage, state: &mut ParserState, hints: &
         // Recursively discover channels from CNF payload.
         let mut sub_state = ParserState::new();
         scan_stream(&msg.payload, &mut sub_state, None);
-        for (_, ch_info) in &sub_state.channels {
+        for ch_info in sub_state.channels.values() {
             if !state.channels.contains_key(&ch_info.chs.index) {
                 state.register_chs(&ch_info.chs);
             }
         }
-        for (_, grp_info) in &sub_state.groups {
+        for grp_info in sub_state.groups.values() {
             if !state.groups.contains_key(&grp_info.grp.index) {
                 state.register_grp(&grp_info.grp);
             }
@@ -635,13 +664,10 @@ fn scan_stream(data: &[u8], state: &mut ParserState, progress: Option<&dyn Fn(us
                 }
             }
 
-            match HeaderMessage::parse(data, pos) {
-                Ok((msg, consumed)) => {
-                    handle_header_message(&msg, state);
-                    pos += consumed;
-                    continue;
-                }
-                Err(_) => {}
+            if let Ok((msg, consumed)) = HeaderMessage::parse(data, pos) {
+                handle_header_message(&msg, state);
+                pos += consumed;
+                continue;
             }
         }
 
@@ -736,7 +762,11 @@ fn handle_header_message(msg: &HeaderMessage, state: &mut ParserState) {
                     version: msg.version,
                     payload: msg.payload[6..].to_vec(), // Skip the 6-byte header (idn + ver + len)
                 };
-                state.header_messages.entry(tokens::idn()).or_default().push(synthetic_msg);
+                state
+                    .header_messages
+                    .entry(tokens::idn())
+                    .or_default()
+                    .push(synthetic_msg);
             }
             // Also store under original token for iSLV extraction
             let _ = idn; // used above
@@ -745,29 +775,42 @@ fn handle_header_message(msg: &HeaderMessage, state: &mut ParserState) {
     }
 
     // Store message for metadata extraction
-    state.header_messages.entry(token).or_default().push(msg.clone());
+    state
+        .header_messages
+        .entry(token)
+        .or_default()
+        .push(msg.clone());
 }
 
 /// Try to parse a G (group) message at the given position.
 /// Returns bytes consumed on success.
 fn try_parse_g_message(data: &[u8], pos: usize, state: &mut ParserState) -> Option<usize> {
     // (G + timecode(4) + index(2) + data(N) + )
-    if pos + 9 > data.len() { return None; }
+    if pos + 9 > data.len() {
+        return None;
+    }
 
     let timecode = i32::from_le_bytes([data[pos + 2], data[pos + 3], data[pos + 4], data[pos + 5]]);
     let index = u16::from_le_bytes([data[pos + 6], data[pos + 7]]) as usize;
 
-    if index >= state.gc_data[0].len() { return None; }
+    if index >= state.gc_data[0].len() {
+        return None;
+    }
 
     let total_size = state.gc_data[0][index].add_helper;
-    if pos + total_size > data.len() { return None; }
-    if data[pos + total_size - 1] != b')' { return None; }
+    if pos + total_size > data.len() {
+        return None;
+    }
+    if data[pos + total_size - 1] != b')' {
+        return None;
+    }
 
     let acc = &mut state.gc_data[0][index];
     if timecode > acc.last_timecode {
         acc.last_timecode = timecode;
         // Append timecode + data (skip opcode 2 bytes, include tc+idx+data)
-        acc.data.extend_from_slice(&data[pos + 2..pos + total_size - 1]);
+        acc.data
+            .extend_from_slice(&data[pos + 2..pos + total_size - 1]);
     }
 
     Some(total_size)
@@ -775,21 +818,30 @@ fn try_parse_g_message(data: &[u8], pos: usize, state: &mut ParserState) -> Opti
 
 /// Try to parse an S (single sample) message.
 fn try_parse_s_message(data: &[u8], pos: usize, state: &mut ParserState) -> Option<usize> {
-    if pos + 9 > data.len() { return None; }
+    if pos + 9 > data.len() {
+        return None;
+    }
 
     let timecode = i32::from_le_bytes([data[pos + 2], data[pos + 3], data[pos + 4], data[pos + 5]]);
     let index = u16::from_le_bytes([data[pos + 6], data[pos + 7]]) as usize;
 
-    if index >= state.gc_data[1].len() { return None; }
+    if index >= state.gc_data[1].len() {
+        return None;
+    }
 
     let total_size = state.gc_data[1][index].add_helper;
-    if pos + total_size > data.len() { return None; }
-    if data[pos + total_size - 1] != b')' { return None; }
+    if pos + total_size > data.len() {
+        return None;
+    }
+    if data[pos + total_size - 1] != b')' {
+        return None;
+    }
 
     let acc = &mut state.gc_data[1][index];
     if timecode > acc.last_timecode {
         acc.last_timecode = timecode;
-        acc.data.extend_from_slice(&data[pos + 2..pos + total_size - 1]);
+        acc.data
+            .extend_from_slice(&data[pos + 2..pos + total_size - 1]);
     }
 
     Some(total_size)
@@ -797,21 +849,31 @@ fn try_parse_s_message(data: &[u8], pos: usize, state: &mut ParserState) -> Opti
 
 /// Try to parse an M (multi-sample) message.
 fn try_parse_m_message(data: &[u8], pos: usize, state: &mut ParserState) -> Option<usize> {
-    if pos + 11 > data.len() { return None; }
+    if pos + 11 > data.len() {
+        return None;
+    }
 
     let timecode = i32::from_le_bytes([data[pos + 2], data[pos + 3], data[pos + 4], data[pos + 5]]);
     let index = u16::from_le_bytes([data[pos + 6], data[pos + 7]]) as usize;
     let count = u16::from_le_bytes([data[pos + 8], data[pos + 9]]) as usize;
 
-    if index >= state.gc_data[3].len() { return None; }
+    if index >= state.gc_data[3].len() {
+        return None;
+    }
 
     let sample_size = state.gc_data[3][index].add_helper;
     let mms = state.gc_data[3][index].mms;
-    if mms == 0 { return None; }
+    if mms == 0 {
+        return None;
+    }
 
     let total_size = 10 + sample_size * count + 1; // header + data + ')'
-    if pos + total_size > data.len() { return None; }
-    if data[pos + total_size - 1] != b')' { return None; }
+    if pos + total_size > data.len() {
+        return None;
+    }
+    if data[pos + total_size - 1] != b')' {
+        return None;
+    }
 
     let acc = &mut state.gc_data[3][index];
 
@@ -841,24 +903,34 @@ fn try_parse_m_message(data: &[u8], pos: usize, state: &mut ParserState) -> Opti
 
 /// Try to parse a c (expansion channel) message.
 fn try_parse_c_message(data: &[u8], pos: usize, state: &mut ParserState) -> Option<usize> {
-    if pos + 12 > data.len() { return None; }
+    if pos + 12 > data.len() {
+        return None;
+    }
 
     // c message header: (c + unk1(1) + channel_field(2) + unk3(1) + unk4(1) + timecode(4)
     let channel_field = u16::from_le_bytes([data[pos + 3], data[pos + 4]]);
-    let timecode = i32::from_le_bytes([data[pos + 7], data[pos + 8], data[pos + 9], data[pos + 10]]);
+    let timecode =
+        i32::from_le_bytes([data[pos + 7], data[pos + 8], data[pos + 9], data[pos + 10]]);
     let index = (channel_field >> 3) as usize;
 
-    if index >= state.gc_data[2].len() { return None; }
+    if index >= state.gc_data[2].len() {
+        return None;
+    }
 
     let total_size = state.gc_data[2][index].add_helper;
-    if pos + total_size > data.len() { return None; }
-    if data[pos + total_size - 1] != b')' { return None; }
+    if pos + total_size > data.len() {
+        return None;
+    }
+    if data[pos + total_size - 1] != b')' {
+        return None;
+    }
 
     let acc = &mut state.gc_data[2][index];
     if timecode > acc.last_timecode {
         acc.last_timecode = timecode;
         // For c messages, we store timecode(4) + data (skip the c-specific header)
-        acc.data.extend_from_slice(&data[pos + 7..pos + total_size - 1]);
+        acc.data
+            .extend_from_slice(&data[pos + 7..pos + total_size - 1]);
     }
 
     Some(total_size)
@@ -900,7 +972,9 @@ fn decode_all_channels(
                 if g_idx < gc_data[0].len() && !gc_data[0][g_idx].data.is_empty() {
                     let acc = &gc_data[0][g_idx];
                     let stride = acc.add_helper - 3; // subtract opcode overhead
-                    if stride == 0 { continue; }
+                    if stride == 0 {
+                        continue;
+                    }
                     let n_rows = acc.data.len() / stride;
                     let grp_offset = ch_info.group_offset.unwrap_or(6);
                     // grp_offset is relative to the stored data (after stripping `(G` opcode):
@@ -909,15 +983,20 @@ fn decode_all_channels(
                     let data_offset_in_stored = grp_offset;
 
                     let mut timecodes = Vec::with_capacity(n_rows);
-                    let mut values = ChannelValues::new(decoder_type, ch_info.chs.units(), is_manual, n_rows);
+                    let mut values =
+                        ChannelValues::new(decoder_type, ch_info.chs.units(), is_manual, n_rows);
 
                     for row in 0..n_rows {
                         let row_start = row * stride;
                         // Timecode at start of each row
-                        if row_start + 4 > acc.data.len() { break; }
+                        if row_start + 4 > acc.data.len() {
+                            break;
+                        }
                         let tc = i32::from_le_bytes([
-                            acc.data[row_start], acc.data[row_start + 1],
-                            acc.data[row_start + 2], acc.data[row_start + 3],
+                            acc.data[row_start],
+                            acc.data[row_start + 1],
+                            acc.data[row_start + 2],
+                            acc.data[row_start + 3],
                         ]);
                         timecodes.push(tc as i64 - time_offset);
 
@@ -952,31 +1031,39 @@ fn decode_all_channels(
             let ch_usize = ch_idx as usize;
 
             // Check S messages
-            let (view_offset, stride_offset, cat_idx) = if ch_usize < gc_data[1].len() && !gc_data[1][ch_usize].data.is_empty() {
-                // S messages: stored = tc(4) + idx(2) + data(N), sample starts at offset 6
-                (6, 3, 1)
-            } else if ch_usize < gc_data[2].len() && !gc_data[2][ch_usize].data.is_empty() {
-                // c messages: stored = tc(4) + data(N), sample starts at offset 4
-                (4, 8, 2)
-            } else {
-                (0, 0, 255) // sentinel
-            };
+            let (view_offset, stride_offset, cat_idx) =
+                if ch_usize < gc_data[1].len() && !gc_data[1][ch_usize].data.is_empty() {
+                    // S messages: stored = tc(4) + idx(2) + data(N), sample starts at offset 6
+                    (6, 3, 1)
+                } else if ch_usize < gc_data[2].len() && !gc_data[2][ch_usize].data.is_empty() {
+                    // c messages: stored = tc(4) + data(N), sample starts at offset 4
+                    (4, 8, 2)
+                } else {
+                    (0, 0, 255) // sentinel
+                };
 
             if cat_idx < 4 {
                 let acc = &gc_data[cat_idx][ch_usize];
                 let stride = acc.add_helper - stride_offset;
-                if stride == 0 { continue; }
+                if stride == 0 {
+                    continue;
+                }
                 let n_rows = acc.data.len() / stride;
 
                 let mut timecodes = Vec::with_capacity(n_rows);
-                let mut values = ChannelValues::new(decoder_type, ch_info.chs.units(), is_manual, n_rows);
+                let mut values =
+                    ChannelValues::new(decoder_type, ch_info.chs.units(), is_manual, n_rows);
 
                 for row in 0..n_rows {
                     let row_start = row * stride;
-                    if row_start + 4 > acc.data.len() { break; }
+                    if row_start + 4 > acc.data.len() {
+                        break;
+                    }
                     let tc = i32::from_le_bytes([
-                        acc.data[row_start], acc.data[row_start + 1],
-                        acc.data[row_start + 2], acc.data[row_start + 3],
+                        acc.data[row_start],
+                        acc.data[row_start + 1],
+                        acc.data[row_start + 2],
+                        acc.data[row_start + 3],
                     ]);
                     timecodes.push(tc as i64 - time_offset);
 
@@ -1009,7 +1096,8 @@ fn decode_all_channels(
                     let n_rows = acc.timecodes.len();
 
                     let mut timecodes = Vec::with_capacity(n_rows);
-                    let mut values = ChannelValues::new(decoder_type, ch_info.chs.units(), is_manual, n_rows);
+                    let mut values =
+                        ChannelValues::new(decoder_type, ch_info.chs.units(), is_manual, n_rows);
 
                     for (i, &tc) in acc.timecodes.iter().enumerate() {
                         timecodes.push(tc as i64 - time_offset);
@@ -1045,9 +1133,12 @@ fn decode_all_channels(
 
 /// Process LAP messages with segment filtering, dedup, gap-fill, 0-based normalization.
 /// Matches aim_xrk.pyx:_get_laps (LAP message branch).
-fn process_laps(header_messages: &HashMap<u32, Vec<HeaderMessage>>, time_offset: i64) -> Vec<LapInfo> {
-    use std::io::Cursor;
+fn process_laps(
+    header_messages: &HashMap<u32, Vec<HeaderMessage>>,
+    time_offset: i64,
+) -> Vec<LapInfo> {
     use binrw::BinRead;
+    use std::io::Cursor;
 
     let mut lap_nums: Vec<i32> = Vec::new();
     let mut start_times: Vec<i64> = Vec::new();
@@ -1055,8 +1146,12 @@ fn process_laps(header_messages: &HashMap<u32, Vec<HeaderMessage>>, time_offset:
 
     if let Some(lap_msgs) = header_messages.get(&tokens::lap()) {
         for m in lap_msgs {
-            if m.payload.len() < 20 { continue; }
-            let Ok(lap) = LapPayload::read(&mut Cursor::new(&m.payload)) else { continue };
+            if m.payload.len() < 20 {
+                continue;
+            }
+            let Ok(lap) = LapPayload::read(&mut Cursor::new(&m.payload)) else {
+                continue;
+            };
 
             let end_time = lap.end_time as i64 - time_offset;
             let duration = lap.duration as i64;
@@ -1096,12 +1191,16 @@ fn process_laps(header_messages: &HashMap<u32, Vec<HeaderMessage>>, time_offset:
         }
     }
 
-    lap_nums.iter().enumerate().map(|(i, &n)| LapInfo {
-        segment: 0,
-        lap_num: n as u16,
-        duration: (end_times[i] - start_times[i]) as u32,
-        end_time: end_times[i] as u32,
-    }).collect()
+    lap_nums
+        .iter()
+        .enumerate()
+        .map(|(i, &n)| LapInfo {
+            segment: 0,
+            lap_num: n as u16,
+            duration: (end_times[i] - start_times[i]) as u32,
+            end_time: end_times[i] as u32,
+        })
+        .collect()
 }
 
 /// Processed lap info ready for Arrow conversion.
@@ -1115,8 +1214,8 @@ pub struct ProcessedLap {
 
 /// Get processed laps from ParseResult (with proper start/end times).
 pub fn get_processed_laps(result: &ParseResult) -> Vec<ProcessedLap> {
-    use std::io::Cursor;
     use binrw::BinRead;
+    use std::io::Cursor;
 
     let mut lap_nums: Vec<i32> = Vec::new();
     let mut start_times: Vec<i64> = Vec::new();
@@ -1124,14 +1223,20 @@ pub fn get_processed_laps(result: &ParseResult) -> Vec<ProcessedLap> {
 
     if let Some(lap_msgs) = result.header_messages.get(&tokens::lap()) {
         for m in lap_msgs {
-            if m.payload.len() < 20 { continue; }
-            let Ok(lap) = LapPayload::read(&mut Cursor::new(&m.payload)) else { continue };
+            if m.payload.len() < 20 {
+                continue;
+            }
+            let Ok(lap) = LapPayload::read(&mut Cursor::new(&m.payload)) else {
+                continue;
+            };
 
             let end_time = lap.end_time as i64 - result.time_offset;
             let duration = lap.duration as i64;
             let lap_num = lap.lap_num as i32;
 
-            if lap.segment != 0 { continue; }
+            if lap.segment != 0 {
+                continue;
+            }
 
             if lap_nums.is_empty() {
                 // accept
@@ -1159,9 +1264,13 @@ pub fn get_processed_laps(result: &ParseResult) -> Vec<ProcessedLap> {
         }
     }
 
-    lap_nums.iter().enumerate().map(|(i, &n)| ProcessedLap {
-        num: n,
-        start_time: start_times[i],
-        end_time: end_times[i],
-    }).collect()
+    lap_nums
+        .iter()
+        .enumerate()
+        .map(|(i, &n)| ProcessedLap {
+            num: n,
+            start_time: start_times[i],
+            end_time: end_times[i],
+        })
+        .collect()
 }

@@ -15,6 +15,9 @@ impl IdnPayload {
     pub fn parse(data: &[u8]) -> Self {
         let model_id = u16::from_le_bytes([data[0], data[1]]);
         let logger_id = u32::from_le_bytes([data[6], data[7], data[8], data[9]]);
-        IdnPayload { model_id, logger_id }
+        IdnPayload {
+            model_id,
+            logger_id,
+        }
     }
 }
