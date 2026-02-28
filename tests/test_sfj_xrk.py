@@ -9,7 +9,7 @@ import pyarrow as pa
 from parameterized import parameterized
 
 from libxrk import aim_xrk
-from libxrk.base import LogFile
+from libxrk.base import ChannelMetadata, LogFile
 
 
 # Path to test data
@@ -355,22 +355,17 @@ class TestSFJXRK(unittest.TestCase):
 
         for channel_name, expected_units, expected_dec_pts, expected_interpolate in test_cases:
             self.assertIn(channel_name, log.channels, f"Channel '{channel_name}' not found")
-            channel_table = log.channels[channel_name]
-            schema = channel_table.schema
-            data_field = schema.field(channel_name)
-            metadata = data_field.metadata or {}
+            meta = ChannelMetadata.from_channel_table(log.channels[channel_name], channel_name)
 
-            units = metadata.get(b"units", b"").decode("utf-8")
-            dec_pts = metadata.get(b"dec_pts", b"").decode("utf-8")
-            interpolate = metadata.get(b"interpolate", b"").decode("utf-8")
-
-            self.assertEqual(units, expected_units, f"Channel '{channel_name}' units mismatch")
+            self.assertEqual(meta.units, expected_units, f"Channel '{channel_name}' units mismatch")
             self.assertEqual(
-                dec_pts, expected_dec_pts, f"Channel '{channel_name}' dec_pts mismatch"
+                meta.dec_pts,
+                int(expected_dec_pts),
+                f"Channel '{channel_name}' dec_pts mismatch",
             )
             self.assertEqual(
-                interpolate,
-                expected_interpolate,
+                meta.interpolate,
+                expected_interpolate == "True",
                 f"Channel '{channel_name}' interpolate mismatch",
             )
 
@@ -543,15 +538,23 @@ class TestSFJCrossBackend(unittest.TestCase):
     def test_channel_metadata_match(self) -> None:
         """Channel metadata (units, dec_pts, interpolate) should match between backends."""
         for name in self.rust_log.channels:
-            rust_meta = self.rust_log.channels[name].schema.field(name).metadata or {}
-            cython_meta = self.cython_log.channels[name].schema.field(name).metadata or {}
-            for key in (b"units", b"dec_pts", b"interpolate"):
-                self.assertEqual(
-                    rust_meta.get(key),
-                    cython_meta.get(key),
-                    f"Channel {name!r} metadata {key!r}: "
-                    f"rust={rust_meta.get(key)!r} != cython={cython_meta.get(key)!r}",
-                )
+            rust_meta = ChannelMetadata.from_channel_table(self.rust_log.channels[name], name)
+            cython_meta = ChannelMetadata.from_channel_table(self.cython_log.channels[name], name)
+            self.assertEqual(
+                rust_meta.units,
+                cython_meta.units,
+                f"Channel {name!r} units mismatch",
+            )
+            self.assertEqual(
+                rust_meta.dec_pts,
+                cython_meta.dec_pts,
+                f"Channel {name!r} dec_pts mismatch",
+            )
+            self.assertEqual(
+                rust_meta.interpolate,
+                cython_meta.interpolate,
+                f"Channel {name!r} interpolate mismatch",
+            )
 
 
 if __name__ == "__main__":

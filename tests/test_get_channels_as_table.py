@@ -2,7 +2,7 @@
 
 import unittest
 import pyarrow as pa
-from libxrk.base import LogFile
+from libxrk.base import ChannelMetadata, LogFile
 
 
 class TestChannelMerge(unittest.TestCase):
@@ -291,18 +291,16 @@ class TestChannelMerge(unittest.TestCase):
 
     def test_column_metadata_preserved(self):
         """Test that column metadata is preserved in the merged table."""
-        # Create channels with metadata
+        # Create channels with metadata using ChannelMetadata
+        meta_a = ChannelMetadata(units="m/s", dec_pts=2, interpolate=True)
         channel_a = pa.table(
             {
                 "timecodes": pa.array([0, 100], type=pa.int64()),
                 "ChannelA": pa.array([1.0, 2.0], type=pa.float32()),
             }
         )
-        # Add metadata to ChannelA
         channel_a_field = channel_a.schema.field("ChannelA")
-        channel_a_field_with_meta = channel_a_field.with_metadata(
-            {b"units": b"m/s", b"dec_pts": b"2", b"interpolate": b"linear"}
-        )
+        channel_a_field_with_meta = channel_a_field.with_metadata(meta_a.to_field_metadata())
         new_schema_a = pa.schema(
             [
                 channel_a.schema.field("timecodes"),
@@ -311,17 +309,15 @@ class TestChannelMerge(unittest.TestCase):
         )
         channel_a = channel_a.cast(new_schema_a)
 
+        meta_b = ChannelMetadata(units="rpm", dec_pts=0, interpolate=False)
         channel_b = pa.table(
             {
                 "timecodes": pa.array([50, 150], type=pa.int64()),
                 "ChannelB": pa.array([10.0, 20.0], type=pa.float32()),
             }
         )
-        # Add different metadata to ChannelB
         channel_b_field = channel_b.schema.field("ChannelB")
-        channel_b_field_with_meta = channel_b_field.with_metadata(
-            {b"units": b"rpm", b"dec_pts": b"0", b"interpolate": b"step"}
-        )
+        channel_b_field_with_meta = channel_b_field.with_metadata(meta_b.to_field_metadata())
         new_schema_b = pa.schema(
             [
                 channel_b.schema.field("timecodes"),
@@ -339,22 +335,16 @@ class TestChannelMerge(unittest.TestCase):
 
         result = log.get_channels_as_table()
 
-        # Check that metadata is preserved for ChannelA
-        schema = result.schema
-        channel_a_field = schema.field("ChannelA")
-        channel_a_metadata = channel_a_field.metadata or {}
+        # Check that metadata is preserved using ChannelMetadata
+        result_meta_a = ChannelMetadata.from_field(result.schema.field("ChannelA"))
+        self.assertEqual(result_meta_a.units, "m/s")
+        self.assertEqual(result_meta_a.dec_pts, 2)
+        self.assertTrue(result_meta_a.interpolate)
 
-        self.assertEqual(channel_a_metadata.get(b"units"), b"m/s")
-        self.assertEqual(channel_a_metadata.get(b"dec_pts"), b"2")
-        self.assertEqual(channel_a_metadata.get(b"interpolate"), b"linear")
-
-        # Check that metadata is preserved for ChannelB
-        channel_b_field = schema.field("ChannelB")
-        channel_b_metadata = channel_b_field.metadata or {}
-
-        self.assertEqual(channel_b_metadata.get(b"units"), b"rpm")
-        self.assertEqual(channel_b_metadata.get(b"dec_pts"), b"0")
-        self.assertEqual(channel_b_metadata.get(b"interpolate"), b"step")
+        result_meta_b = ChannelMetadata.from_field(result.schema.field("ChannelB"))
+        self.assertEqual(result_meta_b.units, "rpm")
+        self.assertEqual(result_meta_b.dec_pts, 0)
+        self.assertFalse(result_meta_b.interpolate)
 
     def test_forward_fill_without_interpolate_metadata(self):
         """Test that channels without interpolate metadata use forward fill."""
