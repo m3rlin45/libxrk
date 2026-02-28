@@ -35,8 +35,9 @@ pub fn detect_gps_timing_offset_from_gnfi(
     }
 
     let tolerance: i64 = 5000;
-    let gps_end = *gps_timecodes.last().unwrap();
-    let gnfi_end = *gnfi_timecodes.last().unwrap();
+    // Safety: both slices have len >= 2 (checked above), so .last() is always Some.
+    let gps_end = *gps_timecodes.last().unwrap_or(&0);
+    let gnfi_end = *gnfi_timecodes.last().unwrap_or(&0);
     let offset = gps_end - gnfi_end;
 
     // Check if GPS extends ~65533ms beyond GNFI (the bug signature)
@@ -139,22 +140,24 @@ pub fn detect_gap_corrections(
 
     // Method 3: Indirect detection - GPS extends ~65533ms beyond other channels
     if let Some(max_non_gps_end) = non_gps_max_end_time {
-        let gps_end = *gps_timecodes.last().unwrap();
+        // Safety: gps_timecodes.len() >= 2 checked at function entry
+        let gps_end = *gps_timecodes.last().unwrap_or(&0);
         let end_offset = gps_end - max_non_gps_end;
 
         if (OVERFLOW_GAP_MIN..=OVERFLOW_GAP_MAX).contains(&end_offset) {
-            // Find the largest gap
-            let largest_gap_idx = gap_indices
+            // Find the largest gap — gap_indices is non-empty (checked at line 109),
+            // but guard against panics on malformed data regardless.
+            if let Some(largest_gap_idx) = gap_indices
                 .iter()
                 .copied()
                 .max_by_key(|&i| gps_timecodes[i + 1] - gps_timecodes[i])
-                .unwrap();
-
-            let gap_time = gps_timecodes[largest_gap_idx];
-            corrections.push(GapCorrection {
-                gap_time,
-                correction: OVERFLOW_BUG_MS,
-            });
+            {
+                let gap_time = gps_timecodes[largest_gap_idx];
+                corrections.push(GapCorrection {
+                    gap_time,
+                    correction: OVERFLOW_BUG_MS,
+                });
+            }
         }
     }
 

@@ -139,7 +139,7 @@ class TestGpsTimingGapFix(unittest.TestCase):
         self.assertTrue(np.any(dt_before > 400), "Test setup: gap should exist before fix")
 
         # Apply the fix
-        fix_gps_timing_gaps(log)
+        log = fix_gps_timing_gaps(log)
 
         # Verify the gap is fixed
         gps_time_after = log.channels["GPS Speed"].column("timecodes").to_numpy()
@@ -151,7 +151,7 @@ class TestGpsTimingGapFix(unittest.TestCase):
     def test_fixes_all_gps_channels(self):
         """Test that all GPS channels are corrected together."""
         log = create_mock_log_with_gps_gap()
-        fix_gps_timing_gaps(log)
+        log = fix_gps_timing_gaps(log)
 
         # All GPS channels should have the same corrected timecodes
         reference_time = log.channels["GPS Speed"].column("timecodes").to_numpy()
@@ -166,7 +166,7 @@ class TestGpsTimingGapFix(unittest.TestCase):
     def test_preserves_channel_metadata(self):
         """Test that channel metadata is preserved after fix."""
         log = create_mock_log_with_gps_gap()
-        fix_gps_timing_gaps(log)
+        log = fix_gps_timing_gaps(log)
 
         # Check metadata is preserved
         speed_field = log.channels["GPS Speed"].schema.field("GPS Speed")
@@ -181,7 +181,7 @@ class TestGpsTimingGapFix(unittest.TestCase):
         # Store original values
         original_speed = log.channels["GPS Speed"].column("GPS Speed").to_numpy().copy()
 
-        fix_gps_timing_gaps(log)
+        log = fix_gps_timing_gaps(log)
 
         # Values should be unchanged
         fixed_speed = log.channels["GPS Speed"].column("GPS Speed").to_numpy()
@@ -194,7 +194,7 @@ class TestGpsTimingGapFix(unittest.TestCase):
         # Store original BRK timecodes
         original_brk_time = log.channels["BRK"].column("timecodes").to_numpy().copy()
 
-        fix_gps_timing_gaps(log)
+        log = fix_gps_timing_gaps(log)
 
         # BRK timecodes should be unchanged
         fixed_brk_time = log.channels["BRK"].column("timecodes").to_numpy()
@@ -207,7 +207,7 @@ class TestGpsTimingGapFix(unittest.TestCase):
         # Get original lap 3 start (which is after the gap at ~70000ms)
         original_lap3_start = log.laps.column("start_time").to_numpy()[2]
 
-        fix_gps_timing_gaps(log)
+        log = fix_gps_timing_gaps(log)
 
         # Lap 3 start should be shifted back by the gap correction
         fixed_lap3_start = log.laps.column("start_time").to_numpy()[2]
@@ -245,7 +245,7 @@ class TestGpsTimingGapFix(unittest.TestCase):
 
         original_time = log.channels["GPS Speed"].column("timecodes").to_numpy().copy()
 
-        fix_gps_timing_gaps(log)
+        log = fix_gps_timing_gaps(log)
 
         fixed_time = log.channels["GPS Speed"].column("timecodes").to_numpy()
         np.testing.assert_array_equal(original_time, fixed_time)
@@ -300,7 +300,7 @@ class TestGpsTimingGapFix(unittest.TestCase):
 
         log = LogFile(channels=channels, laps=laps, metadata={}, file_name="test.xrk")
 
-        fix_gps_timing_gaps(log)
+        log = fix_gps_timing_gaps(log)
 
         # Verify both gaps are fixed
         fixed_time = log.channels["GPS Speed"].column("timecodes").to_numpy()
@@ -325,11 +325,11 @@ class TestGpsTimingGapFix(unittest.TestCase):
         result = fix_gps_timing_gaps(log)
         self.assertIs(result, log)
 
-    def test_returns_same_log_object(self):
-        """Test that the function returns the same LogFile object (in-place modification)."""
+    def test_returns_new_log_object(self):
+        """Test that the function returns a new LogFile (immutable pattern)."""
         log = create_mock_log_with_gps_gap()
         result = fix_gps_timing_gaps(log)
-        self.assertIs(result, log)
+        self.assertIsNot(result, log)
 
 
 class TestGpsTimingGapFixIntegration(unittest.TestCase):
@@ -545,7 +545,7 @@ class TestGnfiBasedDetection(unittest.TestCase):
         self.assertTrue(np.any(dt_before > 400), "Test setup: gap should exist before fix")
 
         # Apply the fix WITHOUT GNFI (should fall back to heuristics)
-        fix_gps_timing_gaps(log, gnfi_timecodes=None)
+        log = fix_gps_timing_gaps(log, gnfi_timecodes=None)
 
         # Verify the gap is fixed
         gps_time_after = log.channels["GPS Speed"].column("timecodes").to_numpy()
@@ -579,7 +579,7 @@ class TestGnfiBasedDetection(unittest.TestCase):
         log = LogFile(channels=channels, laps=None, metadata={}, file_name="test.xrk")
 
         # Apply fix with GNFI
-        fix_gps_timing_gaps(log, gnfi_timecodes=gnfi_timecodes)
+        log = fix_gps_timing_gaps(log, gnfi_timecodes=gnfi_timecodes)
 
         # Verify the gap is fixed
         gps_time_fixed = log.channels["GPS Speed"].column("timecodes").to_numpy()

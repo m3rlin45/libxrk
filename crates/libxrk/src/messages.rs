@@ -113,7 +113,9 @@ impl HeaderMessage {
         let payload = &d[payload_start..payload_end];
 
         // Checksum: sum of payload bytes truncated to u16 (wrapping is intentional)
-        let checksum: u16 = payload.iter().fold(0u16, |acc, &b| acc.wrapping_add(b as u16));
+        let checksum: u16 = payload
+            .iter()
+            .fold(0u16, |acc, &b| acc.wrapping_add(b as u16));
 
         // Footer
         let ftr = &d[payload_end..];
