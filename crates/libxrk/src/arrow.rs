@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use arrow::array::{
     Array, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, RecordBatch,
-    UInt16Array, UInt32Array, UInt8Array,
+    StringArray, UInt16Array, UInt32Array, UInt8Array,
 };
 use arrow::datatypes::{DataType, Field, Schema};
 
@@ -154,16 +154,18 @@ pub fn build_all_channel_batches(
 
 /// Build an Arrow RecordBatch for laps.
 ///
-/// Columns: num (Int32), start_time (Int64), end_time (Int64).
+/// Columns: num (Int32), start_time (Int64), end_time (Int64), lap_type (Utf8).
 pub fn build_laps_batch(laps: &[ProcessedLap]) -> arrow::error::Result<RecordBatch> {
     let nums: Vec<i32> = laps.iter().map(|l| l.num).collect();
     let starts: Vec<i64> = laps.iter().map(|l| l.start_time).collect();
     let ends: Vec<i64> = laps.iter().map(|l| l.end_time).collect();
+    let types: Vec<&str> = laps.iter().map(|l| l.lap_type.as_str()).collect();
 
     let schema = Schema::new(vec![
         Field::new("num", DataType::Int32, false),
         Field::new("start_time", DataType::Int64, false),
         Field::new("end_time", DataType::Int64, false),
+        Field::new("lap_type", DataType::Utf8, false),
     ]);
 
     RecordBatch::try_new(
@@ -172,6 +174,7 @@ pub fn build_laps_batch(laps: &[ProcessedLap]) -> arrow::error::Result<RecordBat
             Arc::new(Int32Array::from(nums)),
             Arc::new(Int64Array::from(starts)),
             Arc::new(Int64Array::from(ends)),
+            Arc::new(StringArray::from(types)),
         ],
     )
 }
