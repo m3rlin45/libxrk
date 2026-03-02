@@ -132,8 +132,8 @@ class LogFile:
         channels: Dict mapping channel names to PyArrow tables. Each table has
             'timecodes' (int64, ms) and '<channel_name>' columns. Channel metadata
             (units, dec_pts, interpolate) stored in schema.field.metadata with bytes keys.
-        laps: PyArrow table with columns: num (int), start_time (int), end_time (int).
-            Times are in milliseconds.
+        laps: PyArrow table with columns: num (int), start_time (int), end_time (int),
+            lap_type (str: "full", "out", "in"). Times are in milliseconds.
         metadata: Dict of session metadata (racer, vehicle, venue, etc.)
         file_name: Original filename or "<bytes>" if loaded from bytes.
 

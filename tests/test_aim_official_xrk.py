@@ -53,6 +53,15 @@ class TestAIMOfficialXRK(unittest.TestCase):
         self.assertEqual(log.laps.num_rows, 11, "Expected 11 laps (matching DLL)")
         self.assertGreater(log.laps.num_rows, 0, "Expected at least one lap")
 
+        # Verify lap_type column exists
+        self.assertIn("lap_type", log.laps.column_names, "Laps table missing 'lap_type' column")
+
+        # GPS-detected laps: last is "in", others are "full"
+        lap_types = log.laps.column("lap_type").to_pylist()
+        for i in range(len(lap_types) - 1):
+            self.assertEqual(lap_types[i], "full", f"GPS lap {i} should be 'full'")
+        self.assertEqual(lap_types[-1], "in", "Last GPS lap should be 'in'")
+
         # Get lap data as Python lists for easier assertions
         lap_nums = log.laps.column("num").to_pylist()
         start_times = log.laps.column("start_time").to_pylist()
@@ -192,6 +201,12 @@ class TestAIMOfficialCrossBackend(unittest.TestCase):
     def test_lap_count_match(self) -> None:
         """Lap count should match between backends."""
         self.assertEqual(self.rust_log.laps.num_rows, self.cython_log.laps.num_rows)
+
+    def test_lap_types_match(self) -> None:
+        """Lap types should match between backends."""
+        rust_types = self.rust_log.laps.column("lap_type").to_pylist()
+        cython_types = self.cython_log.laps.column("lap_type").to_pylist()
+        self.assertEqual(rust_types, cython_types)
 
     def test_lap_durations_match(self) -> None:
         """Lap durations should match between backends.

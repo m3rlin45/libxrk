@@ -1154,6 +1154,7 @@ def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
     lap_nums = []
     start_times = []
     end_times = []
+    lap_types = []
     has_lap_messages = False
 
     # Prefer LAP messages when available (matches official DLL behavior)
@@ -1176,11 +1177,36 @@ def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
                 lap_nums.append(lap - 1)
                 start_times.append(end_times[-1])
                 end_times.append(end_time - duration)
+                lap_types.append('full')
             else:
                 raise ValueError('Lap gap from %d to %d' % (lap_nums[-1], lap))
             lap_nums.append(lap)
             start_times.append(end_time - duration)
             end_times.append(end_time)
+            lap_types.append('full')
+
+        # Classify first lap as "out" if it starts at or before time 0
+        if lap_types and start_times[0] <= 0:
+            lap_types[0] = 'out'
+
+        # Classify last lap as "in" if GPS shows car is not near S/F at end
+        if lap_types and lap_types[-1] != 'out' and lat_ch and lon_ch:
+            trk_msgs = msg_by_type.get(_tokdec('TRK'))
+            if trk_msgs:
+                track = trk_msgs[-1].content
+                sf_lat, sf_lon = track['sf_lat'], track['sf_long']
+                sf_xyz = np.array(gps.lla2ecef(np.array([sf_lat]), np.array([sf_lon]), 0)).T[0]
+
+                tc = np.array(lat_ch.timecodes)
+                idx = min(np.searchsorted(tc, end_times[-1]), len(tc) - 1)
+                end_lat = float(lat_ch.sampledata[idx])
+                end_lon = float(lon_ch.sampledata[idx])
+                end_xyz = np.array(gps.lla2ecef(np.array([end_lat]), np.array([end_lon]), 0)).T[0]
+
+                dist = float(np.linalg.norm(sf_xyz - end_xyz))
+                if dist > 30.0:
+                    lap_types[-1] = 'in'
+
     elif lat_ch and lon_ch:
         # Fall back to GPS-based lap detection only when no LAP messages exist
         track = msg_by_type[_tokdec('TRK')][-1].content
@@ -1202,7 +1228,12 @@ def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
                 lap_nums.append(lap)
                 start_times.append(start_time)
                 end_times.append(end_time)
-    
+                lap_types.append('full')
+
+            # Last GPS lap always ends at session_end, classify as "in"
+            if lap_types:
+                lap_types[-1] = 'in'
+
     # Normalize lap numbers to 0-based indexing (matches DLL behavior)
     if lap_nums:
         min_lap = min(lap_nums)
@@ -1212,7 +1243,8 @@ def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
     laps_table = pa.table({
         'num': pa.array(lap_nums, type=pa.int32()),
         'start_time': pa.array(start_times, type=pa.int64()),
-        'end_time': pa.array(end_times, type=pa.int64())
+        'end_time': pa.array(end_times, type=pa.int64()),
+        'lap_type': pa.array(lap_types, type=pa.utf8()),
     })
     return laps_table, has_lap_messages
 

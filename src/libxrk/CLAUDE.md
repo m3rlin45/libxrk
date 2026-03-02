@@ -25,7 +25,7 @@ aim_xrk(fname, progress=None) -> LogFile
 
 ```python
 log.channels   # Dict[str, pa.Table] - channel name -> PyArrow table
-log.laps       # pa.Table - columns: num, start_time, end_time (ms)
+log.laps       # pa.Table - columns: num, start_time, end_time (ms), lap_type (str)
 log.metadata   # Dict[str, Any] - session info
 ```
 
@@ -53,6 +53,17 @@ Standard metadata fields extracted from XRK files:
 | Odo/* | various | Odometer readings |
 | Expansion Devices | list[dict] | CAN expansion devices (Bus Unit, Bus Type, Version, Manufacturer, Model, Logger ID, Model ID) |
 | Calibrations | list[dict] | Per-channel calibration data (type, raw_1, raw_2, channel; type 1 adds output_1, output_2) |
+
+## Laps Table
+
+The laps table has columns:
+- `num` (int32) — 0-based lap number
+- `start_time` (int64) — lap start time in milliseconds
+- `end_time` (int64) — lap end time in milliseconds
+- `lap_type` (utf8) — lap classification:
+  - `"full"` — normal S/F to S/F lap
+  - `"out"` — first lap starting at session beginning (start_time <= 0), not at S/F crossing
+  - `"in"` — last lap where session data continues past the final S/F crossing, or last GPS-detected lap
 
 ## Channel Tables
 

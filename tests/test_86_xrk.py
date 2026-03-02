@@ -165,6 +165,7 @@ class Test86XRK(unittest.TestCase):
         self.assertIn("num", log.laps.column_names, "Laps table missing 'num' column")
         self.assertIn("start_time", log.laps.column_names, "Laps table missing 'start_time' column")
         self.assertIn("end_time", log.laps.column_names, "Laps table missing 'end_time' column")
+        self.assertIn("lap_type", log.laps.column_names, "Laps table missing 'lap_type' column")
 
         # Should have exactly 16 laps
         self.assertEqual(len(log.laps), 16, f"Expected 16 laps, got {len(log.laps)}")
@@ -212,6 +213,24 @@ class Test86XRK(unittest.TestCase):
             self.assertAlmostEqual(
                 end_time, expected_end, delta=1.0, msg=f"Lap {expected_num} end time mismatch"
             )
+
+    @parameterized.expand(FILE_VARIANTS)
+    def test_86_xrk_lap_types(self, name, file_path):
+        """Test that lap types are correctly classified."""
+        log = aim_xrk(str(file_path), progress=None)
+
+        lap_types = log.laps.column("lap_type").to_pylist()
+        self.assertEqual(len(lap_types), 16)
+
+        # Lap 0 starts at time 0 -> "out"
+        self.assertEqual(lap_types[0], "out")
+
+        # Middle laps are "full"
+        for i in range(1, 15):
+            self.assertEqual(lap_types[i], "full", f"Lap {i} should be 'full'")
+
+        # Last lap (15) is "in" — GPS shows car is 257m from S/F at end
+        self.assertEqual(lap_types[15], "in")
 
     @parameterized.expand(FILE_VARIANTS)
     def test_86_xrk_channel_count_and_names(self, name, file_path):
@@ -889,6 +908,9 @@ class Test86CrossBackend(unittest.TestCase):
         rust_ends = self.rust_log.laps.column("end_time").to_pylist()
         cython_ends = self.cython_log.laps.column("end_time").to_pylist()
         self.assertEqual(rust_ends, cython_ends)
+        rust_types = self.rust_log.laps.column("lap_type").to_pylist()
+        cython_types = self.cython_log.laps.column("lap_type").to_pylist()
+        self.assertEqual(rust_types, cython_types)
 
     def test_channel_metadata_match(self) -> None:
         """Channel metadata (units, dec_pts, interpolate, function) should match between backends."""
