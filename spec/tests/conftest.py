@@ -114,6 +114,16 @@ def issue68_cython():
 
 
 @pytest.fixture(scope="session")
+def issue68_rust():
+    """Load the issue68 file via Rust parser once per session."""
+    try:
+        from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
+    except ImportError:
+        pytest.skip("Rust backend not available")
+    return rust_aim_xrk(str(ISSUE68_XRZ))
+
+
+@pytest.fixture(scope="session")
 def issue68_dll():
     """Extract issue68 data from the official AIM DLL."""
     if not _dll_available():
