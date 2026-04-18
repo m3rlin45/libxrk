@@ -200,21 +200,25 @@ Each 64-byte record:
 
 ## (c) Expansion Data Messages
 
+**Under active investigation — see issue #68.** New AIM loggers emit c-message variants whose `unk1`, `unk4`, and the low 3 bits of `channel_field` take values other than the constants previously observed. The fields below are documented as they appear on the older MXP/MXm-class files in `tests/test_data/{SFJ,86,aim_official,issue49}/`. The forthcoming fix will replace this section with a full V1/V2/V3 variant table once the new variants are reverse-engineered.
+
 ### Byte [2] `unk1` (uint8)
-- **Observed**: Always 0x00
-- **Status**: Validated as zero (assertion in parser)
+- **Observed on older files**: 0x00
+- **Observed on new loggers (issue #68)**: also 0x01 in a new short-form variant
+- **Status**: No longer a constant — variant tag
 
 ### Byte [5] `unk3` (uint8)
-- **Observed**: Always 0x84
+- **Observed**: 0x84 across all files seen so far
 - **Hypothesis**: Message subtype or expansion bus ID
-- **Status**: Constant; validated as 0x84
+- **Status**: Still a constant in practice, but treat as variant tag until confirmed
 
 ### Byte [6] `unk4` (uint8)
-- **Observed**: Always 0x06
-- **Hypothesis**: Protocol version or message format indicator
-- **Status**: Constant; validated as 0x06
+- **Observed on older files**: 0x06
+- **Observed on new loggers (issue #68)**: 0x06 (existing), 0x08 (new long variant), 0x02 (new short variant)
+- **Hypothesis**: Variant tag selecting message layout
+- **Status**: No longer a constant — variant tag
 
 ### Bits [0:3] of `channel_field` (uint16 at offset [3])
-- **Observed**: Always 0x4 (binary 100)
-- **Hypothesis**: Message variant flag
-- **Status**: Validated; actual channel index is `channel_field >> 3`
+- **Observed on older files**: 0x4 (binary 100)
+- **Observed on new loggers (issue #68)**: also 0x0, 0x8, 0xc — pattern not yet decoded
+- **Status**: No longer a constant; the `channel_field >> 3` index rule only holds for the older (unk4=0x06) variant
