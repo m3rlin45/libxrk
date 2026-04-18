@@ -16,19 +16,32 @@ just test            # pytest
 uv build             # Build wheel
 ```
 
+## Reference Implementation / Wire Format Spec
+
+`spec/xrk_format.py` is the **single source of truth for the XRK wire format**, built with the Construct library. It parses real XRK/XRZ files and round-trips bytes byte-identically (every message type has a `TestXxxRoundTrip` in `spec/tests/test_round_trip.py` asserting `build(parse(raw)) == raw`).
+
+**Any change to how the wire format is interpreted must land in `spec/xrk_format.py` first.** The Cython and Rust backends then conform to the spec — not the other way around. Cross-implementation tests in `spec/tests/test_spec.py` compare the spec's output against the Cython parser and, when available, the official AIM DLL (via Wine, in `tests/reference_dll/`) as ground truth.
+
+When you find data parsing differs from AIM's RaceStudio output, start by reading `spec/xrk_format.py` and `spec/docs/`. Do not patch the Cython or Rust parsers without first updating the spec.
+
 ## Code Structure
 
-- `src/libxrk/aim_xrk.pyx` - Cython binary parser (default backend)
+- `spec/xrk_format.py` - Construct-based executable spec (**reference implementation** — the wire format lives here)
+- `spec/tests/` - spec tests: round-trip + cross-impl vs Cython and the AIM DLL
+- `spec/docs/companion.md` - application-level algorithms (GPS timing, lap detection, decoder dispatch)
+- `spec/docs/unknown_regions.md` - catalog of under-reverse-engineered byte ranges per message type
+- `src/libxrk/aim_xrk.pyx` - Cython binary parser (default backend, conforms to spec)
 - `src/libxrk/aim_xrk.pyi` - Type stubs for Cython module
-- `crates/` - Rust+PyO3 parser (~2x faster)
+- `crates/` - Rust+PyO3 parser (~2x faster, conforms to spec)
 - `src/libxrk/_aim_xrk_rs.pyi` - Type stubs for Rust module
 - `src/libxrk/base.py` - LogFile dataclass, channel merging
 - `src/libxrk/gps.py` - GPS utilities, lap detection, timing fix
 - `tests/` - pytest tests with real XRK data in `tests/test_data/`
+- `tests/reference_dll/` - official AIM parser (via Wine) used as ground truth for spec cross-checks
 
 ## Parser Backends
 
-The library has two parser backends with identical APIs. Both are included in all published wheels.
+The library has two parser backends with identical APIs. Both are included in all published wheels. **Both backends implement the wire format defined by `spec/xrk_format.py` — the Construct spec is the reference. If parsing changes, update the spec first.**
 
 - **Cython** (default): `src/libxrk/aim_xrk.pyx` — mature, well-tested
 - **Rust**: `crates/` — ~2x faster

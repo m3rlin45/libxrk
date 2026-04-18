@@ -210,6 +210,7 @@ pub fn parse_xrk(
             data.len()
         )));
     }
+    resolve_c_variants(&mut state);
     state.finalize()
 }
 
@@ -232,6 +233,17 @@ struct ParserState {
     last_time: Option<i64>,
     /// ENF sub-messages: each entry is the sub-parsed messages from one ENF message
     enf_sub_messages: Vec<HashMap<u32, Vec<HeaderMessage>>>,
+    /// Buffer for V2/V3 (c)-message variants — see spec/xrk_format.py
+    /// :_resolve_c_variants. Keyed by channel_field. Entries are
+    /// (synthesized_or_embedded_tc, sample_bytes, priority, file_order).
+    /// priority: 3 = V2(base), 2 = V3, 1 = V2(+4). Higher wins at tc collision.
+    v2v3_by_cf: HashMap<u16, Vec<(i32, Vec<u8>, u8, u32)>>,
+    /// Most-recent V2(base).tc per base ch_field (for V3 tc synthesis).
+    last_v2_base_tc: HashMap<u16, (i32, u32)>,
+    /// Most-recent V2(+4).tc per plus4 ch_field.
+    last_v2_plus4_tc: HashMap<u16, (i32, u32)>,
+    /// File-order counter for c-message variants.
+    c_var_pos: u32,
 }
 
 /// Pre-scan results used to pre-allocate accumulator capacity.
@@ -288,6 +300,10 @@ impl ParserState {
             time_offset: None,
             last_time: None,
             enf_sub_messages: Vec::new(),
+            v2v3_by_cf: HashMap::new(),
+            last_v2_base_tc: HashMap::new(),
+            last_v2_plus4_tc: HashMap::new(),
+            c_var_pos: 0,
         }
     }
 
@@ -612,24 +628,42 @@ fn prescan(data: &[u8], state: &mut ParserState) -> PrescanResult {
                     }
                 }
                 b'c' => {
-                    if pos + 12 <= len {
+                    if pos + 7 <= len {
                         let unk1 = data[pos + 2];
                         let channel_field = u16::from_le_bytes([data[pos + 3], data[pos + 4]]);
                         let unk3 = data[pos + 5];
                         let unk4 = data[pos + 6];
-                        // Validate c-message fields (C)
-                        if unk1 == 0 && (channel_field & 7) == 4 && unk3 == 0x84 && unk4 == 6 {
-                            let index = (channel_field >> 3) as usize;
-                            if index < state.gc_data[2].len() {
-                                let total_size = state.gc_data[2][index].add_helper;
-                                if total_size > 8
-                                    && pos + total_size <= len
-                                    && data[pos + total_size - 1] == b')'
-                                {
-                                    hints.add_data_bytes(2, index, total_size - 8);
-                                    pos += total_size;
-                                    continue;
+                        if unk3 == 0x84 {
+                            // V1 prescan (existing): count payload bytes for
+                            // the resolved channel_index's gc_data[2] slot.
+                            if unk1 == 0 && unk4 == 6 && (channel_field & 7) == 4 {
+                                let index = (channel_field >> 3) as usize;
+                                if index < state.gc_data[2].len() {
+                                    let total_size = state.gc_data[2][index].add_helper;
+                                    if total_size > 8
+                                        && pos + total_size <= len
+                                        && data[pos + total_size - 1] == b')'
+                                    {
+                                        hints.add_data_bytes(2, index, total_size - 8);
+                                        pos += total_size;
+                                        continue;
+                                    }
                                 }
+                            }
+                            // V2/V3 prescan: we don't know channel_index yet
+                            // (resolved after the full scan), so we can't
+                            // attribute bytes to a specific gc_data[2] slot.
+                            // Just advance past the known-size frame so the
+                            // scanner doesn't fall into bad-bytes recovery.
+                            // Over/under-allocation of the target slot is
+                            // harmless — organic Vec growth covers it.
+                            if unk1 == 0 && unk4 == 8 && pos + 16 <= len && data[pos + 15] == b')' {
+                                pos += 16;
+                                continue;
+                            }
+                            if unk1 == 1 && unk4 == 2 && pos + 10 <= len && data[pos + 9] == b')' {
+                                pos += 10;
+                                continue;
                             }
                         }
                     }
@@ -1037,45 +1071,220 @@ fn try_parse_m_message(data: &[u8], pos: usize, state: &mut ParserState) -> Opti
 }
 
 /// Try to parse a c (expansion channel) message.
+///
+/// Three variants coexist on AIM loggers — see spec/docs/unknown_regions.md
+/// and spec/xrk_format.py:_resolve_c_variants. Dispatches on (unk1, unk4);
+/// V1 writes into gc_data[2] directly, V2/V3 buffer into v2v3_by_cf for
+/// post-parse channel_index resolution and tc synthesis.
 fn try_parse_c_message(data: &[u8], pos: usize, state: &mut ParserState) -> Option<usize> {
-    if pos + 12 > data.len() {
+    if pos + 7 > data.len() {
         return None;
     }
 
-    // c message header: (c + unk1(1) + channel_field(2) + unk3(1) + unk4(1) + timecode(4)
-    // Validate c-message fields (C)
     let unk1 = data[pos + 2];
     let channel_field = u16::from_le_bytes([data[pos + 3], data[pos + 4]]);
     let unk3 = data[pos + 5];
     let unk4 = data[pos + 6];
-    if unk1 != 0 || (channel_field & 7) != 4 || unk3 != 0x84 || unk4 != 6 {
-        return None;
-    }
-    let timecode =
-        i32::from_le_bytes([data[pos + 7], data[pos + 8], data[pos + 9], data[pos + 10]]);
-    let index = (channel_field >> 3) as usize;
-
-    if index >= state.gc_data[2].len() {
+    if unk3 != 0x84 {
         return None;
     }
 
-    let total_size = state.gc_data[2][index].add_helper;
-    if pos + total_size > data.len() {
-        return None;
+    match (unk1, unk4) {
+        // V1: CHS-sized payload, channel_index = channel_field >> 3.
+        (0, 6) => {
+            if pos + 12 > data.len() {
+                return None;
+            }
+            if (channel_field & 7) != 4 {
+                return None;
+            }
+            let timecode =
+                i32::from_le_bytes([data[pos + 7], data[pos + 8], data[pos + 9], data[pos + 10]]);
+            let index = (channel_field >> 3) as usize;
+            if index >= state.gc_data[2].len() {
+                return None;
+            }
+            let total_size = state.gc_data[2][index].add_helper;
+            if pos + total_size > data.len() {
+                return None;
+            }
+            if data[pos + total_size - 1] != b')' {
+                return None;
+            }
+            let acc = &mut state.gc_data[2][index];
+            if timecode > acc.last_timecode {
+                acc.last_timecode = timecode;
+                acc.data
+                    .extend_from_slice(&data[pos + 7..pos + total_size - 1]);
+            }
+            Some(total_size)
+        }
+        // V2 long: 16 bytes, two fp16 samples.
+        //   base ch_field (low nibble 0/8): samples at (tc, tc-4)
+        //   +4 ch_field   (low nibble 4/c): samples at (tc-2, tc-4)
+        (0, 8) => {
+            if pos + 16 > data.len() || data[pos + 15] != b')' {
+                return None;
+            }
+            let timecode =
+                i32::from_le_bytes([data[pos + 7], data[pos + 8], data[pos + 9], data[pos + 10]]);
+            let b0 = data[pos + 11..pos + 13].to_vec();
+            let b1 = data[pos + 13..pos + 15].to_vec();
+            let low = channel_field & 0xF;
+            let entries = state.v2v3_by_cf.entry(channel_field).or_default();
+            let pos_ctr = state.c_var_pos;
+            state.c_var_pos = pos_ctr.wrapping_add(1);
+            if low == 0 || low == 8 {
+                // V2(base): V2[0]@tc, V2[1]@tc-4, priority 3
+                entries.push((timecode, b0, 3, pos_ctr));
+                entries.push((timecode - 4, b1, 3, pos_ctr));
+                state
+                    .last_v2_base_tc
+                    .insert(channel_field, (timecode, pos_ctr));
+            } else {
+                // V2(+4): V2[0]@tc-2, V2[1]@tc-4, priority 1
+                entries.push((timecode - 2, b0, 1, pos_ctr));
+                entries.push((timecode - 4, b1, 1, pos_ctr));
+                state
+                    .last_v2_plus4_tc
+                    .insert(channel_field, (timecode, pos_ctr));
+            }
+            Some(16)
+        }
+        // V3 short: 10 bytes, one fp16 sample, synthesized tc.
+        (1, 2) => {
+            if pos + 10 > data.len() || data[pos + 9] != b')' {
+                return None;
+            }
+            let b = data[pos + 7..pos + 9].to_vec();
+            let base_cf = channel_field ^ 0x4;
+            let base_entry = state.last_v2_base_tc.get(&base_cf).copied();
+            let plus4_entry = state.last_v2_plus4_tc.get(&channel_field).copied();
+            let synth_tc = match (base_entry, plus4_entry) {
+                (Some((tc_b, pos_b)), Some((tc_p, pos_p))) => {
+                    if pos_b >= pos_p {
+                        Some(tc_b - 2)
+                    } else {
+                        Some(tc_p + 2)
+                    }
+                }
+                (Some((tc_b, _)), None) => Some(tc_b - 2),
+                (None, Some((tc_p, _))) => Some(tc_p + 2),
+                (None, None) => None,
+            };
+            if let Some(tc) = synth_tc {
+                let entries = state.v2v3_by_cf.entry(channel_field).or_default();
+                let pos_ctr = state.c_var_pos;
+                entries.push((tc, b, 2, pos_ctr));
+            }
+            state.c_var_pos = state.c_var_pos.wrapping_add(1);
+            Some(10)
+        }
+        // Unknown variant — return None so the bad-bytes recovery advances
+        // one byte at a time. Preserves the "don't silently swallow unknown
+        // variants" invariant from the spec.
+        _ => None,
     }
-    if data[pos + total_size - 1] != b')' {
-        return None;
+}
+
+/// After the main scan completes, resolve V2/V3 channel_fields to channel
+/// indices using the algorithm in spec/xrk_format.py:_resolve_c_variants,
+/// then migrate buffered samples into gc_data[2] (same normalized layout
+/// as V1 rows: tc(4) + data(N)).
+fn resolve_c_variants(state: &mut ParserState) {
+    if state.v2v3_by_cf.is_empty() {
+        return;
     }
 
-    let acc = &mut state.gc_data[2][index];
-    if timecode > acc.last_timecode {
-        acc.last_timecode = timecode;
-        // For c messages, we store timecode(4) + data (skip the c-specific header)
-        acc.data
-            .extend_from_slice(&data[pos + 7..pos + total_size - 1]);
+    // Phase 1 — partition observed V2/V3 channel_fields into pairs and orphans.
+    let cf_set: std::collections::BTreeSet<u16> = state.v2v3_by_cf.keys().copied().collect();
+    let mut pairs: Vec<(u16, u16)> = Vec::new();
+    let mut orphans: Vec<u16> = Vec::new();
+    let mut processed: std::collections::HashSet<u16> = std::collections::HashSet::new();
+    for &cf in &cf_set {
+        if processed.contains(&cf) {
+            continue;
+        }
+        let low = cf & 0xF;
+        if (low == 0x0 || low == 0x8) && cf_set.contains(&(cf | 0x4)) {
+            let partner = cf | 0x4;
+            pairs.push((cf, partner));
+            processed.insert(cf);
+            processed.insert(partner);
+        } else if (low == 0x4 || low == 0xC) && cf_set.contains(&(cf & !0x4)) {
+            // Partner already handled via base pass.
+            continue;
+        } else {
+            orphans.push(cf);
+            processed.insert(cf);
+        }
     }
 
-    Some(total_size)
+    // Phase 2 — identify CHS candidates. Expansion fp16 channels with
+    // hw_id != 0; partition by sample period.
+    let mut paired_candidates: Vec<((u32, u16), u16)> = Vec::new();
+    let mut orphan_candidates: Vec<((u32, u16), u16)> = Vec::new();
+    for (&ch_idx, ch_info) in &state.channels {
+        let chs = &ch_info.chs;
+        if chs.decoder_type != 20 || chs.source_type != 1 || chs.hardware_id == 0 {
+            continue;
+        }
+        let mms = chs.mms();
+        let key = (chs.hardware_ref, chs.source_channel_id);
+        if mms <= 5 {
+            paired_candidates.push((key, ch_idx));
+        } else if 5 < mms && mms <= 15 {
+            orphan_candidates.push((key, ch_idx));
+        }
+    }
+    paired_candidates.sort();
+    orphan_candidates.sort();
+
+    // Phase 3 — build the channel_field → channel_index map.
+    let mut expansion_map: HashMap<u16, u16> = HashMap::new();
+    for ((base, plus4), (_, ch_idx)) in pairs.iter().zip(paired_candidates.iter()) {
+        expansion_map.insert(*base, *ch_idx);
+        expansion_map.insert(*plus4, *ch_idx);
+    }
+    for (cf, (_, ch_idx)) in orphans.iter().zip(orphan_candidates.iter()) {
+        expansion_map.insert(*cf, *ch_idx);
+    }
+
+    // Phase 4 — per-channel sample collection with priority resolution.
+    let mut per_channel: HashMap<u16, HashMap<i32, (Vec<u8>, u8)>> = HashMap::new();
+    for (&cf, entries) in &state.v2v3_by_cf {
+        let Some(&ch_idx) = expansion_map.get(&cf) else {
+            continue;
+        };
+        let bucket = per_channel.entry(ch_idx).or_default();
+        for (tc, bytes, prio, _) in entries {
+            let slot = bucket.entry(*tc).or_insert_with(|| (Vec::new(), 0));
+            if *prio > slot.1 {
+                *slot = (bytes.clone(), *prio);
+            }
+        }
+    }
+
+    // Phase 5 — migrate into gc_data[2] in strictly increasing tc order.
+    // Row layout matches V1: 4 bytes tc + N bytes data. add_helper stays
+    // at size + 12 (set by register_chs).
+    for (ch_idx, samples) in per_channel {
+        let idx = ch_idx as usize;
+        if idx >= state.gc_data[2].len() {
+            continue;
+        }
+        let mut tcs: Vec<i32> = samples.keys().copied().collect();
+        tcs.sort_unstable();
+        let acc = &mut state.gc_data[2][idx];
+        for tc in tcs {
+            if tc <= acc.last_timecode {
+                continue;
+            }
+            acc.last_timecode = tc;
+            acc.data.extend_from_slice(&tc.to_le_bytes());
+            acc.data.extend_from_slice(&samples[&tc].0);
+        }
+    }
 }
 
 /// Decode all channels from raw accumulated data.

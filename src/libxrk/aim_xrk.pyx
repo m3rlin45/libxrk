@@ -356,6 +356,21 @@ def _decode_sequence(s, progress=None):
     gnfimsg: vector[cython.uchar]
     show_all: cython.int = 0
     show_bad: cython.int = 0
+    # Buffers for V2/V3 (c)-message variants — see spec/docs/unknown_regions.md
+    # and spec/xrk_format.py:_resolve_c_variants. Channel_index resolution for
+    # these variants can't happen at parse time (the channel_field→channel_index
+    # mapping is discovered empirically from the full V2/V3 channel_field set
+    # reconciled against CHS). Buffer per ch_field, resolve after the main loop.
+    # Structure: ch_field -> list[(tc, sample_bytes, priority, file_order)]
+    #   priority: 3 = V2(base) V2[0]/V2[1], 2 = V3, 1 = V2(+4) V2[0]/V2[1]
+    #   Higher priority wins on tc collision (V2(base) > V3 > V2(+4)).
+    v2v3_by_cf = {}
+    # For V3 timecode synthesis — track most recent V2(base) and V2(+4) tc
+    # per pair (keyed by base_cf and plus4_cf respectively) plus file-order
+    # position to pick the more-recent anchor per _resolve_c_variants' rule.
+    last_v2_base_tc = {}   # base_cf -> (tc, file_pos)
+    last_v2_plus4_tc = {}  # plus4_cf -> (tc, file_pos)
+    c_var_pos: cython.int = 0
     while pos < len_s:
         try:
             while True:
@@ -406,28 +421,81 @@ def _decode_sequence(s, progress=None):
                                            &sv[pos])
                     pos += 1
                 elif typ == ord_op_c:
-                    if msg.c.unk1 != 0:
-                        raise ValueError('Unexpected c.unk1: %x' % msg.c.unk1)
-                    if (msg.c.channel & 7) != 4:
-                        raise ValueError('Unexpected c.channel low bits: %x' % (msg.c.channel & 7))
                     if msg.c.unk3 != 0x84:
                         raise ValueError('Unexpected c.unk3: %x' % msg.c.unk3)
-                    if msg.c.unk4 != 6:
-                        raise ValueError('Unexpected c.unk4: %x' % msg.c.unk4)
-                    data_cat = &gc_data[2]
-                    data_p = &dereference(data_cat)[msg.c.channel >> 3]
-                    if data_p >= &dereference(data_cat.end()):
-                        raise IndexError
-                    pos += data_p.add_helper
-                    last = &sv[pos-1]
-                    if last[0] != ord_cp:
-                        raise ValueError("%s at %x" % (chr(s[pos-1]), pos-1))
-                    if show_all:
-                        print('tc=%d c idx=%d' % (msg.c.timecode, msg.c.channel >> 3))
-                    if msg.c.timecode > data_p.last_timecode:
-                        data_p.last_timecode = msg.c.timecode
-                        data_p.data.insert(data_p.data.end(),
-                                           <const cython.uchar *>&msg.c.timecode, last)
+                    if msg.c.unk1 == 0 and msg.c.unk4 == 6:
+                        # V1 — existing format, channel_index = channel_field >> 3
+                        if (msg.c.channel & 7) != 4:
+                            raise ValueError('Unexpected c.channel low bits: %x' % (msg.c.channel & 7))
+                        data_cat = &gc_data[2]
+                        data_p = &dereference(data_cat)[msg.c.channel >> 3]
+                        if data_p >= &dereference(data_cat.end()):
+                            raise IndexError
+                        pos += data_p.add_helper
+                        last = &sv[pos-1]
+                        if last[0] != ord_cp:
+                            raise ValueError("%s at %x" % (chr(s[pos-1]), pos-1))
+                        if show_all:
+                            print('tc=%d c idx=%d' % (msg.c.timecode, msg.c.channel >> 3))
+                        if msg.c.timecode > data_p.last_timecode:
+                            data_p.last_timecode = msg.c.timecode
+                            data_p.data.insert(data_p.data.end(),
+                                               <const cython.uchar *>&msg.c.timecode, last)
+                    elif msg.c.unk1 == 0 and msg.c.unk4 == 8:
+                        # V2 long — 16 bytes, two fp16 samples at (tc, tc-4)
+                        # for base ch_field (low nibble 0/8), or (tc-2, tc-4)
+                        # for +4 ch_field (low nibble 4/c). See
+                        # spec/docs/unknown_regions.md for the derivation.
+                        if pos + 16 > len_s:
+                            raise IndexError
+                        if sv[pos+15] != ord_cp:
+                            raise ValueError("V2 close: %s at %x" % (chr(s[pos+15]), pos+15))
+                        cf = msg.c.channel
+                        tc = msg.c.timecode
+                        b0 = bytes(s[pos+11:pos+13])
+                        b1 = bytes(s[pos+13:pos+15])
+                        low = cf & 0xF
+                        lst = v2v3_by_cf.setdefault(cf, [])
+                        if low == 0 or low == 8:  # base
+                            lst.append((tc, b0, 3, c_var_pos))
+                            lst.append((tc - 4, b1, 3, c_var_pos))
+                            last_v2_base_tc[cf] = (tc, c_var_pos)
+                        else:  # +4
+                            lst.append((tc - 2, b0, 1, c_var_pos))
+                            lst.append((tc - 4, b1, 1, c_var_pos))
+                            last_v2_plus4_tc[cf] = (tc, c_var_pos)
+                        c_var_pos += 1
+                        pos += 16
+                    elif msg.c.unk1 == 1 and msg.c.unk4 == 2:
+                        # V3 short — 10 bytes, one fp16 sample, tc synthesized
+                        # from the most recent V2 on the same pair in file order.
+                        if pos + 10 > len_s:
+                            raise IndexError
+                        if sv[pos+9] != ord_cp:
+                            raise ValueError("V3 close: %s at %x" % (chr(s[pos+9]), pos+9))
+                        cf = msg.c.channel
+                        b = bytes(s[pos+7:pos+9])
+                        base_cf = cf ^ 0x4
+                        base_entry = last_v2_base_tc.get(base_cf)
+                        plus4_entry = last_v2_plus4_tc.get(cf)
+                        synth_tc = -1
+                        if base_entry is not None and (
+                            plus4_entry is None or base_entry[1] >= plus4_entry[1]
+                        ):
+                            synth_tc = base_entry[0] - 2  # mms=2 for shock pots
+                        elif plus4_entry is not None:
+                            synth_tc = plus4_entry[0] + 2
+                        if synth_tc >= 0:
+                            v2v3_by_cf.setdefault(cf, []).append(
+                                (synth_tc, b, 2, c_var_pos)
+                            )
+                        c_var_pos += 1
+                        pos += 10
+                    else:
+                        raise ValueError(
+                            'Unknown c variant: unk1=%x unk4=%x' %
+                            (msg.c.unk1, msg.c.unk4)
+                        )
                 elif typ == ord_lt_h:
                     if pos > next_progress:
                         next_progress += progress_interval
@@ -749,6 +817,89 @@ def _decode_sequence(s, progress=None):
         badbytes = 0
     if pos != len(s):
         raise ValueError("Parser did not consume entire input: pos=%d, len=%d" % (pos, len(s)))
+
+    # Resolve V2/V3 (c)-message variants — see spec/xrk_format.py
+    # :_resolve_c_variants for the algorithm and accuracy notes. Mapping
+    # is empirical from the observed channel_field set reconciled against
+    # CHS; sample rows are migrated into gc_data[2] (same normalized
+    # tc(4)+data(N) shape as V1 rows).
+    if v2v3_by_cf:
+        v2v3_cfs = set(v2v3_by_cf.keys())
+        pairs = []
+        orphans = []
+        processed = set()
+        for cf in sorted(v2v3_cfs):
+            if cf in processed:
+                continue
+            low = cf & 0xF
+            if low in (0x0, 0x8) and (cf | 0x4) in v2v3_cfs:
+                partner = cf | 0x4
+                pairs.append((cf, partner))
+                processed.add(cf)
+                processed.add(partner)
+            elif low in (0x4, 0xC) and (cf & ~0x4) in v2v3_cfs:
+                continue
+            else:
+                orphans.append(cf)
+                processed.add(cf)
+
+        paired_candidates = []
+        orphan_candidates = []
+        for ch_i, ch_obj in enumerate(channels):
+            if ch_obj is None or len(ch_obj.unknown) < 68:
+                continue
+            if ch_obj.unknown[20] != 20 or ch_obj.source_type != 1:
+                continue
+            hw_id = struct.unpack_from('<H', ch_obj.unknown, 4)[0]
+            if hw_id == 0:
+                continue
+            hw_ref = struct.unpack_from('<I', ch_obj.unknown, 8)[0]
+            ch_mms = struct.unpack_from('<I', ch_obj.unknown, 64)[0] // 1000
+            key = (hw_ref, ch_obj.source_channel_id)
+            if ch_mms <= 5:
+                paired_candidates.append((key, ch_i))
+            elif 5 < ch_mms <= 15:
+                orphan_candidates.append((key, ch_i))
+        paired_candidates.sort()
+        orphan_candidates.sort()
+
+        expansion_channel_map = {}
+        for (pair_base, pair_plus4), (_, ch_i) in zip(pairs, paired_candidates):
+            expansion_channel_map[pair_base] = ch_i
+            expansion_channel_map[pair_plus4] = ch_i
+        for cf, (_, ch_i) in zip(orphans, orphan_candidates):
+            expansion_channel_map[cf] = ch_i
+
+        # Collect per-channel samples with priority resolution.
+        per_channel = {}  # ch_idx -> dict[tc -> (bytes, priority)]
+        for cf, entries in v2v3_by_cf.items():
+            ch_i = expansion_channel_map.get(cf)
+            if ch_i is None:
+                continue
+            bucket = per_channel.setdefault(ch_i, {})
+            for sample_tc, sample_bytes, prio, _ in entries:
+                existing = bucket.get(sample_tc)
+                if existing is None or prio > existing[1]:
+                    bucket[sample_tc] = (sample_bytes, prio)
+
+        # Migrate into gc_data[2]. Each row = 4 bytes tc + N bytes data
+        # (stride = add_helper - 8 matches process_channel's expectation).
+        for ch_i, samples_dict in per_channel.items():
+            _resize_vaccum(gc_data[2], ch_i)
+            data_p = &gc_data[2][ch_i]
+            # Preserve V1's add_helper if already set; else initialize for V2/V3.
+            if data_p.add_helper == 1:
+                data_p.add_helper = channels[ch_i].size + 12
+            for row_tc in sorted(samples_dict.keys()):
+                if row_tc <= data_p.last_timecode:
+                    continue
+                data_p.last_timecode = row_tc
+                tc_bytes = row_tc.to_bytes(4, 'little', signed=True)
+                for tc_byte in tc_bytes:
+                    data_p.data.push_back(tc_byte)
+                for data_byte in samples_dict[row_tc][0]:
+                    data_p.data.push_back(data_byte)
+
     # Compute time_offset and last_time from raw gc_data buffers and GPS data.
     # Channel timecodes are not yet populated (process_channel runs later), so we
     # scan the accumulated raw data vectors directly.

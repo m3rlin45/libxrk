@@ -21,11 +21,16 @@ from spec.xrk_format import (
     CDEPayload,
     GPSRPayload,
     HeaderMessage,
+    _C_MSG_VARIANT_STRUCTS,
     _DATA_MSG_STRUCTS,
     _container_to_dict,
     build_header_frame,
     _tokdec,
+    cMessageV1Compiled,
+    cMessageV2Compiled,
+    cMessageV3Compiled,
 )
+from spec.tests.conftest import ISSUE68_XRZ
 
 
 # ---------------------------------------------------------------------------
@@ -342,3 +347,117 @@ class TestDataMessageRoundTrip:
         assert parsed["channel_index"] == msg.parsed["channel_index"]
         assert parsed["count"] == msg.parsed["count"]
         assert parsed["data"] == msg.parsed["data"]
+
+
+# ---------------------------------------------------------------------------
+# c-message round-trip — all three variants (V1, V2, V3) for issue #68
+# ---------------------------------------------------------------------------
+
+
+class TestCMessageRoundTrip:
+    """(c expansion-channel messages must round-trip for each variant.
+
+    V1 is exercised by every older corpus that has c-messages; V2 and V3
+    appear only on the issue68 fixture per c_variant_scanner.py.
+    """
+
+    def _rebuild_c_variant(self, parsed, channel_sizes):
+        """Build a c-message frame from a parsed dict for its variant.
+
+        Const fields (unk1/unk3/unk4) are written from the struct's
+        hardcoded values — no need to supply them in the Container.
+        """
+        from construct import Container
+
+        variant = parsed["variant"]
+        struct_def = _C_MSG_VARIANT_STRUCTS[variant]
+        container = Container(
+            channel_field=parsed["channel_field"],
+            data=parsed["data"],
+        )
+        if variant in ("V1", "V2"):
+            container["timecode"] = parsed["timecode"]
+        return struct_def.build(container, channel_sizes=channel_sizes)
+
+    def _find_raw_c_frames(self, data_bytes, expected_variants):
+        """Scan raw bytes for (c message frames, classify by (unk1, unk4).
+
+        Returns a dict {variant: (file_offset, raw_frame_bytes)} capturing
+        the first frame of each requested variant.
+        """
+        found = {}
+        i = 0
+        needle = b"(c"
+        while True:
+            i = data_bytes.find(needle, i)
+            if i < 0 or len(found) == len(expected_variants):
+                break
+            if i + 10 > len(data_bytes):
+                break
+            unk1 = data_bytes[i + 2]
+            unk3 = data_bytes[i + 5]
+            unk4 = data_bytes[i + 6]
+            if unk3 != 0x84:
+                i += 1
+                continue
+            # Classify — must match variant shape AND close byte.
+            if unk1 == 0 and unk4 == 0x08:
+                frame = data_bytes[i : i + 16]
+                if len(frame) == 16 and frame[-1] == 0x29 and "V2" not in found:
+                    found["V2"] = (i, frame)
+            elif unk1 == 0x01 and unk4 == 0x02:
+                frame = data_bytes[i : i + 10]
+                if len(frame) == 10 and frame[-1] == 0x29 and "V3" not in found:
+                    found["V3"] = (i, frame)
+            i += 1
+        return found
+
+    def test_c_variants_raw_frame_round_trip(self, issue68_parsed):
+        """Locate one frame of each variant in the raw byte stream, parse it,
+        build it back, and assert byte-identity. This is the strictest
+        round-trip check: it bypasses the spec's high-level parser and
+        directly exercises each variant struct.
+        """
+        import zlib
+
+        raw = ISSUE68_XRZ.read_bytes()
+        if raw[:2] in (b"\x78\x01", b"\x78\x9c", b"\x78\xda"):
+            raw = zlib.decompress(raw)
+
+        frames = self._find_raw_c_frames(raw, {"V2", "V3"})
+        assert "V2" in frames, "Failed to locate a V2 frame in raw bytes"
+        assert "V3" in frames, "Failed to locate a V3 frame in raw bytes"
+
+        # V1 round-trip is covered by test_all_v1_c_samples_round_trip (below)
+        # which rebuilds from parsed dicts. Raw-frame V1 requires knowing CHS
+        # payload size per channel, which we'd have to duplicate from the spec.
+
+        # V2 round-trip — fixed 4-byte payload, no CHS dependency.
+        _, v2_frame = frames["V2"]
+        v2_parsed = cMessageV2Compiled.parse(v2_frame)
+        v2_rebuilt = cMessageV2Compiled.build(v2_parsed)
+        assert v2_rebuilt == v2_frame, "V2 raw-frame round-trip must be byte-identical"
+
+        # V3 round-trip — fixed 2-byte payload, no embedded timecode.
+        _, v3_frame = frames["V3"]
+        v3_parsed = cMessageV3Compiled.parse(v3_frame)
+        v3_rebuilt = cMessageV3Compiled.build(v3_parsed)
+        assert v3_rebuilt == v3_frame, "V3 raw-frame round-trip must be byte-identical"
+
+    def test_all_v1_c_samples_round_trip(self, issue68_parsed):
+        """Spot-check three V1 c-messages from the parsed stream; sanity check
+        that the parsed dict survives round-trip under the compiled struct.
+        """
+        v1_msgs = [
+            m
+            for m in issue68_parsed.data_messages()
+            if m.msg_type == "c" and m.parsed.get("variant") == "V1"
+        ]
+        if not v1_msgs:
+            pytest.skip("No V1 c-messages in issue68 fixture")
+        for msg in (v1_msgs[0], v1_msgs[len(v1_msgs) // 2], v1_msgs[-1]):
+            rebuilt = self._rebuild_c_variant(msg.parsed, issue68_parsed.channel_sizes)
+            reparsed = cMessageV1Compiled.parse(rebuilt, channel_sizes=issue68_parsed.channel_sizes)
+            assert reparsed.channel_field == msg.parsed["channel_field"]
+            assert reparsed.timecode == msg.parsed["timecode"]
+            assert bytes(reparsed.data) == msg.parsed["data"]
