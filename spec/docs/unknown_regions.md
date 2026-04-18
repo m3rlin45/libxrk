@@ -200,25 +200,98 @@ Each 64-byte record:
 
 ## (c) Expansion Data Messages
 
-**Under active investigation — see issue #68.** New AIM loggers emit c-message variants whose `unk1`, `unk4`, and the low 3 bits of `channel_field` take values other than the constants previously observed. The fields below are documented as they appear on the older MXP/MXm-class files in `tests/test_data/{SFJ,86,aim_official,issue49}/`. The forthcoming fix will replace this section with a full V1/V2/V3 variant table once the new variants are reverse-engineered.
+Three variants coexist. The `(unk1, unk4)` pair at offsets [2] and [6] acts
+as a variant tag; `unk3` at [5] is `0x84` in all known variants. See also
+`scripts/investigate_missing_data/c_variant_scanner.py` for the RE that
+established the channel_field mapping and timing rules.
 
-### Byte [2] `unk1` (uint8)
-- **Observed on older files**: 0x00
-- **Observed on new loggers (issue #68)**: also 0x01 in a new short-form variant
-- **Status**: No longer a constant — variant tag
+| Variant | `unk1` | `unk4` | Total size | Payload           | Timecode source               |
+|---------|:------:|:------:|:----------:|-------------------|-------------------------------|
+| V1      | 0x00   | 0x06   | 12 + N     | N bytes, CHS-sized | Embedded at offset 7 (4 bytes) |
+| V2 long | 0x00   | 0x08   | 16         | 4 bytes (2 × fp16) | Embedded at offset 7 (4 bytes) |
+| V3 short| 0x01   | 0x02   | 10         | 2 bytes (1 × fp16) | Synthesized — inherits from preceding V2 on same logical channel plus the channel's sample period |
 
-### Byte [5] `unk3` (uint8)
-- **Observed**: 0x84 across all files seen so far
-- **Hypothesis**: Message subtype or expansion bus ID
-- **Status**: Still a constant in practice, but treat as variant tag until confirmed
+### `channel_field` (uint16 at offsets [3:5])
 
-### Byte [6] `unk4` (uint8)
-- **Observed on older files**: 0x06
-- **Observed on new loggers (issue #68)**: 0x06 (existing), 0x08 (new long variant), 0x02 (new short variant)
-- **Hypothesis**: Variant tag selecting message layout
-- **Status**: No longer a constant — variant tag
+**V1** uses `channel_index = channel_field >> 3`, with the low 3 bits always
+equal to 0x4.
 
-### Bits [0:3] of `channel_field` (uint16 at offset [3])
-- **Observed on older files**: 0x4 (binary 100)
-- **Observed on new loggers (issue #68)**: also 0x0, 0x8, 0xc — pattern not yet decoded
-- **Status**: No longer a constant; the `channel_field >> 3` index rule only holds for the older (unk4=0x06) variant
+**V2 and V3** do not follow the V1 rule (observed `channel_field` values
+for V2/V3 exceed the valid CHS index range and the low 3 bits vary). The
+mapping is resolved empirically against CHS at post-parse time — see
+`spec.xrk_format._resolve_c_variants` and issue #68:
+
+- V2/V3 `channel_field` values in the observed corpus form **pairs**
+  `(base, base+4)` where `base & 0xF ∈ {0, 8}`. Each pair represents one
+  logical channel (typically a 500Hz shock potentiometer carrying V2
+  messages on both `base` and `base+4` plus V3 messages on `base+4`).
+- **Orphan** channel_fields appear only on V2 messages with no paired
+  partner. Each orphan is one logical channel (typically a 100Hz
+  accelerometer).
+- Pairs and orphans are assigned to CHS channels (`decoder_type=20`,
+  `source_type=1`, `hardware_id ≠ 0`) in sorted order of
+  `(hardware_ref, source_channel_id)`, partitioned by sample period:
+  `mms ≤ 5` → paired candidates, `5 < mms ≤ 15` → orphan candidates.
+
+### V2 payload layout
+
+Bytes [11:13] and [13:15] each encode an fp16 sample of the same logical
+channel. The sample timestamps depend on which side of the pair the
+`channel_field` is on:
+
+| `channel_field` side | bytes [11:13] (V2[0]) sample tc | bytes [13:15] (V2[1]) sample tc |
+|----------------------|---------------------------------|---------------------------------|
+| base (low nibble 0 or 8) | `tc`                        | `tc − 4ms`                      |
+| +4 (low nibble 4 or c)   | `tc − 2ms`                  | `tc − 4ms`                      |
+| orphan (accelerometers)  | `tc`                        | `tc − 4ms` (provisional)        |
+
+The base/+4 offset difference reflects that the two `channel_field`
+values in a pair interleave in the device's sampling schedule: V2(+4)
+covers the "earlier half" of a 10ms cycle and V2(base) covers the
+"later half". Together with V3 they produce 5 samples at 2ms intervals.
+
+On the very first V2 message on a `channel_field`, bytes [13:15] may
+contain a stale pre-roll value not reflected in DLL output — this is a
+sub-percent boundary effect, not a decode bug.
+
+### V3 payload layout
+
+Bytes [7:9] encode one fp16 sample of the logical channel carried by the
+same `channel_field`. V3 always appears on the `+4` side of a pair and
+is absent on orphan channel_fields. Its timecode is synthesized
+post-parse by `_resolve_c_variants` as follows (per-pair, in file order):
+
+- If the most recently seen V2 on the pair was on `base`:
+  `V3.tc = last_V2(base).tc − mms` (i.e., one sample period before the
+  latest V2(base).tc).
+- Otherwise (most recent was on `+4`):
+  `V3.tc = last_V2(+4).tc + mms`.
+
+This branching rule handles 11ms "long" cycles (occasional cycle-boundary
+drift in the logger clock) where a single rule would produce tcs
+off-by-one-sample relative to DLL.
+
+### Accuracy vs AIM DLL on the issue68 fixture (LR_Shock_Pot, 213k samples)
+
+| Metric                                      | Value        |
+|---------------------------------------------|--------------|
+| DLL sample count                            | 213,385      |
+| Spec-emitted unique-tc sample count         | 213,406      |
+| DLL samples covered by spec at same tc      | 213,385 (100%) |
+| Spec samples whose value matches DLL at tc  | 213,355 (99.97%) |
+| "Extra" spec samples (no corresponding DLL tc) | 21 (<0.01%) |
+| Spec samples with value differing from DLL  | 30 (<0.02%) |
+
+The residual ~51 disagreements are not decode bugs — they are wire-level
+samples whose fp16 values are not reflected in DLL output at any nearby
+tc. Most are V2[1] values that appear to be ignored or filtered by AIM's
+proprietary sample-reconstruction pipeline. The spec decode exposes the
+raw wire data faithfully; downstream backends (Cython, Rust) conform
+to the spec and therefore exhibit the same ~0.02% DLL offset.
+
+Reaching 100% exact match is not achievable without reverse-engineering
+AIM's internal sample filtering, which is not part of the wire format.
+For libxrk users, the practical impact is: ≤0.02% of shock-pot samples
+may differ from RaceStudio's displayed values by small amounts, and ≤0.01%
+of spec-emitted samples may not appear in RaceStudio at all. Both are
+below AIM's own sample-rate jitter (occasional 3ms gaps in 2ms streams).

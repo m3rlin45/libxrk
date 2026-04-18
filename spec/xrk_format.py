@@ -581,26 +581,92 @@ MMessage = Struct(
 MMessageCompiled = MMessage.compile()
 
 # (c — Expansion device channel data
-cMessage = Struct(
+#
+# Three variants coexist (see spec/docs/unknown_regions.md and issue #68):
+#
+#   variant   unk1   unk4   size    payload                tc source
+#   --------  -----  -----  ------  ---------------------  -----------------------
+#   V1        0x00   0x06   12+N    N bytes (CHS sized)    embedded at offset 7
+#   V2 long   0x00   0x08   16      4 bytes (2 fp16)       embedded at offset 7
+#   V3 short  0x01   0x02   10      2 bytes (1 fp16)       synthesized post-parse
+#
+# V1 is the original format observed on MXP/MXm loggers. V2 and V3 appear on
+# newer loggers (the KK-SII fixture in tests/test_data/issue68/). See
+# scripts/investigate_missing_data/c_variant_scanner.py for the RE that
+# produced the channel_field → channel_index mapping and timing rules.
+
+# V1 — legacy 12-byte header + CHS-sized payload.
+cMessageV1 = Struct(
     Const(b"\x28\x63"),  # '(c'
     "msg_type" / Computed("c"),
-    "unk1" / Int8ul,
+    "variant" / Computed("V1"),
+    "unk1" / Const(b"\x00"),
     "channel_field" / Int16ul,
-    "unk3" / Int8ul,
-    "unk4" / Int8ul,
+    "unk3" / Const(b"\x84"),
+    "unk4" / Const(b"\x06"),
     "timecode" / Int32sl,
     "channel_index" / Computed(this.channel_field >> 3),
     "data" / Bytes(this._params.channel_sizes[this.channel_field >> 3]),
     Const(b"\x29"),  # ')'
 )
-cMessageCompiled = cMessage.compile()
+cMessageV1Compiled = cMessageV1.compile()
 
-# Data message opcode -> compiled struct (used by round-trip tests)
+# V2 long — 16-byte self-contained message carrying two fp16 samples.
+# channel_index is resolved post-parse from ParseResult.expansion_channel_map
+# (V2/V3 channel_fields don't decode to a valid channel index via >>3).
+cMessageV2 = Struct(
+    Const(b"\x28\x63"),
+    "msg_type" / Computed("c"),
+    "variant" / Computed("V2"),
+    "unk1" / Const(b"\x00"),
+    "channel_field" / Int16ul,
+    "unk3" / Const(b"\x84"),
+    "unk4" / Const(b"\x08"),
+    "timecode" / Int32sl,
+    "channel_index" / Computed(-1),  # resolved post-parse
+    "data" / Bytes(4),
+    Const(b"\x29"),
+)
+cMessageV2Compiled = cMessageV2.compile()
+
+# V3 short — 10-byte message carrying one fp16 sample. Has no embedded
+# timecode; the inherited tc is synthesized post-parse.
+cMessageV3 = Struct(
+    Const(b"\x28\x63"),
+    "msg_type" / Computed("c"),
+    "variant" / Computed("V3"),
+    "unk1" / Const(b"\x01"),
+    "channel_field" / Int16ul,
+    "unk3" / Const(b"\x84"),
+    "unk4" / Const(b"\x02"),
+    "timecode" / Computed(-1),  # synthesized post-parse
+    "channel_index" / Computed(-1),  # resolved post-parse
+    "data" / Bytes(2),
+    Const(b"\x29"),
+)
+cMessageV3Compiled = cMessageV3.compile()
+
+# Parser: try V1 first (most common on existing corpus), then V2, then V3.
+# The Const bytes in each variant act as discriminators — Select falls
+# through to the next struct on mismatch.
+cMessage = Select(cMessageV1Compiled, cMessageV2Compiled, cMessageV3Compiled)
+
+# Variant name -> builder. Used by round-trip tests after parse to rebuild
+# the correct byte layout for a given message.
+_C_MSG_VARIANT_STRUCTS = {
+    "V1": cMessageV1Compiled,
+    "V2": cMessageV2Compiled,
+    "V3": cMessageV3Compiled,
+}
+
+# Data message opcode -> compiled struct (used by round-trip tests).
+# For (c, this is the Select wrapper; callers that need variant-specific
+# builds look up by variant name via _C_MSG_VARIANT_STRUCTS.
 _DATA_MSG_STRUCTS = {
     b"\x28\x53": SMessageCompiled,  # '(S'
     b"\x28\x47": GMessageCompiled,  # '(G'
     b"\x28\x4d": MMessageCompiled,  # '(M'
-    b"\x28\x63": cMessageCompiled,  # '(c'
+    b"\x28\x63": cMessage,  # '(c' — variant-aware Select
 }
 
 
@@ -641,7 +707,13 @@ XRKMessage = Struct(
             b"\x28\x53": Select(SMessageCompiled * _on_data, Bytes(1)),
             b"\x28\x47": Select(GMessageCompiled * _on_data, Bytes(1)),
             b"\x28\x4d": Select(MMessageCompiled * _on_data, Bytes(1)),
-            b"\x28\x63": Select(cMessageCompiled * _on_data, Bytes(1)),
+            # (c — try V1, then V2, then V3, then fall through to bad-byte recovery.
+            b"\x28\x63": Select(
+                cMessageV1Compiled * _on_data,
+                cMessageV2Compiled * _on_data,
+                cMessageV3Compiled * _on_data,
+                Bytes(1),
+            ),
         },
         default=Bytes(1),
     ),
@@ -751,6 +823,7 @@ def _parse_payload(struct_def, payload):
 
 _DATA_MSG_KEYS = (
     "msg_type",
+    "variant",
     "timecode",
     "channel_index",
     "group_index",
@@ -853,6 +926,8 @@ def parse_xrk_bytes(data):
       - Header messages (CHS, GRP, GPS, LAP, etc.)
       - Data messages (G, S, M, c)
       - Recursive parsing of CNF/ENF embedded header sections
+      - Post-parse resolution of V2/V3 (c-message) channel indices and
+        synthesis of V3 timecodes (see _resolve_c_variants).
 
     Args:
         data: Raw XRK file bytes (or XRZ, auto-decompressed)
@@ -863,7 +938,180 @@ def parse_xrk_bytes(data):
     data = _decompress_if_zlib(data)
     if isinstance(data, memoryview):
         data = bytes(data)
-    return _parse_sequence(data)
+    result = _parse_sequence(data)
+    _resolve_c_variants(result)
+    return result
+
+
+def _resolve_c_variants(result):
+    """Resolve V2/V3 c-message channel_index and synthesize V3 timecodes.
+
+    V2/V3 c-messages carry a `channel_field` that does not decode to a
+    valid channel index via the V1 rule (`>>3`). Instead, the mapping is
+    discovered empirically from the stream and reconciled against CHS
+    metadata.
+
+    The rule (per scripts/investigate_missing_data/c_variant_scanner.py):
+      1. Collect every distinct (channel_field) observed in V2 or V3 messages.
+      2. Form "pairs" (base, base+4) where both appear with V2 messages.
+         Each pair represents a single high-rate (~500Hz) channel (shock pot).
+      3. Orphan channel_fields (V2 only, no pair partner) represent a
+         mid-rate (~100Hz) channel (accelerometer).
+      4. Sort pairs by base ascending; sort orphans ascending.
+      5. From CHS, identify expansion fp16 channels (decoder_type=20,
+         source_type=1, hardware_id≠0). Partition by sample period:
+           - mms ≤ 5  → "paired" CHS candidates  (500Hz class)
+           - 5 < mms ≤ 15 → "orphan" CHS candidates (100Hz class)
+         Sort each group by (hardware_ref, source_channel_id).
+      6. Assign i-th sorted pair to i-th sorted paired CHS channel; same
+         for orphans. Populate result.expansion_channel_map with both
+         channel_fields of each pair mapping to the same channel_index.
+      7. Walk messages in order, synthesizing V3 timecode via a branching
+         rule: V3.tc = last_V2(base).tc - mms if V2(base) was most recently
+         seen on this pair, else last_V2(+4).tc + mms. Both formulations
+         give the same cycle-center tc under uniform 10ms cycles; the
+         branch handles occasional 11ms "long" cycles where a single
+         rule would place V3 off by 1-2ms.
+
+    Leaves V1 messages untouched. Messages whose channel_field could not
+    be resolved keep channel_index = -1 (caller may skip these).
+
+    Known residual discrepancies vs AIM DLL (issue68 fixture, ≈213k LR
+    samples):
+      - Total sample count agrees with DLL to within 0.01% (21 "extra"
+        spec samples at tcs DLL doesn't report — these are V2[1] values
+        whose fp16 value does not appear in the DLL output at any tc,
+        suggesting DLL internally filters or discards redundant
+        re-transmissions that the raw wire carries).
+      - About 30 samples out of 213k (<0.02%) land at the correct tc
+        but with a wire-level value that disagrees with DLL at that tc
+        by more than fp16 rounding. The spec's value is the direct
+        decode of the fp16 bytes; DLL appears to apply a proprietary
+        interpolation/smoothing we cannot replicate without its source.
+      - Cumulatively, 99.97% of spec (tc, value) tuples match DLL
+        exactly. All downstream backends (Cython, Rust) conform to the
+        spec's decode, so they will exhibit the same DLL offset.
+    """
+    # Phase 1 — discover V2/V3 channel_fields from parsed messages.
+    v2_fields = set()
+    v3_fields = set()
+    for m in result.messages:
+        if m.msg_type != "c" or not m.parsed:
+            continue
+        variant = m.parsed.get("variant")
+        if variant == "V2":
+            v2_fields.add(m.parsed["channel_field"])
+        elif variant == "V3":
+            v3_fields.add(m.parsed["channel_field"])
+    if not (v2_fields or v3_fields):
+        return  # no new-format messages; nothing to resolve
+
+    # Phase 2 — partition channel_fields into pairs and orphans.
+    pairs = []  # list of (base, plus4); base has low nibble in {0, 8}
+    orphans = []  # list of single channel_fields with no partner
+    processed = set()
+    for cf in sorted(v2_fields | v3_fields):
+        if cf in processed:
+            continue
+        low = cf & 0xF
+        if low in (0x0, 0x8):
+            partner = cf | 0x4  # base+4
+            if partner in v2_fields:
+                pairs.append((cf, partner))
+                processed.add(cf)
+                processed.add(partner)
+                continue
+        elif low in (0x4, 0xC):
+            partner = cf & ~0x4  # base (same high bits, low nibble cleared of +4)
+            if partner in v2_fields:
+                # Already captured under its base above; shouldn't happen
+                # due to sort order, but handle defensively.
+                continue
+        orphans.append(cf)
+        processed.add(cf)
+
+    # Phase 3 — identify expansion CHS candidates.
+    paired_candidates = []
+    orphan_candidates = []
+    for idx, ch in result.channels.items():
+        if (
+            getattr(ch, "decoder_type", None) == 20
+            and getattr(ch, "source_type", None) == 1
+            and getattr(ch, "hardware_id", 0) != 0
+        ):
+            mms = result.channel_mms.get(idx, 0)
+            key = (getattr(ch, "hardware_ref", 0), getattr(ch, "source_channel_id", 0))
+            if mms <= 5:
+                paired_candidates.append((key, idx))
+            elif 5 < mms <= 15:
+                orphan_candidates.append((key, idx))
+    paired_candidates.sort()
+    orphan_candidates.sort()
+
+    # Phase 4 — assign sorted channel_fields to sorted CHS candidates.
+    for (base, plus4), (_, ch_idx) in zip(pairs, paired_candidates):
+        result.expansion_channel_map[base] = ch_idx
+        result.expansion_channel_map[plus4] = ch_idx
+    for cf, (_, ch_idx) in zip(orphans, orphan_candidates):
+        result.expansion_channel_map[cf] = ch_idx
+
+    # Phase 5 — patch message dicts: channel_index for V2/V3, synthesized
+    # timecode for V3. V3 messages always appear on the "+4" side of a pair
+    # (channel_field with low nibble 4 or c). Their timecode is the cycle
+    # center sample — equivalent to last_V2(base).tc − mms OR
+    # last_V2(+4).tc + mms depending on which variant most recently preceded
+    # the V3 in file order. This rule reproduces the AIM DLL's sample
+    # timestamps to 99.97% accuracy on the issue68 fixture — see
+    # c_variant_scanner.py for the value-correlation analysis.
+    #
+    # The two formulations agree under stable 10ms cycles; the branch is
+    # needed to track cycle-boundary drift (11ms "long" cycles) which
+    # otherwise cause ~1% of V3 tcs to be off by 1-2ms.
+    pair_fields = {}  # channel_index -> (base_cf, plus4_cf) for paired channels
+    for cf, ch_idx in result.expansion_channel_map.items():
+        partner = cf ^ 0x4
+        if (
+            partner in result.expansion_channel_map
+            and result.expansion_channel_map[partner] == ch_idx
+        ):
+            base = min(cf, partner)
+            plus4 = max(cf, partner)
+            pair_fields[ch_idx] = (base, plus4)
+
+    last_v2_base_tc = {}  # channel_index -> last V2(base).tc in file order
+    last_v2_plus4_tc = {}  # channel_index -> last V2(+4).tc in file order
+    last_v2_base_pos = {}  # channel_index -> file order index
+    last_v2_plus4_pos = {}
+    for pos, m in enumerate(result.messages):
+        if m.msg_type != "c" or not m.parsed:
+            continue
+        variant = m.parsed.get("variant")
+        if variant == "V1":
+            continue
+        cf = m.parsed["channel_field"]
+        ch_idx = result.expansion_channel_map.get(cf, -1)
+        m.parsed["channel_index"] = ch_idx
+        if variant == "V2":
+            if ch_idx in pair_fields:
+                base, plus4 = pair_fields[ch_idx]
+                if cf == base:
+                    last_v2_base_tc[ch_idx] = m.parsed["timecode"]
+                    last_v2_base_pos[ch_idx] = pos
+                else:
+                    last_v2_plus4_tc[ch_idx] = m.parsed["timecode"]
+                    last_v2_plus4_pos[ch_idx] = pos
+        elif variant == "V3":
+            mms = result.channel_mms.get(ch_idx, 2)
+            base_tc = last_v2_base_tc.get(ch_idx)
+            plus4_tc = last_v2_plus4_tc.get(ch_idx)
+            base_pos = last_v2_base_pos.get(ch_idx, -1)
+            plus4_pos = last_v2_plus4_pos.get(ch_idx, -1)
+            if base_tc is None and plus4_tc is None:
+                continue  # no anchor — leave tc = -1
+            if base_pos >= plus4_pos and base_tc is not None:
+                m.parsed["timecode"] = base_tc - mms
+            elif plus4_tc is not None:
+                m.parsed["timecode"] = plus4_tc + mms
 
 
 def parse_xrk_file(filepath):
@@ -894,6 +1142,10 @@ class ParseResult:
     gps_payloads: list = field(default_factory=list)  # List of raw GPS payload bytes (56B each)
     gnfi_payloads: list = field(default_factory=list)  # List of raw GNFI payload bytes (32B each)
     leftover_bytes: int = 0  # Non-zero means unparsed trailing data
+    # Populated post-parse for V2/V3 c-message resolution. Maps a (c)
+    # channel_field observed in a V2 or V3 message to the CHS channel index
+    # it carries data for. See _resolve_c_variants() below for the rule.
+    expansion_channel_map: dict = field(default_factory=dict)  # {channel_field: channel_index}
 
     def header_messages(self):
         """Return only header messages."""

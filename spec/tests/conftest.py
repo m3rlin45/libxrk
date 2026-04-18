@@ -19,6 +19,7 @@ FILE_86_XRK = TEST_DATA_DIR / "86" / "CMD_Inferno 86_Fuji GP Sh_Generic testing_
 FILE_86_XRZ = TEST_DATA_DIR / "86" / "CMD_Inferno 86_Fuji GP Sh_Generic testing_a_2248.xrz"
 AIM_OFFICIAL_XRK = TEST_DATA_DIR / "aim_official" / "test.xrk"
 ISSUE49_XRK = TEST_DATA_DIR / "issue49" / "badGPSdata.xrk"
+ISSUE68_XRZ = TEST_DATA_DIR / "issue68" / "CMD_KK-SII_Tsukuba_Car_Generic testing_a_0101.xrz"
 
 ALL_XRK_FILES = [
     SFJ_XRK,
@@ -28,7 +29,7 @@ ALL_XRK_FILES = [
     AIM_OFFICIAL_XRK,
     ISSUE49_XRK,
 ]
-ALL_XRZ_FILES = [SFJ_XRZ, SFJ_0101_XRZ, FILE_86_XRZ]
+ALL_XRZ_FILES = [SFJ_XRZ, SFJ_0101_XRZ, FILE_86_XRZ, ISSUE68_XRZ]
 ALL_FILES = ALL_XRK_FILES + ALL_XRZ_FILES
 
 
@@ -94,6 +95,30 @@ def aim_official_cython():
     from libxrk import aim_xrk
 
     return aim_xrk(str(AIM_OFFICIAL_XRK))
+
+
+@pytest.fixture(scope="session")
+def issue68_parsed():
+    """Parse the issue68 XRZ file once per session (spec parser)."""
+    from spec.xrk_format import parse_xrk_file
+
+    return parse_xrk_file(str(ISSUE68_XRZ))
+
+
+@pytest.fixture(scope="session")
+def issue68_cython():
+    """Load the issue68 file via Cython parser once per session."""
+    from libxrk import aim_xrk
+
+    return aim_xrk(str(ISSUE68_XRZ))
+
+
+@pytest.fixture(scope="session")
+def issue68_dll():
+    """Extract issue68 data from the official AIM DLL."""
+    if not _dll_available():
+        pytest.skip("AIM DLL or Wine not available")
+    return _dll_extract(ISSUE68_XRZ)
 
 
 @pytest.fixture(scope="session", params=["sfj", "86"], ids=["sfj", "86"])
