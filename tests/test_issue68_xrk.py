@@ -1,11 +1,8 @@
 """Tests for issue #68 XRK file.
 
-Validates that the Cython backend decodes the three (c)-message variants
-(V1, V2 long, V3 short) emitted by newer AIM loggers. Before the fix, the
-shock-pot and accelerometer channels were silently dropped.
-
-The Rust backend is not yet updated; cross-backend parity tests will land
-in a follow-up commit once Rust is conformed to the spec.
+Validates that the Cython AND Rust backends decode the three (c)-message
+variants (V1, V2 long, V3 short) emitted by newer AIM loggers. Before the
+fix, the shock-pot and accelerometer channels were silently dropped.
 """
 
 from __future__ import annotations
@@ -14,7 +11,19 @@ import unittest
 from pathlib import Path
 from typing import ClassVar
 
+import numpy as np
+
 from libxrk.base import LogFile
+
+
+def _rust_backend_available() -> bool:
+    try:
+        import libxrk._aim_xrk_rs  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
 
 TEST_DATA_DIR = Path(__file__).parent / "test_data"
 ISSUE68_XRZ_FILE = TEST_DATA_DIR / "issue68" / ("CMD_KK-SII_Tsukuba_Car_Generic testing_a_0101.xrz")
@@ -146,6 +155,68 @@ class TestIssue68XRK(unittest.TestCase):
         log = self.log
         # The good-path check: all 10 channels decoded + session has laps.
         self.assertGreater(log.laps.num_rows, 0, "laps missing — bad-byte path corruption?")
+
+
+@unittest.skipUnless(_rust_backend_available(), "Rust backend not available")
+class TestIssue68CrossBackend(unittest.TestCase):
+    """Cross-backend parity on the issue68 fixture — same 10 channels,
+    identical timecodes, identical fp16 values.
+    """
+
+    rust_log: ClassVar[LogFile]
+    cython_log: ClassVar[LogFile]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
+        from libxrk.aim_xrk import aim_xrk as cython_aim_xrk
+
+        cls.rust_log = rust_aim_xrk(str(ISSUE68_XRZ_FILE))
+        cls.cython_log = cython_aim_xrk(str(ISSUE68_XRZ_FILE))
+
+    def test_channel_names_match(self) -> None:
+        """Both backends produce the same set of channel names."""
+        self.assertEqual(
+            set(self.rust_log.channels.keys()),
+            set(self.cython_log.channels.keys()),
+        )
+
+    def test_expansion_channels_present_in_both(self) -> None:
+        """All 10 previously-dropped channels appear in both backends."""
+        all_new = SHOCK_POT_CHANNELS | ACCEL_CHANNELS | RATE_CHANNELS
+        for name in all_new:
+            self.assertIn(name, self.rust_log.channels, f"Rust missing {name}")
+            self.assertIn(name, self.cython_log.channels, f"Cython missing {name}")
+
+    def test_expansion_channel_timecodes_match(self) -> None:
+        """Per-channel timecodes for the new variant-decoded channels must
+        match exactly between Rust and Cython."""
+        for name in SHOCK_POT_CHANNELS | ACCEL_CHANNELS | RATE_CHANNELS:
+            rust_tc = self.rust_log.channels[name].column("timecodes").to_numpy()
+            cython_tc = self.cython_log.channels[name].column("timecodes").to_numpy()
+            np.testing.assert_array_equal(
+                rust_tc, cython_tc, err_msg=f"{name} timecode stream differs between backends"
+            )
+
+    def test_expansion_channel_values_match(self) -> None:
+        """Per-channel values for the new variant-decoded channels must
+        match exactly between Rust and Cython (both decode the same fp16
+        bytes the same way)."""
+        for name in SHOCK_POT_CHANNELS | ACCEL_CHANNELS | RATE_CHANNELS:
+            rust_vals = self.rust_log.channels[name].column(name).to_numpy(zero_copy_only=False)
+            cython_vals = self.cython_log.channels[name].column(name).to_numpy(zero_copy_only=False)
+            np.testing.assert_array_equal(
+                rust_vals, cython_vals, err_msg=f"{name} value stream differs between backends"
+            )
+
+    def test_expansion_channel_sample_counts_match(self) -> None:
+        """Sample counts match between backends for the 10 new channels."""
+        for name in SHOCK_POT_CHANNELS | ACCEL_CHANNELS | RATE_CHANNELS:
+            self.assertEqual(
+                self.rust_log.channels[name].num_rows,
+                self.cython_log.channels[name].num_rows,
+                f"{name}: rust and cython sample count differ",
+            )
 
 
 if __name__ == "__main__":

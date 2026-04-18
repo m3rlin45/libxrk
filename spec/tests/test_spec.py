@@ -1253,3 +1253,187 @@ class TestIssue68CVariants:
             f"Spec sample count {len(samples)} differs from DLL {len(dll_map)} by "
             f"{count_ratio*100:.2f}% (>1% threshold)"
         )
+
+
+def _decode_c_variant_samples(parsed, ch_idx):
+    """Decode V1/V2/V3 (c)-message samples for one channel using the
+    canonical rules from spec/docs/unknown_regions.md, with the priority
+    resolution Cython and Rust both apply (V2(base)/V1 = 3 > V3 = 2 > V2(+4) = 1).
+
+    Returns {logger_tc: value}. Orphan channels (accels, no pair partner)
+    use V2[0]@tc, V2[1]@tc-2. Paired channels use V2(base)[1]@tc-4 and
+    V2(+4)[0]@tc-2, V2(+4)[1]@tc-4.
+    """
+    import numpy as np
+
+    pair_fields = {}
+    for cf, idx in parsed.expansion_channel_map.items():
+        partner = cf ^ 0x4
+        if partner in parsed.expansion_channel_map and parsed.expansion_channel_map[partner] == idx:
+            pair_fields[idx] = (min(cf, partner), max(cf, partner))
+
+    pair = pair_fields.get(ch_idx)
+    base_cf, plus4_cf = pair if pair else (None, None)
+
+    samples = {}  # tc -> (value, priority)
+
+    def put(tc, val, prio):
+        existing = samples.get(tc)
+        if existing is None or prio > existing[1]:
+            samples[tc] = (val, prio)
+
+    for m in parsed.data_messages():
+        if m.msg_type != "c" or m.parsed.get("channel_index") != ch_idx:
+            continue
+        p = m.parsed
+        variant = p.get("variant")
+        cf = p["channel_field"]
+        data = p["data"]
+        if variant == "V1":
+            tc = p["timecode"]
+            put(tc, float(np.frombuffer(data[:2], dtype=np.float16)[0]), 3)
+        elif variant == "V2":
+            tc = p["timecode"]
+            v0 = float(np.frombuffer(data[0:2], dtype=np.float16)[0])
+            v1 = float(np.frombuffer(data[2:4], dtype=np.float16)[0])
+            if base_cf is not None:
+                if cf == base_cf:
+                    put(tc, v0, 3)
+                    put(tc - 4, v1, 3)
+                else:  # +4
+                    put(tc - 2, v0, 1)
+                    put(tc - 4, v1, 1)
+            else:
+                # Orphan accelerometer: V2[0]@tc, V2[1]@tc-2
+                put(tc, v0, 3)
+                put(tc - 2, v1, 3)
+        elif variant == "V3":
+            tc = p["timecode"]
+            if tc < 0:
+                continue
+            put(tc, float(np.frombuffer(data[:2], dtype=np.float16)[0]), 2)
+
+    return {tc: v for tc, (v, _) in samples.items()}
+
+
+class TestIssue68SpecVsBackends:
+    """Authoritative spec-vs-backend cross-check on the issue68 fixture.
+
+    The spec is the reference wire-format parser. Cython and Rust backends
+    are required to produce output identical to the spec's canonical
+    decode of V1/V2/V3 (c)-message samples — byte-for-byte, every sample.
+    """
+
+    def _spec_chs_index_for_cython(self, parsed, name):
+        """Find the spec CHS index that matches what the backend exposes.
+
+        CHS may carry duplicate long_names (e.g. RotaryMiddle_led appears
+        thrice on this fixture). Cython's `channels={ch.long_name: ch}`
+        dict-overwrite keeps the last CHS with that name; Rust follows
+        suit. Mirror that by returning the highest matching CHS index.
+        """
+        candidates = sorted(i for i, ch in parsed.channels.items() if ch.name == name)
+        return candidates[-1] if candidates else None
+
+    def _decode_spec_channel(self, parsed, ch_idx, expansion_ch_indices, arrays_cache):
+        """Produce the spec's canonical samples for one channel.
+
+        Returns ({tc: value}, 'tc') for expansion (V2/V3) channels whose
+        tcs are absolute logger-clock values; or ({index: value}, 'pos')
+        for ordinary V1/S/M/G channels where the existing builder emits
+        samples in file order without absolute tc info.
+        """
+        if ch_idx in expansion_ch_indices:
+            return _decode_c_variant_samples(parsed, ch_idx), "tc"
+        exhaustive = TestExhaustiveChannelValues()
+        raw = arrays_cache.get(ch_idx, [])
+        if not raw:
+            return None, None
+        values = exhaustive._decode_channel_array(raw, parsed.channels[ch_idx])
+        if values is None:
+            return None, None
+        return values, "pos"
+
+    def _compare_all_channels(self, parsed, backend_log):
+        """Assert every channel present in both spec and backend decodes
+        identically — same count and same values. Expansion channels
+        also check timecode alignment."""
+        expansion_ch_indices = set(parsed.expansion_channel_map.values())
+        arrays_cache = TestExhaustiveChannelValues()._build_channel_arrays(parsed)
+        # CHS names are not always unique — on issue68, RotaryLeft_led,
+        # RotaryMiddle_led and RotaryRight_led each have 3 CHS entries.
+        # Cython (Python dict insertion order) and Rust (HashMap iteration
+        # order) may expose different CHS indices for the same name.
+        # This is a pre-existing cross-backend quirk unrelated to issue #68;
+        # skip duplicate-named CHS channels here.
+        name_counts = {}
+        for ch in parsed.channels.values():
+            name_counts[ch.name] = name_counts.get(ch.name, 0) + 1
+        duplicate_names = {n for n, c in name_counts.items() if c > 1}
+
+        errors = []
+        checked = 0
+
+        for name in backend_log.channels:
+            if name in duplicate_names:
+                continue
+            ch_idx = self._spec_chs_index_for_cython(parsed, name)
+            if ch_idx is None:
+                # GPS-derived channels are synthesized by the backend
+                # outside CHS; they have no spec equivalent here.
+                continue
+            spec, kind = self._decode_spec_channel(
+                parsed, ch_idx, expansion_ch_indices, arrays_cache
+            )
+            if spec is None:
+                continue
+            backend_v = backend_log.channels[name].column(name).to_numpy()
+
+            if kind == "tc":
+                backend_tc = backend_log.channels[name].column("timecodes").to_numpy()
+                if len(backend_tc) == 0 or not spec:
+                    errors.append(
+                        f"{name}: empty one side (spec={len(spec)}, backend={len(backend_tc)})"
+                    )
+                    continue
+                offset = min(spec) - int(backend_tc[0])
+                spec_session = {tc - offset: v for tc, v in spec.items()}
+                if len(spec_session) != len(backend_v):
+                    errors.append(
+                        f"{name}: count spec={len(spec_session)} backend={len(backend_v)}"
+                    )
+                    continue
+                backend_map = dict(zip(backend_tc.tolist(), backend_v.tolist()))
+                diffs = sum(
+                    1
+                    for tc, v in spec_session.items()
+                    if tc not in backend_map or abs(backend_map[tc] - v) > 1e-9
+                )
+                if diffs:
+                    errors.append(f"{name}: {diffs} expansion samples differ")
+            else:
+                # Ordinary channel: spec gives values in file order.
+                if len(spec) != len(backend_v):
+                    errors.append(f"{name}: count spec={len(spec)} backend={len(backend_v)}")
+                    continue
+                diffs = sum(1 for i in range(len(backend_v)) if abs(spec[i] - backend_v[i]) > 1e-9)
+                if diffs:
+                    errors.append(f"{name}: {diffs} values differ")
+            checked += 1
+
+        assert checked > 20, f"Only {checked} channels compared — fixture wiring broken?"
+        assert (
+            not errors
+        ), f"Spec ↔ backend mismatches ({checked} channels compared):\n" + "\n".join(errors)
+
+    def test_spec_matches_cython_exactly(self, issue68_parsed, issue68_cython):
+        """Every channel the Cython backend exposes on issue68 — expansion
+        V2/V3 AND ordinary V1/S/M/G alike — must match the spec's
+        canonical decode byte-for-byte.
+        """
+        self._compare_all_channels(issue68_parsed, issue68_cython)
+
+    def test_spec_matches_rust_exactly(self, issue68_parsed, issue68_rust):
+        """Every channel the Rust backend exposes on issue68 must match
+        the spec's canonical decode byte-for-byte."""
+        self._compare_all_channels(issue68_parsed, issue68_rust)
