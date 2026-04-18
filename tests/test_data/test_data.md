@@ -1,6 +1,10 @@
 # Test Data for libXRK
 
-This contains 2 AIM run sessions, from 2 different cars. Both runs were done at Fuji Speedway.
+Contains AIM run sessions from multiple cars and tracks plus targeted fixtures for specific issues.
+
+## issue68
+
+`CMD_KK-SII_Tsukuba_Car_Generic testing_a_0101.xrz` — KK-SII session at Tsukuba, recorded 2026-04-17. Selected because its logger emits the new `(c)` expansion-channel message variants (V2 long, V3 short) that weren't in the older corpus; referenced by tests verifying issue #68 shock-pot and accelerometer parsing.
 
 ## SFJ
 The SFJ Folder contains data from a run by a beginner in a Super FJ Junior formula car.
