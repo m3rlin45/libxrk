@@ -281,7 +281,7 @@ cdef packed struct cmsg_hdr:  # covers c messages
     cython.ushort op
     cython.uchar unk1 # always 0?
     cython.ushort channel # bottom 3 bits always 4?
-    cython.uchar unk3 # always 0x84?
+    cython.uchar unk3 # 0x84 (standard) or 0x04 (AIM expansion-module loggers)
     cython.uchar unk4 # always 6?
     cython.int timecode
     # data field follows, size depends on type
@@ -421,7 +421,7 @@ def _decode_sequence(s, progress=None):
                                            &sv[pos])
                     pos += 1
                 elif typ == ord_op_c:
-                    if msg.c.unk3 != 0x84:
+                    if msg.c.unk3 not in (0x84, 0x04):
                         raise ValueError('Unexpected c.unk3: %x' % msg.c.unk3)
                     if msg.c.unk1 == 0 and msg.c.unk4 == 6:
                         # V1 — existing format, channel_index = channel_field >> 3

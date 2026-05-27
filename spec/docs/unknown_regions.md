@@ -201,7 +201,13 @@ Each 64-byte record:
 ## (c) Expansion Data Messages
 
 Three variants coexist. The `(unk1, unk4)` pair at offsets [2] and [6] acts
-as a variant tag; `unk3` at [5] is `0x84` in all known variants. See also
+as the variant discriminator. `unk3` at [5] is `0x84` on standard AIM loggers
+(MXP, MXm, and the corpus files in `tests/test_data/`). AIM expansion-module
+loggers (brake PSI, rotor temperature, EGT, steering sensors) emit `0x04`
+instead. Both values belong to the same record family and are accepted; any
+other value is rejected as malformed. The field's semantic meaning is still
+under investigation — it may encode a hardware capability flag or a CAN-bus
+attribute of the source expansion module. See also
 `scripts/investigate_missing_data/c_variant_scanner.py` for the RE that
 established the channel_field mapping and timing rules.
 
