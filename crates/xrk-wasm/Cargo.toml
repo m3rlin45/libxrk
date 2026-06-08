@@ -1,0 +1,36 @@
+# Standalone crate (own `[workspace]` table below) so it keeps its own
+# size-optimised release profile and is built out-of-band by
+# `scripts/build-xrk-wasm.sh` / `just wasm-build` — never by the main
+# Python/Rust workspace or its CI. The root workspace also lists this path under
+# `[workspace].exclude`.
+[package]
+name = "xrk-wasm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "wasm-bindgen wrapper exposing libxrk's pure-Rust AiM XRK/XRZ parser to the browser."
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "=0.2.122"
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+# libxrk's pure-Rust core (no Python), straight from this repo — always in sync
+# with the parser it wraps. `default-features = false` keeps Arrow out of the
+# wasm (the browser only needs plain channel arrays).
+libxrk = { path = "../libxrk", default-features = false }
+
+# Standalone workspace root: keeps this crate out of the parent Python/Rust
+# workspace so its size profile applies and `cargo`/CI at the repo root ignore it.
+[workspace]
+
+# Small, fast wasm: optimise for size, abort on panic (no unwinding tables).
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

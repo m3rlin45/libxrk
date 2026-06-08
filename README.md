@@ -193,6 +193,31 @@ just pyodide-test-0-29
 
 Note: Pyodide tests for both 0.27.x and 0.29.x run automatically in CI via GitHub Actions.
 
+### Browser WebAssembly parser (no Python)
+
+In addition to the Pyodide wheels, the repo ships a small standalone
+`wasm-bindgen` build of libxrk's pure-Rust core in
+[`crates/xrk-wasm`](crates/xrk-wasm). It parses AiM `.xrk`/`.xrz` files entirely
+in the browser as a ~200 KB wasm module — **no Pyodide and no Python runtime**.
+Use it when a web app only needs to turn a telemetry file into plain channel
+arrays; reach for the Pyodide wheels when you need the full Python API.
+
+```bash
+# Compile to wasm and emit JS-ready artifacts in crates/xrk-wasm/pkg/
+just wasm-build
+```
+
+```js
+import init, { parse_xrk } from "./pkg/xrk_wasm.js";
+
+await init();
+const parsed = parse_xrk(new Uint8Array(await file.arrayBuffer()));
+// parsed = { channels: [{ name, units, interpolate, timecodes, values }],
+//            laps: [{ num, start, end }], metadata: { Driver, Vehicle, ... } }
+```
+
+See [`crates/xrk-wasm/README.md`](crates/xrk-wasm/README.md) for details.
+
 ### Building
 
 ```bash

@@ -51,6 +51,10 @@ rust-build-debug:
     #!/usr/bin/env bash
     source $HOME/.cargo/env && uv run maturin develop
 
+# Build the standalone browser wasm parser (no Python) -> crates/xrk-wasm/pkg/
+wasm-build:
+    ./scripts/build-xrk-wasm.sh
+
 # Install Emscripten SDK for Pyodide 0.27.x
 emsdk-setup:
     #!/usr/bin/env bash
