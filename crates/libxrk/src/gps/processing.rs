@@ -16,6 +16,11 @@ pub struct GpsDecodeResult {
     pub latitude: Vec<f64>,
     pub longitude: Vec<f64>,
     pub altitude: Vec<f64>,
+    /// Course over ground in degrees [0, 360), derived from the receiver's
+    /// ECEF velocity vector — far more stable than any position-difference
+    /// bearing. Not part of the 12 Arrow channels (additive field; consumers
+    /// such as the wasm wrapper export it explicitly).
+    pub heading: Vec<f64>,
     // Float32 channels (NAV-SOL raw fields + derived)
     pub satellites: Vec<f32>,
     pub fix: Vec<f32>,
@@ -310,6 +315,9 @@ pub fn decode_gps(
         .map(|i| (speed[i] * yaw_rate[i] as f64 * (PI / 180.0) / 9.81) as f32)
         .collect();
 
+    // Course over ground, normalized to [0, 360)
+    let heading: Vec<f64> = heading_deg.iter().map(|&h| h.rem_euclid(360.0)).collect();
+
     // Float32 channels from NAV-SOL raw fields
     let satellites: Vec<f32> = nsat_raw.iter().map(|&v| v as f32).collect();
     let fix: Vec<f32> = gps_fix_raw.iter().map(|&v| v as f32).collect();
@@ -323,6 +331,7 @@ pub fn decode_gps(
         latitude,
         longitude,
         altitude,
+        heading,
         satellites,
         fix,
         pdop,
@@ -584,6 +593,7 @@ mod tests {
         assert_eq!(result.latitude.len(), 1);
         assert_eq!(result.longitude.len(), 1);
         assert_eq!(result.altitude.len(), 1);
+        assert_eq!(result.heading.len(), 1);
         assert_eq!(result.satellites.len(), 1);
         assert_eq!(result.fix.len(), 1);
         assert_eq!(result.pdop.len(), 1);

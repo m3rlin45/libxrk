@@ -220,6 +220,7 @@ pub fn build_gps_channel_batches(
         latitude,
         longitude,
         altitude,
+        heading: _, // not part of the 12 Arrow channels (see GpsDecodeResult)
         satellites,
         fix,
         pdop,
