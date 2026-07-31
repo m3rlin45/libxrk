@@ -334,10 +334,23 @@ pub fn decode_gps(
     }))
 }
 
-/// Fix timecodes for old MXP firmware that butchers the upper 16 bits.
+/// Fix timecodes for firmware that butchers the upper 16 bits.
 ///
-/// If any timecode goes backwards, reconstruct using only the bottom 16 bits
-/// with wrap-around detection.
+/// If any timecode goes backwards, reconstruct from the bottom 16 bits by
+/// phase-unwrapping: each sample takes the 65536ms multiple that places it
+/// closest to the previous reconstructed time (half-range hysteresis).
+///
+/// The distinction that matters: a genuine 16-bit rollover appears as a LARGE
+/// backwards step of the masked value (close to 65536 — e.g. 65500 → 20),
+/// while newer Solo 2 firmware also writes GPS records with small
+/// out-of-order jitter at buffer-block seams (time stepping back ~40-160ms).
+/// The old rule counted ANY decrease as a rollover and added 65536ms per
+/// jitter seam — 3,500+ times in a reported file — inflating a 16-minute
+/// race into a "64-hour" session and desynchronizing GPS from every other
+/// channel. With half-range hysteresis, jitter is preserved as-is (it is
+/// re-ordered later by `sanitize_gps_records`) and only true rollovers
+/// advance the wrap offset. Out-of-order stragglers from just before a
+/// rollover also resolve to their correct pre-wrap time.
 fn fix_timecodes(timecodes: &mut [i32]) {
     if timecodes.len() < 2 {
         return;
@@ -349,24 +362,137 @@ fn fix_timecodes(timecodes: &mut [i32]) {
         return;
     }
 
-    // Step 1: mask to bottom 16 bits + preserve base from first timecode
-    let base = timecodes[0] - (timecodes[0] & 65535);
-    for tc in timecodes.iter_mut() {
-        *tc = (*tc & 65535) + base;
+    const WRAP: i64 = 65536;
+    let base = (timecodes[0] as i64) - (timecodes[0] as i64 & (WRAP - 1));
+    let mut prev = (timecodes[0] as i64 & (WRAP - 1)) + base;
+    timecodes[0] = prev as i32;
+    for tc in timecodes.iter_mut().skip(1) {
+        let masked = *tc as i64 & (WRAP - 1);
+        // Fold the masked delta into (-32768, 32768] relative to the previous
+        // reconstructed time: the closest possible band.
+        let mut delta = (masked + base - prev).rem_euclid(WRAP);
+        if delta > WRAP / 2 {
+            delta -= WRAP;
+        }
+        let cand = prev + delta;
+        *tc = cand as i32;
+        prev = cand;
+    }
+}
+
+/// One GPS week in milliseconds — the u-blox `itow` field wraps at this.
+const WEEK_MS: i64 = 604_800_000;
+
+/// Repair a raw GPS record buffer (56-byte NAV-SOL records) whose logger
+/// timecodes exhibit the 16-bit corruption (time running backwards).
+///
+/// The primary reconstruction uses the receiver's own clock: every NAV-SOL
+/// record carries `itow` (GPS time of week, ms), which the logger firmware
+/// bug cannot touch. Affected Solo 2 files also write EVERY GPS epoch twice
+/// (two independent position solutions, ~4m apart, sharing one `itow`);
+/// keeping both would weave a ~4m square-wave zigzag through an otherwise
+/// centimeter-smooth track line, so exactly one record is kept per epoch
+/// (the first in file order — each sub-stream is equally smooth). Records
+/// are ordered by `itow` and their timecodes rebuilt as `itow + offset`,
+/// where the offset is the median of (phase-unwrapped timecode − itow) —
+/// robust to any residual straggler rows.
+///
+/// When `itow` is unusable (no-fix receivers may emit zeros), falls back to
+/// phase-unwrapping the logger timecodes (see `fix_timecodes`) and
+/// stable-sorting records by the repaired time.
+///
+/// Values are never altered — only the clock is repaired, the records
+/// re-ordered, and duplicate-epoch twins dropped. Returns true when a repair
+/// was made; clean buffers are left untouched byte-for-byte.
+pub fn sanitize_gps_records(gps_data: &mut Vec<u8>) -> bool {
+    const REC: usize = 56;
+    if gps_data.len() < 2 * REC || !gps_data.len().is_multiple_of(REC) {
+        return false;
+    }
+    let n = gps_data.len() / REC;
+
+    let read_i32 = |data: &[u8], off: usize| {
+        i32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
+    };
+    let raw_timecodes: Vec<i32> = (0..n).map(|i| read_i32(gps_data, i * REC)).collect();
+
+    if !raw_timecodes.windows(2).any(|w| w[1] < w[0]) {
+        return false;
     }
 
-    // Step 2: fix wrap-arounds (track previous unmodified value)
-    let mut prev_masked = timecodes[0];
-    let mut cum: i32 = 0;
-    #[allow(clippy::needless_range_loop)]
-    for i in 1..timecodes.len() {
-        let current_masked = timecodes[i];
-        if current_masked < prev_masked {
-            cum += 65536;
+    let itows: Vec<i64> = (0..n)
+        .map(|i| {
+            u32::from_le_bytes([
+                gps_data[i * REC + 4],
+                gps_data[i * REC + 5],
+                gps_data[i * REC + 6],
+                gps_data[i * REC + 7],
+            ]) as i64
+        })
+        .collect();
+
+    // itow is usable when the values are in-range and (nearly) all non-zero.
+    let zeros = itows.iter().filter(|&&t| t == 0).count();
+    let in_range = itows.iter().all(|&t| (0..WEEK_MS).contains(&t));
+    let itow_usable = in_range && zeros * 5 < n;
+
+    let mut unwrapped = raw_timecodes.clone();
+    fix_timecodes(&mut unwrapped);
+
+    let order: Vec<usize>;
+    let new_timecodes: Vec<i32>;
+    if itow_usable {
+        // Unwrap a mid-session GPS week rollover: if the itow span exceeds
+        // half a week, the small values are from the following week.
+        let (&min_itow, &max_itow) = match (itows.iter().min(), itows.iter().max()) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return false,
+        };
+        let rollover = max_itow - min_itow > WEEK_MS / 2;
+        let epoch_of = |i: usize| {
+            let t = itows[i];
+            if rollover && t < min_itow + WEEK_MS / 2 {
+                t + WEEK_MS
+            } else {
+                t
+            }
+        };
+
+        // Anchor the receiver clock to the logger clock: median of
+        // (unwrapped timecode − epoch) over all records.
+        let mut diffs: Vec<i64> = (0..n).map(|i| unwrapped[i] as i64 - epoch_of(i)).collect();
+        diffs.sort_unstable();
+        let offset = diffs[n / 2];
+
+        // Keep the first record (file order) of each epoch, ordered by epoch.
+        let mut first_by_epoch: std::collections::BTreeMap<i64, usize> = Default::default();
+        for i in 0..n {
+            first_by_epoch.entry(epoch_of(i)).or_insert(i);
         }
-        prev_masked = current_masked;
-        timecodes[i] += cum;
+        order = first_by_epoch.values().copied().collect();
+        new_timecodes = order
+            .iter()
+            .map(|&i| (epoch_of(i) + offset) as i32)
+            .collect();
+    } else {
+        // Fallback: phase-unwrapped logger timecodes, stable order (ties keep
+        // file order), all records kept.
+        let mut idx: Vec<usize> = (0..n).collect();
+        idx.sort_by_key(|&i| (unwrapped[i], i));
+        new_timecodes = idx.iter().map(|&i| unwrapped[i]).collect();
+        order = idx;
     }
+
+    let mut out = Vec::with_capacity(order.len() * REC);
+    for (k, &i) in order.iter().enumerate() {
+        let off = i * REC;
+        let mut record = [0u8; REC];
+        record.copy_from_slice(&gps_data[off..off + REC]);
+        record[0..4].copy_from_slice(&new_timecodes[k].to_le_bytes());
+        out.extend_from_slice(&record);
+    }
+    *gps_data = out;
+    true
 }
 
 impl GpsDecodeResult {
@@ -506,12 +632,170 @@ mod tests {
     }
 
     #[test]
-    fn test_fix_timecodes_backward_corrected() {
-        let mut tcs = vec![100, 200, 50, 150];
+    fn test_fix_timecodes_true_rollover_corrected() {
+        // Masked value drops by ~65500 (a genuine 16-bit wrap): unwrap adds 65536.
+        let mut tcs = vec![65400, 65440, 65480, 65520, 24, 64];
         fix_timecodes(&mut tcs);
-        for w in tcs.windows(2) {
-            assert!(w[1] >= w[0], "timecodes not monotonic after fix: {:?}", tcs);
+        assert_eq!(tcs, vec![65400, 65440, 65480, 65520, 65560, 65600]);
+    }
+
+    #[test]
+    fn test_fix_timecodes_small_jitter_is_not_a_rollover() {
+        // Newer Solo 2 firmware writes records with small out-of-order jitter at
+        // block seams. The old any-decrease rule added 65536ms per seam,
+        // inflating a 16-minute session into "64 hours". Jitter must pass
+        // through untouched (ordering is restored by sanitize_gps_records).
+        let mut tcs = vec![100, 200, 160, 240, 280, 239, 320];
+        fix_timecodes(&mut tcs);
+        assert_eq!(tcs, vec![100, 200, 160, 240, 280, 239, 320]);
+    }
+
+    #[test]
+    fn test_fix_timecodes_straggler_after_rollover_resolves_pre_wrap() {
+        // A row from just before a rollover arriving just after it must land at
+        // its true pre-wrap time, not a band away.
+        let mut tcs = vec![65500, 65530, 20, 65510, 50];
+        fix_timecodes(&mut tcs);
+        assert_eq!(tcs, vec![65500, 65530, 65556, 65510, 65586]);
+    }
+
+    #[test]
+    fn test_fix_timecodes_upper_bits_garbage_reconstructs_from_bottom_16() {
+        // Upper 16 bits corrupted arbitrarily; bottom 16 carry a clean 40ms
+        // cadence. Reconstruction only trusts the bottom bits.
+        let truth: Vec<i64> = (0..8).map(|i| 500 + i * 40).collect();
+        let mut tcs: Vec<i32> = truth
+            .iter()
+            .enumerate()
+            .map(|(i, &t)| ((t & 65535) as i32) + if i % 3 == 2 { 65536 * 7 } else { 0 })
+            .collect();
+        fix_timecodes(&mut tcs);
+        assert_eq!(tcs.iter().map(|&t| t as i64).collect::<Vec<_>>(), truth);
+    }
+
+    fn record_with_timecode_and_marker(timecode: i32, marker: u8) -> Vec<u8> {
+        let mut r = make_gps_record(timecode);
+        r[50] = marker; // reserved byte — rides along with the record
+        r
+    }
+
+    #[test]
+    fn test_sanitize_gps_records_clean_buffer_untouched() {
+        let mut data = make_gps_record(1000);
+        data.extend_from_slice(&make_gps_record(1040));
+        let before = data.clone();
+        assert!(!sanitize_gps_records(&mut data));
+        assert_eq!(data, before);
+    }
+
+    #[test]
+    fn test_sanitize_gps_records_reorders_jittered_records() {
+        let mut data = Vec::new();
+        for (tc, marker) in [(0, 1u8), (40, 2), (120, 4), (80, 3), (160, 5)] {
+            data.extend_from_slice(&record_with_timecode_and_marker(tc, marker));
         }
+        assert!(sanitize_gps_records(&mut data));
+        let times: Vec<i32> = (0..5)
+            .map(|i| {
+                i32::from_le_bytes([
+                    data[i * 56],
+                    data[i * 56 + 1],
+                    data[i * 56 + 2],
+                    data[i * 56 + 3],
+                ])
+            })
+            .collect();
+        let markers: Vec<u8> = (0..5).map(|i| data[i * 56 + 50]).collect();
+        assert_eq!(times, vec![0, 40, 80, 120, 160]);
+        // Each record's payload moved with its timecode.
+        assert_eq!(markers, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn test_sanitize_gps_records_unwraps_and_orders_rollover_with_straggler() {
+        // itow is zero in these records, so this exercises the fallback path.
+        let mut data = Vec::new();
+        for (tc, marker) in [(65500, 1u8), (65530, 2), (20, 4), (65510, 3), (50, 5)] {
+            data.extend_from_slice(&record_with_timecode_and_marker(tc, marker));
+        }
+        assert!(sanitize_gps_records(&mut data));
+        let times: Vec<i32> = (0..5)
+            .map(|i| {
+                i32::from_le_bytes([
+                    data[i * 56],
+                    data[i * 56 + 1],
+                    data[i * 56 + 2],
+                    data[i * 56 + 3],
+                ])
+            })
+            .collect();
+        let markers: Vec<u8> = (0..5).map(|i| data[i * 56 + 50]).collect();
+        assert_eq!(times, vec![65500, 65510, 65530, 65556, 65586]);
+        assert_eq!(markers, vec![1, 3, 2, 4, 5]);
+    }
+
+    fn record_with_itow(timecode: i32, itow: u32, marker: u8) -> Vec<u8> {
+        let mut r = record_with_timecode_and_marker(timecode, marker);
+        r[4..8].copy_from_slice(&itow.to_le_bytes());
+        r
+    }
+
+    #[test]
+    fn test_sanitize_gps_records_itow_rebuild_dedupes_doubled_epochs() {
+        // The reported Solo 2 fault: every epoch written twice (two position
+        // solutions sharing one itow), logger timecodes jittered. The receiver
+        // clock (itow) reconstructs the timeline: one record per epoch, first
+        // in file order wins, timecodes = itow + median offset (460 here).
+        let mut data = Vec::new();
+        for (tc, itow, marker) in [
+            (500, 71_000_040u32, 1u8),
+            (460, 71_000_000, 2), // backwards step → repair triggers
+            (540, 71_000_080, 3),
+            (501, 71_000_040, 4), // duplicate epoch
+            (461, 71_000_000, 5), // duplicate epoch
+            (580, 71_000_120, 6),
+        ] {
+            data.extend_from_slice(&record_with_itow(tc, itow, marker));
+        }
+        assert!(sanitize_gps_records(&mut data));
+        assert_eq!(data.len() / 56, 4); // one record per epoch
+        let times: Vec<i32> = (0..4)
+            .map(|i| {
+                i32::from_le_bytes([
+                    data[i * 56],
+                    data[i * 56 + 1],
+                    data[i * 56 + 2],
+                    data[i * 56 + 3],
+                ])
+            })
+            .collect();
+        let markers: Vec<u8> = (0..4).map(|i| data[i * 56 + 50]).collect();
+        assert_eq!(times, vec![460, 500, 540, 580]);
+        assert_eq!(markers, vec![2, 1, 3, 6]);
+    }
+
+    #[test]
+    fn test_sanitize_gps_records_itow_week_rollover() {
+        // Session crossing the GPS week boundary: itow wraps to 0 mid-stream.
+        let week: i64 = 604_800_000;
+        let mut data = Vec::new();
+        data.extend_from_slice(&record_with_itow(1000, (week - 40) as u32, 1));
+        data.extend_from_slice(&record_with_itow(990, 20, 2)); // backwards trigger; next week
+        assert!(sanitize_gps_records(&mut data));
+        let times: Vec<i32> = (0..2)
+            .map(|i| {
+                i32::from_le_bytes([
+                    data[i * 56],
+                    data[i * 56 + 1],
+                    data[i * 56 + 2],
+                    data[i * 56 + 3],
+                ])
+            })
+            .collect();
+        let markers: Vec<u8> = (0..2).map(|i| data[i * 56 + 50]).collect();
+        // Epochs stay in true order across the wrap, 60ms apart (−40 → +20).
+        assert_eq!(markers, vec![1, 2]);
+        assert_eq!(times[1] - times[0], 60);
     }
 
     #[test]

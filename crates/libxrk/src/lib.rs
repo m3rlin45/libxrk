@@ -134,6 +134,11 @@ pub fn read_xrk_with_progress(
         })
         .collect();
 
+    // Repair corrupt GPS record timecodes (16-bit rollover / block-jitter
+    // firmware fault) at the byte level BEFORE decoding, so channel decode and
+    // lap detection all see one consistent, ordered stream.
+    gps::sanitize_gps_records(&mut result.gps_data);
+
     // Decode GPS channels
     let mut gps_result = gps::decode_gps(&result.gps_data, result.time_offset)?;
 
