@@ -33,6 +33,7 @@ When you find data parsing differs from AIM's RaceStudio output, start by readin
 - `src/libxrk/aim_xrk.pyx` - Cython binary parser (default backend, conforms to spec)
 - `src/libxrk/aim_xrk.pyi` - Type stubs for Cython module
 - `crates/` - Rust+PyO3 parser (~2x faster, conforms to spec)
+- `crates/xrk-wasm/` - standalone `wasm-bindgen` browser parser over the pure-Rust core (no Python/Pyodide); built out-of-band via `just wasm-build`
 - `src/libxrk/_aim_xrk_rs.pyi` - Type stubs for Rust module
 - `src/libxrk/base.py` - LogFile dataclass, channel merging
 - `src/libxrk/gps.py` - GPS utilities, lap detection, timing fix
@@ -113,6 +114,24 @@ just pyodide-test-0-29     # Build and run tests in Pyodide 0.29.x
 ```
 
 Pyodide test scripts are in `scripts/run_pyodide_tests*.mjs`. They accept `--pyodide-version=0.27` or `--pyodide-version=0.29` to select the version.
+
+## Standalone Browser WASM Parser (`crates/xrk-wasm`)
+
+Separate from the Pyodide wheels, `crates/xrk-wasm` is a thin `wasm-bindgen`
+wrapper over the **pure-Rust** core (`crates/libxrk`) that parses `.xrk`/`.xrz`
+files in the browser with **no Python/Pyodide** — a ~200 KB module exposing a
+single `parse_xrk(Uint8Array)` function. It's an additional tool, not a backend:
+it does not affect the Python package or its Cython/PyO3 backends.
+
+```bash
+just wasm-build      # -> crates/xrk-wasm/pkg/ (wraps scripts/build-xrk-wasm.sh)
+```
+
+Key facts:
+- Depends on `crates/libxrk` **by path** (`default-features = false`, Arrow off), so the wasm always tracks the in-repo parser — nothing to pin.
+- Standalone Cargo workspace (own `[workspace]` table + listed under `[workspace].exclude` in the root `Cargo.toml`), so it keeps its size profile and is ignored by `just check` / `cargo test` / CI.
+- Build is out-of-band (needs the `wasm32-unknown-unknown` target + `wasm-bindgen` 0.2.122; the script bootstraps the CLI). Output `pkg/` is git-ignored.
+- If the pure-Rust public API in `crates/libxrk` changes, keep `crates/xrk-wasm/src/lib.rs` in sync.
 
 ## Cython Rebuild
 

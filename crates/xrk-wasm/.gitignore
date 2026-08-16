@@ -1,0 +1,5 @@
+# Build output of `scripts/build-xrk-wasm.sh` / `just wasm-build`.
+/target
+/pkg
+# Standalone crate built out-of-band; no lockfile required in-repo.
+Cargo.lock

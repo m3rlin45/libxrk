@@ -1,5 +1,9 @@
 [workspace]
 members = ["crates/libxrk", "crates/libxrk-python"]
+# crates/xrk-wasm is a standalone wasm-bindgen tool with its own workspace and
+# size-optimized profile; it's built out-of-band (just wasm-build), not as part
+# of the main Python/Rust build or CI.
+exclude = ["crates/xrk-wasm"]
 resolver = "2"
 
 [workspace.dependencies]
