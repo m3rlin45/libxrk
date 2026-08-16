@@ -126,7 +126,7 @@ pyodide-build-0-29: emsdk-setup-0-29
     EMSDK=$PWD/build/emsdk-0.29 && \
     export PATH="$HOME/.pyenv/versions/3.13.12/bin:$HOME/.cargo/bin:$EMSDK/upstream/emscripten:$PATH" && \
     export EMSDK EM_CONFIG=$EMSDK/.emscripten EMSDK_NODE=$EMSDK/node/22.16.0_64bit/bin/node && \
-    export RUSTUP_TOOLCHAIN=nightly RUSTFLAGS="-Zemscripten-wasm-eh" && \
+    export RUSTUP_TOOLCHAIN=nightly && \
     export CARGO_BUILD_TARGET=wasm32-unknown-emscripten && \
     uv pip install --python "$HOME/.pyenv/versions/3.13.12/bin/python" pyodide-build==0.32.0 "wheel<0.44" && \
     pyodide build --exports whole_archive; \
@@ -140,7 +140,7 @@ pyodide-test-0-29: emsdk-setup-0-29 pyodide-setup-0-29
     EMSDK=$PWD/build/emsdk-0.29 && \
     export PATH="$HOME/.pyenv/versions/3.13.12/bin:$HOME/.cargo/bin:$EMSDK/upstream/emscripten:$PATH" && \
     export EMSDK EM_CONFIG=$EMSDK/.emscripten EMSDK_NODE=$EMSDK/node/22.16.0_64bit/bin/node && \
-    export RUSTUP_TOOLCHAIN=nightly RUSTFLAGS="-Zemscripten-wasm-eh" && \
+    export RUSTUP_TOOLCHAIN=nightly && \
     export CARGO_BUILD_TARGET=wasm32-unknown-emscripten && \
     rm -f dist/*pyodide_2025*.whl && \
     uv pip install --python "$HOME/.pyenv/versions/3.13.12/bin/python" pyodide-build==0.32.0 "wheel<0.44" && \

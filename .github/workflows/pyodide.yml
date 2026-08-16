@@ -14,6 +14,9 @@ jobs:
   pyodide-build:
     runs-on: ubuntu-latest
     strategy:
+      # Report both runtimes independently. With fail-fast on, a failure in
+      # one entry cancels the other mid-compile, which reads as "both broken".
+      fail-fast: false
       matrix:
         include:
           - pyodide-version: "0.27.3"
@@ -25,7 +28,7 @@ jobs:
             python-version: "3.13"
             emscripten-version: "4.0.9"
             artifact-suffix: "-0.29"
-            rust-flags: "-Zemscripten-wasm-eh"
+            rust-flags: ""
     name: Build wheel for Pyodide ${{ matrix.pyodide-version }}
 
     steps:
