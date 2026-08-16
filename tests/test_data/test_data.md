@@ -258,3 +258,55 @@ Contains data from a run by an intermediate driver in a Toyota 86.
 | Vehicle | Inferno 86 |
 | Venue | Fuji GP Sh |
 
+
+---
+
+## issue84 — GPS timecode reconstruction
+
+**File:** `issue84/CMD_KK-SII_Tsukuba_Car_Qualifying testing_a_0159.xrz` (4.1 MB)
+
+Regression fixture for issue #84: GPS timecodes rebuilt from the low 16 bits.
+
+**Why this file:** the smallest file in a 353-file survey that carries more than
+one fault class. The logger **re-emits a block of 41 GPS records** — records
+4856-4896 are byte-identical to records 4897-4937. That produces two symptoms at
+once:
+
+* the logger clock steps **backwards by 1600 ms** at index 4896, and
+* **41 iTOW epochs are duplicated**.
+
+The backwards step is *not* a 16-bit rollover. The superseded rule ("accumulate
++65536 whenever `tc[i+1] < tc[i]`") treated it as one and added 65536 ms to every
+later sample; the downstream 65533 ms-gap correction in `gps.py` then partly
+compensated, leaving ~1.6 s of fabricated timeline and 41 phantom GPS samples,
+with GPS drifting away from every other channel.
+
+`iTOW` (GPS time of week, written by the receiver) is the ground truth used to
+verify reconstruction — the logger firmware bug cannot touch it. It is never
+used to *perform* the reconstruction.
+
+**Expected after correct reconstruction:**
+
+* GPS span 240.8 s, matching iTOW's span and the non-GPS channels to within 100 ms
+* the 41 replayed records land back on the timecodes they duplicate, so the raw
+  `GPS Speed` table has one backwards step and 41 duplicate timecodes — these are
+  absorbed by `get_channels_as_table()`, whose output is monotonic and unique
+* 6062 GPS samples, 6021 distinct timecodes
+
+Tests: `spec/tests/test_gps_timecodes.py`, `tests/test_issue84_gps_timecodes.py`,
+and `fix_timecodes` unit tests in `crates/libxrk/src/gps/processing.rs`.
+Algorithm: `spec/docs/companion.md` section 6, reference implementation
+`spec/xrk_format.py::reconstruct_gps_timecodes`.
+
+**File-Level Metadata:**
+
+| Key | Value |
+|-----|-------|
+| Log Date | 05/23/2026 |
+| Log Time | 13:19:33 |
+| Logger ID | 8401203 |
+| Logger Model ID | 519 (Solo 2, not in the model table) |
+| Venue | Tsukuba_Car |
+| GPS Receiver | GPS |
+| Channels | 87 |
+| Laps | 3 |

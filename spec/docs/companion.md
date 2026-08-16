@@ -145,11 +145,37 @@ the upper 16 bits are assumed to be unreliable.
 
 ### Correction (Timecode Reconstruction)
 
-1. Mask to lower 16 bits: `tc = timecodes & 0xFFFF`
-2. Add the base offset: `tc += timecodes[0] - (timecodes[0] & 0xFFFF)`
-3. Fix wrap-arounds: accumulate +65536 whenever `tc[i+1] < tc[i]`
+Reconstruction is a **phase unwrap**. Anchor on `timecodes[0]`, then place each
+subsequent sample at the multiple of 65536 that puts it *closest* to its
+predecessor — i.e. fold the low-16 delta into `[-32768, +32767]`:
 
-Reference: `aim_xrk.pyx:946-948`
+```
+out[0] = timecodes[0]
+out[i] = out[i-1] + fold16(timecodes[i] - out[i-1])
+    where fold16(d) = (((d & 0xFFFF) ^ 0x8000) - 0x8000)
+```
+
+A backwards step is therefore only interpreted as a 16-bit rollover when it is
+*close to 65536*. This matters because backwards steps have several causes and
+only one of them is a wrap:
+
+| Cause | Backwards step | Correct handling |
+|---|---|---|
+| 16-bit rollover | ~65536 ms | advance one 65536 ms band |
+| Replayed record block | block duration | reproduce the original times |
+| Out-of-order record at a buffer seam | tens of ms | keep its true time |
+| All-zero dropout record | current elapsed time | absorb; next record re-locks |
+
+The earlier rule ("accumulate +65536 whenever `tc[i+1] < tc[i]`") treated *all*
+of these as rollovers, adding a spurious 65536 ms to every later sample.
+
+Only applied when the raw stream is non-monotonic (the corruption signature).
+Clean streams are left untouched, which preserves legitimate forward gaps larger
+than the 32768 ms half-range.
+
+Reference implementation: `spec/xrk_format.py` → `reconstruct_gps_timecodes()`.
+Backends: `aim_xrk.pyx` `_decode_gps()`, `crates/libxrk/src/gps/processing.rs`
+`fix_timecodes()`.
 
 ### GNFI-Based Detection
 
