@@ -3,10 +3,20 @@ name: Pyodide (WebAssembly) Tests
 on:
   workflow_call:
 
+env:
+  # Version of the pyodide-build TOOL. Deliberately not tied to the Pyodide
+  # runtime versions in the matrix below — see the "Install pyodide-build" step.
+  # Keep in step with the `pyodide-build` pin in uv.lock so CI and local builds
+  # use the same tool.
+  PYODIDE_BUILD_VERSION: "0.32.0"
+
 jobs:
   pyodide-build:
     runs-on: ubuntu-latest
     strategy:
+      # Report both runtimes independently. With fail-fast on, a failure in
+      # one entry cancels the other mid-compile, which reads as "both broken".
+      fail-fast: false
       matrix:
         include:
           - pyodide-version: "0.27.3"
@@ -18,7 +28,7 @@ jobs:
             python-version: "3.13"
             emscripten-version: "4.0.9"
             artifact-suffix: "-0.29"
-            rust-flags: "-Zemscripten-wasm-eh"
+            rust-flags: ""
     name: Build wheel for Pyodide ${{ matrix.pyodide-version }}
 
     steps:
@@ -51,10 +61,20 @@ jobs:
         mv "$WASM_OPT" "${WASM_OPT}.real"
         cp scripts/wasm-opt-wrapper.sh "$WASM_OPT"
 
+    # pyodide-build is a BUILD TOOL and its version is independent of the
+    # Pyodide RUNTIME version being targeted. Pinning it to the runtime version
+    # (pyodide-build==0.27.3 / ==0.29.3) is what broke this workflow: those
+    # releases hardcode a cross-build-environment metadata URL,
+    # https://raw.githubusercontent.com/pyodide/pyodide/main/pyodide-cross-build-environments.json
+    # which upstream has since removed, so `xbuildenv install` died on a 404.
+    #
+    # One current pyodide-build serves every runtime; the runtime is selected by
+    # the argument to `xbuildenv install` below. Keep this pinned (for
+    # reproducibility) and independent of matrix.pyodide-version.
     - name: Install pyodide-build
       run: |
         uv pip install --system --prerelease=allow "wheel<0.44.0"
-        uv pip install --system --prerelease=allow pyodide-build==${{ matrix.pyodide-version }}
+        uv pip install --system --prerelease=allow pyodide-build==${{ env.PYODIDE_BUILD_VERSION }}
 
     - name: Install Pyodide xbuildenv
       run: pyodide xbuildenv install ${{ matrix.pyodide-version }}
