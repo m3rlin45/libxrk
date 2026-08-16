@@ -1184,8 +1184,15 @@ def _decode_gps(gpsmsg, time_offset):
     # reconstruct it using only the bottom 16-bits and assuming time
     # never skips ahead too far.
     if np.any(timecodes[1:] < timecodes[:-1]):
-        timecodes = (timecodes & 65535) + (timecodes[0] - (timecodes[0] & 65535))
-        timecodes += 65536 * np.cumsum(np.concatenate(([0], timecodes[1:] < timecodes[:-1])))
+        # Phase unwrap: place each sample at the multiple of 65536 CLOSEST to
+        # its predecessor, i.e. fold the low-16 delta into [-32768, +32767].
+        # A backwards step therefore only reads as a rollover when it is near
+        # 65536; smaller ones (out-of-order records, a replayed block, an
+        # all-zero dropout record) keep their true time instead of inflating
+        # every later sample by 65536ms.  See spec/xrk_format.py
+        # reconstruct_gps_timecodes() and spec/docs/companion.md section 6.
+        deltas = (((np.diff(timecodes.astype(np.int64)) & 0xFFFF) ^ 0x8000) - 0x8000)
+        timecodes = (timecodes[0] + np.concatenate(([0], deltas.cumsum()))).astype(timecodes.dtype)
     # NAV-SOL fields (known, used for position/velocity)
     #itow_ms = alldata[4:].cast('I')[::56//4]       # iTOW - GPS time of week
     #fTOW_ns = alldata[8:].cast('i')[::56//4]       # fTOW - fractional TOW [ns]

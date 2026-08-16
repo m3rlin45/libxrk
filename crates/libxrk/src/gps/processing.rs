@@ -349,23 +349,19 @@ fn fix_timecodes(timecodes: &mut [i32]) {
         return;
     }
 
-    // Step 1: mask to bottom 16 bits + preserve base from first timecode
-    let base = timecodes[0] - (timecodes[0] & 65535);
-    for tc in timecodes.iter_mut() {
-        *tc = (*tc & 65535) + base;
-    }
-
-    // Step 2: fix wrap-arounds (track previous unmodified value)
-    let mut prev_masked = timecodes[0];
-    let mut cum: i32 = 0;
+    // Phase unwrap: place each sample at the multiple of 65536 CLOSEST to its
+    // predecessor, i.e. fold the low-16 delta into [-32768, +32767]. A
+    // backwards step therefore only reads as a rollover when it is near 65536;
+    // smaller ones (out-of-order records, a replayed block, an all-zero dropout
+    // record) keep their true time instead of inflating every later sample by
+    // 65536ms. See spec/xrk_format.py reconstruct_gps_timecodes().
+    //
+    // timecodes[i - 1] is already reconstructed here, but stays congruent to
+    // the raw value mod 65536, so the low-16 delta is unaffected.
     #[allow(clippy::needless_range_loop)]
     for i in 1..timecodes.len() {
-        let current_masked = timecodes[i];
-        if current_masked < prev_masked {
-            cum += 65536;
-        }
-        prev_masked = current_masked;
-        timecodes[i] += cum;
+        let delta = (((timecodes[i].wrapping_sub(timecodes[i - 1])) & 0xFFFF) ^ 0x8000) - 0x8000;
+        timecodes[i] = timecodes[i - 1].wrapping_add(delta);
     }
 }
 
@@ -506,12 +502,71 @@ mod tests {
     }
 
     #[test]
-    fn test_fix_timecodes_backward_corrected() {
-        let mut tcs = vec![100, 200, 50, 150];
+    fn test_fix_timecodes_true_rollover_advances_one_band() {
+        // A backwards step of ~65536 IS a 16-bit rollover: advance one band.
+        let mut tcs = vec![65440, 65480, 65520, 24, 64];
         fix_timecodes(&mut tcs);
-        for w in tcs.windows(2) {
-            assert!(w[1] >= w[0], "timecodes not monotonic after fix: {:?}", tcs);
-        }
+        assert_eq!(tcs, vec![65440, 65480, 65520, 65560, 65600]);
+    }
+
+    #[test]
+    fn test_fix_timecodes_replayed_block_is_not_a_rollover() {
+        // A logger that re-emits a block of records steps time backwards by the
+        // block duration. The old any-decrease rule added 65536ms here and
+        // inflated every later sample; the true times must be reproduced.
+        let mut tcs = vec![1000, 1040, 1080, 1000, 1040, 1080, 1120];
+        fix_timecodes(&mut tcs);
+        assert_eq!(tcs, vec![1000, 1040, 1080, 1000, 1040, 1080, 1120]);
+    }
+
+    #[test]
+    fn test_fix_timecodes_seam_jitter_is_not_a_rollover() {
+        // Small out-of-order jitter at a buffer-block seam.
+        let mut tcs = vec![100, 200, 160, 240, 280];
+        fix_timecodes(&mut tcs);
+        assert_eq!(tcs, vec![100, 200, 160, 240, 280]);
+    }
+
+    #[test]
+    fn test_fix_timecodes_straggler_after_rollover_resolves_pre_wrap() {
+        // A record from just before a rollover, arriving just after it, must
+        // land at its true pre-wrap time rather than a whole band later.
+        let mut tcs = vec![65500, 65530, 20, 65510, 50];
+        fix_timecodes(&mut tcs);
+        assert_eq!(tcs, vec![65500, 65530, 65556, 65510, 65586]);
+    }
+
+    #[test]
+    fn test_fix_timecodes_zero_dropout_record_absorbed() {
+        // A single all-zero record wedged into a clean stream must not shift
+        // the records after it: the next real sample re-locks to its true time.
+        let mut tcs = vec![66063, 66103, 66143, 0, 66183, 66223];
+        fix_timecodes(&mut tcs);
+        assert_eq!(tcs[4], 66183);
+        assert_eq!(tcs[5], 66223);
+    }
+
+    #[test]
+    fn test_fix_timecodes_upper_bits_garbage_reconstructs_from_low_16() {
+        // Upper 16 bits corrupted arbitrarily; the low 16 carry a clean 40ms
+        // cadence. Reconstruction must trust only the low bits.
+        let truth: Vec<i32> = (0..8).map(|i| 500 + i * 40).collect();
+        let mut tcs: Vec<i32> = truth
+            .iter()
+            .enumerate()
+            .map(|(i, &t)| (t & 65535) + if i % 3 == 2 { 65536 * 7 } else { 0 })
+            .collect();
+        fix_timecodes(&mut tcs);
+        assert_eq!(tcs, truth);
+    }
+
+    #[test]
+    fn test_fix_timecodes_clean_stream_with_large_gap_untouched() {
+        // A legitimate forward gap larger than the 32768ms half-range must be
+        // preserved: a monotonic stream is never reconstructed.
+        let mut tcs = vec![1000, 1040, 200_000, 200_040];
+        fix_timecodes(&mut tcs);
+        assert_eq!(tcs, vec![1000, 1040, 200_000, 200_040]);
     }
 
     #[test]
