@@ -1493,13 +1493,14 @@ fn decode_all_channels(
     Ok(result)
 }
 
-/// Raw parsed lap data: parallel vectors of (lap_num, start_time, end_time).
+/// Raw parsed lap data: parallel vectors of (lap_num, start_time, end_time, lap_type).
 /// Lap nums are normalized to 0-based indexing.
 #[derive(Debug)]
 struct RawLapData {
     lap_nums: Vec<i32>,
     start_times: Vec<i64>,
     end_times: Vec<i64>,
+    lap_types: Vec<String>,
 }
 
 /// Parse LAP messages with segment filtering, dedup, gap-fill, 0-based normalization.
@@ -1517,6 +1518,7 @@ fn parse_lap_messages(
     let mut lap_nums: Vec<i32> = Vec::new();
     let mut start_times: Vec<i64> = Vec::new();
     let mut end_times: Vec<i64> = Vec::new();
+    let mut lap_types: Vec<String> = Vec::new();
 
     if let Some(lap_msgs) = header_messages.get(&tokens::lap()) {
         for m in lap_msgs {
@@ -1548,6 +1550,7 @@ fn parse_lap_messages(
                     lap_nums.push(lap_num - 1);
                     start_times.push(inferred_start);
                     end_times.push(end_time - duration);
+                    lap_types.push("full".to_string());
                 } else if last_num + 1 != lap_num {
                     // Unexpected gap (> 1 or backwards) (B)
                     return Err(Error::InvalidData(format!(
@@ -1562,7 +1565,13 @@ fn parse_lap_messages(
             lap_nums.push(lap_num);
             start_times.push(end_time - duration);
             end_times.push(end_time);
+            lap_types.push("full".to_string());
         }
+    }
+
+    // Classify first lap as "out" if it starts at or before time 0
+    if !lap_types.is_empty() && start_times[0] <= 0 {
+        lap_types[0] = "out".to_string();
     }
 
     // Normalize to 0-based indexing
@@ -1576,6 +1585,7 @@ fn parse_lap_messages(
         lap_nums,
         start_times,
         end_times,
+        lap_types,
     })
 }
 
@@ -1613,6 +1623,7 @@ pub struct ProcessedLap {
     pub num: i32,
     pub start_time: i64,
     pub end_time: i64,
+    pub lap_type: String,
 }
 
 /// Get processed laps from ParseResult (with proper start/end times).
@@ -1627,6 +1638,7 @@ pub fn get_processed_laps(result: &ParseResult) -> Result<Vec<ProcessedLap>, Err
             num: n,
             start_time: raw.start_times[i],
             end_time: raw.end_times[i],
+            lap_type: raw.lap_types[i].clone(),
         })
         .collect())
 }
