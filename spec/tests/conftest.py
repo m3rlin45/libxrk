@@ -1,7 +1,9 @@
 """Shared fixtures and path constants for spec tests."""
 
 import json
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,9 @@ FILE_86_XRZ = TEST_DATA_DIR / "86" / "CMD_Inferno 86_Fuji GP Sh_Generic testing_
 AIM_OFFICIAL_XRK = TEST_DATA_DIR / "aim_official" / "test.xrk"
 ISSUE49_XRK = TEST_DATA_DIR / "issue49" / "badGPSdata.xrk"
 ISSUE68_XRZ = TEST_DATA_DIR / "issue68" / "CMD_KK-SII_Tsukuba_Car_Generic testing_a_0101.xrz"
+# GPS timecode corruption fixture: one replayed 41-record block, which steps the
+# logger clock backwards by 1600ms and duplicates 41 iTOW epochs. See issue #84.
+ISSUE84_XRZ = TEST_DATA_DIR / "issue84" / "CMD_KK-SII_Tsukuba_Car_Qualifying testing_a_0159.xrz"
 
 ALL_XRK_FILES = [
     SFJ_XRK,
@@ -124,6 +129,32 @@ def issue68_rust():
 
 
 @pytest.fixture(scope="session")
+def issue84_parsed():
+    """Parse the issue84 XRZ file once per session (spec parser)."""
+    from spec.xrk_format import parse_xrk_file
+
+    return parse_xrk_file(str(ISSUE84_XRZ))
+
+
+@pytest.fixture(scope="session")
+def issue84_cython():
+    """Load the issue84 file via Cython parser once per session."""
+    from libxrk import aim_xrk
+
+    return aim_xrk(str(ISSUE84_XRZ))
+
+
+@pytest.fixture(scope="session")
+def issue84_rust():
+    """Load the issue84 file via Rust parser once per session."""
+    try:
+        from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
+    except ImportError:
+        pytest.skip("Rust backend not available")
+    return rust_aim_xrk(str(ISSUE84_XRZ))
+
+
+@pytest.fixture(scope="session")
 def issue68_dll():
     """Extract issue68 data from the official AIM DLL."""
     if not _dll_available():
@@ -196,6 +227,55 @@ def _dll_extract(xrk_path):
     if not result.stdout.strip():
         raise RuntimeError(f"DLL extraction failed: {result.stderr}")
     return json.loads(result.stdout)
+
+
+def _dll_extract_gps(xrk_path):
+    """Extract raw + derived GPS channels (with per-sample times) from the AIM DLL.
+
+    `_dll_extract` uses the DLL's normal channel API, which does not cover GPS;
+    GPS lives behind get_GPS_channel_* / get_GPS_raw_channel_*. Returns
+    {"gps": [...], "gps_raw": [...]} with times in seconds.
+
+    The DLL WRITES next to its input: handed an .xrz it decompresses a sibling
+    .xrk, and it litters `<name>.NNN.tmp` scratch files. So it is always pointed
+    at a copy in a temp directory, never at `tests/test_data/`.
+    """
+    wine_path = "/usr/lib/wine/wine64"
+    python_path = str(REFERENCE_DLL_DIR / ".setup" / "python-embed" / "python.exe")
+    script_path = "Z:" + str((REFERENCE_DLL_DIR / "wine_gps_extract.py").resolve())
+    dll_path = "Z:" + str((REFERENCE_DLL_DIR / "MatLabXRK-2017-64-ReleaseU.dll").resolve())
+
+    env = {
+        "WINELOADER": wine_path,
+        "WINEDEBUG": "-all",
+        "HOME": str(Path.home()),
+        "PATH": "/usr/bin:/bin",
+    }
+    import filelock
+
+    lock = filelock.FileLock(Path(__file__).parent / ".wine_extract.lock")
+    with tempfile.TemporaryDirectory(prefix="libxrk-dll-") as tmp:
+        scratch = Path(tmp) / Path(xrk_path).name
+        shutil.copy2(xrk_path, scratch)
+        with lock:
+            result = subprocess.run(
+                [wine_path, python_path, script_path, "Z:" + str(scratch), dll_path],
+                capture_output=True,
+                text=True,
+                timeout=600,
+                env=env,
+            )
+    if not result.stdout.strip():
+        raise RuntimeError(f"DLL GPS extraction failed: {result.stderr[-2000:]}")
+    return json.loads(result.stdout)
+
+
+@pytest.fixture(scope="session")
+def issue84_dll_gps():
+    """GPS channels for the issue84 fixture, from the official AIM DLL."""
+    if not _dll_available():
+        pytest.skip("AIM DLL or Wine not available")
+    return _dll_extract_gps(ISSUE84_XRZ)
 
 
 @pytest.fixture(scope="session")

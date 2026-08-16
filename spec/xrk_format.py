@@ -349,6 +349,53 @@ GPSPayload = Struct(
 )
 
 
+def reconstruct_gps_timecodes(timecodes):
+    """Rebuild GPS timecodes whose upper 16 bits are unreliable.
+
+    Some AIM firmware periodically corrupts the upper 16 bits of the 4-byte
+    logger timecode in GPS records, leaving only the low 16 bits trustworthy.
+
+    Reconstruction is a **phase unwrap**: each sample is placed at the multiple
+    of 65536 that puts it closest to its predecessor, i.e. the low-16 delta is
+    folded into [-32768, +32767]. This is the general inverse of "the upper bits
+    are garbage" and assumes nothing about the stream being monotonic.
+
+    The distinction that matters: a backwards step only reads as a 16-bit
+    rollover when it is *close to 65536*. Smaller backwards steps have other
+    causes — out-of-order records, a replayed record block, an all-zero dropout
+    record — and are reproduced at their true time instead of being mistaken for
+    a wrap and inflating every later sample by 65536ms.
+
+    Only applied when the raw stream is non-monotonic (the corruption
+    signature). Clean streams are returned untouched, which preserves legitimate
+    forward gaps larger than the 32768ms half-range.
+
+    Args:
+        timecodes: Raw int32 logger timecodes, in file order.
+
+    Returns:
+        list[int]: Reconstructed timecodes, same length as the input.
+
+    Example:
+        >>> # a replayed 2-sample block: time steps back, but not by ~65536
+        >>> reconstruct_gps_timecodes([1000, 1040, 1000, 1040, 1080])
+        [1000, 1040, 1000, 1040, 1080]
+        >>> # a genuine 16-bit rollover
+        >>> reconstruct_gps_timecodes([65480, 65520, 24, 64])
+        [65480, 65520, 65560, 65600]
+
+    Reference: spec/docs/companion.md section 6.
+    """
+    tcs = list(timecodes)
+    if len(tcs) < 2 or all(a <= b for a, b in zip(tcs, tcs[1:])):
+        return tcs
+    out = [tcs[0]]
+    for raw in tcs[1:]:
+        delta = (((raw - out[-1]) & 0xFFFF) ^ 0x8000) - 0x8000
+        out.append(out[-1] + delta)
+    return out
+
+
 # GNFI — Logger Internal Clock (32 bytes)
 # Reference: aim_xrk.pyx:1012-1035
 GNFIPayload = Struct(
