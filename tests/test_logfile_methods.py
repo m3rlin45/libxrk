@@ -41,13 +41,16 @@ def create_test_logfile(
 ) -> LogFile:
     """Helper to create a test LogFile."""
     if laps is None:
-        laps_table = pa.table({"num": [], "start_time": [], "end_time": []})
+        laps_table = pa.table(
+            {"num": [], "start_time": [], "end_time": [], "lap_type": pa.array([], type=pa.utf8())}
+        )
     else:
         laps_table = pa.table(
             {
                 "num": [lap[0] for lap in laps],
                 "start_time": [float(lap[1]) for lap in laps],
                 "end_time": [float(lap[2]) for lap in laps],
+                "lap_type": ["full" for _ in laps],
             }
         )
 
