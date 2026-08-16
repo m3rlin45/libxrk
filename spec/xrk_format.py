@@ -41,6 +41,7 @@ from construct import (
     Int16ul,
     Int32sl,
     Int32ul,
+    OneOf,
     PaddedString,
     Peek,
     Rebuild,
@@ -643,13 +644,20 @@ MMessageCompiled = MMessage.compile()
 # produced the channel_field → channel_index mapping and timing rules.
 
 # V1 — legacy 12-byte header + CHS-sized payload.
+# unk3 is 0x84 on all corpus files to date. AIM expansion-module loggers
+# (brake PSI, rotor temp, EGT, steering, etc.) emit 0x04 instead.
+# Both values belong to the V1 record family — the (unk1=0, unk4=6) pair
+# is the true variant discriminator; unk3 is a secondary flag whose
+# semantics are under investigation (see unknown_regions.md § (c) messages).
+_C_MSG_UNK3_VALID = [b"\x84", b"\x04"]
+
 cMessageV1 = Struct(
     Const(b"\x28\x63"),  # '(c'
     "msg_type" / Computed("c"),
     "variant" / Computed("V1"),
     "unk1" / Const(b"\x00"),
     "channel_field" / Int16ul,
-    "unk3" / Const(b"\x84"),
+    "unk3" / OneOf(Bytes(1), _C_MSG_UNK3_VALID),
     "unk4" / Const(b"\x06"),
     "timecode" / Int32sl,
     "channel_index" / Computed(this.channel_field >> 3),
@@ -667,7 +675,7 @@ cMessageV2 = Struct(
     "variant" / Computed("V2"),
     "unk1" / Const(b"\x00"),
     "channel_field" / Int16ul,
-    "unk3" / Const(b"\x84"),
+    "unk3" / OneOf(Bytes(1), _C_MSG_UNK3_VALID),
     "unk4" / Const(b"\x08"),
     "timecode" / Int32sl,
     "channel_index" / Computed(-1),  # resolved post-parse
@@ -684,7 +692,7 @@ cMessageV3 = Struct(
     "variant" / Computed("V3"),
     "unk1" / Const(b"\x01"),
     "channel_field" / Int16ul,
-    "unk3" / Const(b"\x84"),
+    "unk3" / OneOf(Bytes(1), _C_MSG_UNK3_VALID),
     "unk4" / Const(b"\x02"),
     "timecode" / Computed(-1),  # synthesized post-parse
     "channel_index" / Computed(-1),  # resolved post-parse

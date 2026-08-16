@@ -633,9 +633,11 @@ fn prescan(data: &[u8], state: &mut ParserState) -> PrescanResult {
                         let channel_field = u16::from_le_bytes([data[pos + 3], data[pos + 4]]);
                         let unk3 = data[pos + 5];
                         let unk4 = data[pos + 6];
-                        if unk3 == 0x84 {
+                        if matches!(unk3, 0x84 | 0x04) {
                             // V1 prescan (existing): count payload bytes for
                             // the resolved channel_index's gc_data[2] slot.
+                            // unk3=0x04 is emitted by AIM expansion-module
+                            // loggers (brake PSI, rotor temp, EGT, etc.).
                             if unk1 == 0 && unk4 == 6 && (channel_field & 7) == 4 {
                                 let index = (channel_field >> 3) as usize;
                                 if index < state.gc_data[2].len() {
@@ -1085,7 +1087,9 @@ fn try_parse_c_message(data: &[u8], pos: usize, state: &mut ParserState) -> Opti
     let channel_field = u16::from_le_bytes([data[pos + 3], data[pos + 4]]);
     let unk3 = data[pos + 5];
     let unk4 = data[pos + 6];
-    if unk3 != 0x84 {
+    // 0x84 is the standard value; 0x04 is emitted by AIM expansion-module
+    // loggers (brake PSI, rotor temp, EGT, steering, etc.).
+    if !matches!(unk3, 0x84 | 0x04) {
         return None;
     }
 
@@ -2028,10 +2032,27 @@ mod tests {
     fn test_c_message_invalid_unk3_rejected() {
         let chs_bytes = make_chs_bytes(0, "EGT", "Exhaust Gas", 0, 4, 17, 0);
         let chs_frame = make_header_frame("CHS", 0, &chs_bytes);
+        // 0x85 is not in the accepted set {0x84, 0x04}; must be skipped.
         let c_msg = make_c_message_raw(0, 4, 0x85, 6, 1000, &100i32.to_le_bytes());
         let stream = build_xrk_stream(&[chs_frame], &[c_msg]);
         let result = parse_xrk(&stream, None).unwrap();
         assert!(!result.channel_data.contains_key(&0));
+    }
+
+    #[test]
+    fn test_c_message_unk3_0x04_accepted() {
+        // AIM expansion-module loggers emit unk3=0x04 instead of 0x84.
+        // The (unk1=0, unk4=6) pair is the true V1 discriminator; unk3 is
+        // a secondary flag that must be accepted when it is 0x04.
+        let chs_bytes = make_chs_bytes(0, "LFBT", "LF Rotor Temp", 0, 4, 17, 0);
+        let chs_frame = make_header_frame("CHS", 0, &chs_bytes);
+        let c_msg = make_c_message_raw(0, 4, 0x04, 6, 1000, &100i32.to_le_bytes());
+        let stream = build_xrk_stream(&[chs_frame], &[c_msg]);
+        let result = parse_xrk(&stream, None).unwrap();
+        assert!(
+            result.channel_data.contains_key(&0),
+            "unk3=0x04 c-message should be accepted for expansion-module channels"
+        );
     }
 
     #[test]

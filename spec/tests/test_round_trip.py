@@ -364,8 +364,9 @@ class TestCMessageRoundTrip:
     def _rebuild_c_variant(self, parsed, channel_sizes):
         """Build a c-message frame from a parsed dict for its variant.
 
-        Const fields (unk1/unk3/unk4) are written from the struct's
-        hardcoded values — no need to supply them in the Container.
+        unk3 is now a OneOf field (not Const) so the stored value must be
+        supplied explicitly to preserve round-trip byte-identity, especially
+        for expansion-module files that emit 0x04 instead of 0x84.
         """
         from construct import Container
 
@@ -374,6 +375,7 @@ class TestCMessageRoundTrip:
         container = Container(
             channel_field=parsed["channel_field"],
             data=parsed["data"],
+            unk3=parsed.get("unk3", b"\x84"),
         )
         if variant in ("V1", "V2"):
             container["timecode"] = parsed["timecode"]
@@ -397,7 +399,7 @@ class TestCMessageRoundTrip:
             unk1 = data_bytes[i + 2]
             unk3 = data_bytes[i + 5]
             unk4 = data_bytes[i + 6]
-            if unk3 != 0x84:
+            if unk3 not in (0x84, 0x04):
                 i += 1
                 continue
             # Classify — must match variant shape AND close byte.
