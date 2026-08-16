@@ -96,11 +96,16 @@ pyodide-test: emsdk-setup pyodide-setup
     node scripts/run_pyodide_tests_idbfs.mjs --dist-dir=./dist --pyodide-version=0.27; \
     _rc=$?; mv "$_bak"/*.so src/libxrk/ 2>/dev/null; rm -rf "$_bak"; exit $_rc
 
+# pyodide-build is a BUILD TOOL; its version is independent of the Pyodide
+# RUNTIME version. Pinning it to the runtime version (==0.29.3) broke builds:
+# those releases hardcode a cross-build-env metadata URL upstream has removed.
+# One current pyodide-build serves every runtime. The runtime still dictates the
+# host Python (0.29.x xbuildenv refuses to install under 3.12), hence pyenv 3.13.
 # Install Emscripten SDK for Pyodide 0.29.x (requires Python 3.13 via pyenv)
 emsdk-setup-0-29:
     #!/usr/bin/env bash
     export PATH="$HOME/.pyenv/versions/3.13.12/bin:$PATH" && \
-    pip install pyodide-build==0.29.3 "wheel<0.44" && \
+    uv pip install --python "$HOME/.pyenv/versions/3.13.12/bin/python" pyodide-build==0.32.0 "wheel<0.44" && \
     EMSDK_VERSION=$(pyodide config get emscripten_version) && \
     mkdir -p build/emsdk-0.29 && \
     ([ -d build/emsdk-0.29/.git ] || git clone https://github.com/emscripten-core/emsdk.git build/emsdk-0.29) && \
@@ -123,7 +128,7 @@ pyodide-build-0-29: emsdk-setup-0-29
     export EMSDK EM_CONFIG=$EMSDK/.emscripten EMSDK_NODE=$EMSDK/node/22.16.0_64bit/bin/node && \
     export RUSTUP_TOOLCHAIN=nightly RUSTFLAGS="-Zemscripten-wasm-eh" && \
     export CARGO_BUILD_TARGET=wasm32-unknown-emscripten && \
-    pip install pyodide-build==0.29.3 "wheel<0.44" && \
+    uv pip install --python "$HOME/.pyenv/versions/3.13.12/bin/python" pyodide-build==0.32.0 "wheel<0.44" && \
     pyodide build --exports whole_archive; \
     _rc=$?; mv "$_bak"/*.so src/libxrk/ 2>/dev/null; rm -rf "$_bak"; exit $_rc
 
@@ -138,7 +143,7 @@ pyodide-test-0-29: emsdk-setup-0-29 pyodide-setup-0-29
     export RUSTUP_TOOLCHAIN=nightly RUSTFLAGS="-Zemscripten-wasm-eh" && \
     export CARGO_BUILD_TARGET=wasm32-unknown-emscripten && \
     rm -f dist/*pyodide_2025*.whl && \
-    pip install pyodide-build==0.29.3 "wheel<0.44" && \
+    uv pip install --python "$HOME/.pyenv/versions/3.13.12/bin/python" pyodide-build==0.32.0 "wheel<0.44" && \
     pyodide build --exports whole_archive && \
     node scripts/run_pyodide_tests.mjs --dist-dir=./dist --pyodide-version=0.29 && \
     node scripts/run_pyodide_tests_idbfs.mjs --dist-dir=./dist --pyodide-version=0.29; \

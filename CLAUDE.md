@@ -82,6 +82,17 @@ The library supports running in the browser via Pyodide. Two versions are suppor
 | Pyodide 0.27.x | 3.12 | 3.1.58 | `pyodide_2024_0` |
 | Pyodide 0.29.x | 3.13 | 4.0.9 | `pyodide_2025_0` |
 
+**`pyodide-build` version is independent of the Pyodide runtime version.** It is
+a build tool: one current version (pinned to `0.32.0` in `uv.lock`, the justfile
+and `PYODIDE_BUILD_VERSION` in `.github/workflows/pyodide.yml`) builds for every
+runtime, and the runtime is chosen by the argument to `pyodide xbuildenv install`.
+
+Do not pin `pyodide-build` to the runtime version. Doing so previously broke all
+Pyodide builds: `pyodide-build` 0.27.3/0.29.3 hardcode a cross-build-environment
+metadata URL that upstream has since removed, so `xbuildenv install` fails with a
+404. The *host Python* still has to match the runtime (the 0.29.x xbuildenv
+refuses to install under Python 3.12), which is why the 0.29 recipes use pyenv.
+
 ### Pyodide 0.27.x (default)
 
 ```bash
