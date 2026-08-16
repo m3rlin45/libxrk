@@ -85,6 +85,7 @@ def create_mock_log_with_gps_gap(
             "num": pa.array([1, 2, 3], type=pa.int64()),
             "start_time": pa.array([0, 3000, 70000], type=pa.int64()),  # Lap 3 starts after gap
             "end_time": pa.array([3000, 70000, 140000], type=pa.int64()),
+            "lap_type": pa.array(["full", "full", "full"], type=pa.utf8()),
         }
     )
 
@@ -209,6 +210,7 @@ class TestGpsTimingGapFix(unittest.TestCase):
                 "num": pa.array([1], type=pa.int64()),
                 "start_time": pa.array([0], type=pa.int64()),
                 "end_time": pa.array([8000], type=pa.int64()),
+                "lap_type": pa.array(["full"], type=pa.utf8()),
             }
         )
 
@@ -236,6 +238,7 @@ class TestGpsTimingGapFix(unittest.TestCase):
                 "num": pa.array([1], type=pa.int64()),
                 "start_time": pa.array([0], type=pa.int64()),
                 "end_time": pa.array([60], type=pa.int64()),
+                "lap_type": pa.array(["full"], type=pa.utf8()),
             }
         )
 

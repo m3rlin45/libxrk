@@ -180,6 +180,30 @@ fn aim_xrk(py: Python<'_>, fname: Py<PyAny>, progress: Option<Py<PyAny>>) -> PyR
         processed_laps.clear();
     }
 
+    // Classify last lap as "in" if GPS shows car is not near S/F at end
+    if !processed_laps.is_empty() && processed_laps.last().unwrap().lap_type != "out" {
+        if let (Some(trk_marker), Some(ref gps)) = (get_trk_marker(&result), &gps_result) {
+            if !gps.timecodes.is_empty() {
+                let (sf_lat, sf_lon) = trk_marker;
+                let (sf_x, sf_y, sf_z) = libxrk::gps::utils::lla2ecef(sf_lat, sf_lon, 0.0);
+
+                let end_time = processed_laps.last().unwrap().end_time;
+                let idx = gps
+                    .timecodes
+                    .partition_point(|&t| t < end_time)
+                    .min(gps.timecodes.len() - 1);
+                let (ex, ey, ez) =
+                    libxrk::gps::utils::lla2ecef(gps.latitude[idx], gps.longitude[idx], 0.0);
+
+                let dist = ((sf_x - ex).powi(2) + (sf_y - ey).powi(2) + (sf_z - ez).powi(2)).sqrt();
+                if dist > 30.0 {
+                    let last_idx = processed_laps.len() - 1;
+                    processed_laps[last_idx].lap_type = "in".to_string();
+                }
+            }
+        }
+    }
+
     if processed_laps.is_empty() {
         // GPS-based lap detection
         if let Some(trk_marker) = get_trk_marker(&result) {
@@ -201,11 +225,17 @@ fn aim_xrk(py: Python<'_>, fname: Py<PyAny>, progress: Option<Py<PyAny>>) -> PyR
                     let mut all_markers = lap_markers.clone();
                     all_markers.push(session_end as f64);
 
+                    let lap_count = all_markers.windows(2).len();
                     for (i, window) in all_markers.windows(2).enumerate() {
                         processed_laps.push(libxrk::ProcessedLap {
                             num: i as i32,
                             start_time: window[0] as i64,
                             end_time: window[1] as i64,
+                            lap_type: if i == lap_count - 1 {
+                                "in".to_string()
+                            } else {
+                                "full".to_string()
+                            },
                         });
                     }
                 }
