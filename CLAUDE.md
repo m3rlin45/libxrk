@@ -75,12 +75,15 @@ Test data: `tests/test_data/` contains real XRK/XRZ files (SFJ and 86 vehicles).
 
 ## Pyodide (WebAssembly) Builds
 
-The library supports running in the browser via Pyodide. Two versions are supported:
+The library supports running in the browser via Pyodide. One runtime is supported:
 
 | Version | Python | Emscripten | ABI Tag |
 |---------|--------|------------|---------|
-| Pyodide 0.27.x | 3.12 | 3.1.58 | `pyodide_2024_0` |
 | Pyodide 0.29.x | 3.13 | 4.0.9 | `pyodide_2025_0` |
+
+Pyodide 0.27.x (Python 3.12, `pyodide_2024_0`) was dropped: it has no known
+consumer, and PEP 783 starts at the 2025 ABI, so a 2024-ABI wheel can never be
+published to PyPI.
 
 **`pyodide-build` version is independent of the Pyodide runtime version.** It is
 a build tool: one current version (pinned to `0.32.0` in `uv.lock`, the justfile
@@ -93,26 +96,24 @@ metadata URL that upstream has since removed, so `xbuildenv install` fails with 
 404. The *host Python* still has to match the runtime (the 0.29.x xbuildenv
 refuses to install under Python 3.12), which is why the 0.29 recipes use pyenv.
 
-### Pyodide 0.27.x (default)
+### Building (requires Python 3.13 via pyenv)
 
 ```bash
-just emsdk-setup      # Install Emscripten SDK (first time only)
+just emsdk-setup      # Install Emscripten SDK 4.0.9 (first time only)
 just pyodide-setup    # Install Pyodide npm package (first time only)
-just pyodide-build    # Build Pyodide wheel
+just pyodide-build    # Build the Pyodide wheel
 just pyodide-test     # Build and run tests in Pyodide
-just build-all        # Build CPython wheel, sdist, and Pyodide wheel
+just build-all        # Build CPython wheel, sdist, and the Pyodide wheel
 ```
 
-### Pyodide 0.29.x (requires Python 3.13 via pyenv)
+Pyodide test scripts are in `scripts/run_pyodide_tests*.mjs`. They take
+`--pyodide-version=` (default `0.29`); `ABI_TAG` in each script maps a runtime
+version to the wheel ABI tag to look for.
 
-```bash
-just emsdk-setup-0-29      # Install Emscripten SDK 4.0.9
-just pyodide-setup-0-29    # Install Pyodide 0.29.x npm package
-just pyodide-build-0-29    # Build Pyodide 0.29.x wheel
-just pyodide-test-0-29     # Build and run tests in Pyodide 0.29.x
-```
-
-Pyodide test scripts are in `scripts/run_pyodide_tests*.mjs`. They accept `--pyodide-version=0.27` or `--pyodide-version=0.29` to select the version.
+`scripts/emcc-no-wasm-exceptions.sh`, `scripts/wasm-opt-wrapper.sh` and the
+`build-std` setting in `.cargo/config.toml` were all added for Emscripten 3.1.58
+(Pyodide 0.27) but are still applied to the 0.29 build. Whether 0.29 still needs
+them is untested — check before removing.
 
 ## Cython Rebuild
 

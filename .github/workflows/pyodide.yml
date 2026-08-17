@@ -19,11 +19,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - pyodide-version: "0.27.3"
-            python-version: "3.12"
-            emscripten-version: "3.1.58"
-            artifact-suffix: "-0.27"
-            rust-flags: "-C target-feature=-exception-handling -C panic=abort"
           - pyodide-version: "0.29.3"
             python-version: "3.13"
             emscripten-version: "4.0.9"
@@ -101,10 +96,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - pyodide-version: "0.27.3"
-            npm-package: "pyodide-0.27@npm:pyodide@0.27.3"
-            artifact-suffix: "-0.27"
-            version-arg: "0.27"
           - pyodide-version: "0.29.3"
             npm-package: "pyodide-0.29@npm:pyodide@0.29.3"
             artifact-suffix: "-0.29"
