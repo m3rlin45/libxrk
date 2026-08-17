@@ -1,6 +1,6 @@
 [project]
 name = "libxrk"
-version = "0.12.0"
+version = "0.13.0"
 description = "Library for reading AIM XRK files from AIM automotive data loggers"
 authors = [
     {name = "Christopher Dewan",email = "chris.dewan@m3rlin.net"}
@@ -18,6 +18,8 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Cython",
+    # PEP 783: declares that this project ships PyEmscripten wheels.
+    "Environment :: WebAssembly :: Emscripten",
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [

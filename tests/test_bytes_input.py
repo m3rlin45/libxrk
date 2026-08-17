@@ -1,6 +1,7 @@
 """Tests for aim_xrk bytes and file-like object input support."""
 
 import io
+import gc
 import unittest
 from pathlib import Path
 from typing import ClassVar
@@ -28,6 +29,13 @@ class TestBytesInput(unittest.TestCase):
         cls.file_bytes = XRK_86_FILE.read_bytes()
         # Load reference from file path for comparison
         cls.reference_log = aim_xrk(str(XRK_86_FILE), progress=None)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        """Release cached logs; unittest keeps class attrs alive otherwise."""
+        del cls.file_bytes
+        del cls.reference_log
+        gc.collect()
 
     def test_load_from_bytes(self):
         """Test loading XRK data from bytes."""
@@ -232,6 +240,14 @@ class TestBytesInputCrossBackend(unittest.TestCase):
         cls.file_bytes = XRK_86_FILE.read_bytes()
         cls.rust_log = rust_aim_xrk(cls.file_bytes)
         cls.cython_log = cython_aim_xrk(cls.file_bytes)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        """Release cached logs; unittest keeps class attrs alive otherwise."""
+        del cls.cython_log
+        del cls.file_bytes
+        del cls.rust_log
+        gc.collect()
 
     def test_bytes_channel_names_match(self) -> None:
         """Channel names from bytes input should match between backends."""
