@@ -349,10 +349,8 @@ pub fn dispatch_payload(msg: &HeaderMessage) -> Payload {
     }
 
     if token == tokens::lap() {
-        if data.len() >= 20 {
-            if let Ok(lap) = payloads::lap::LapPayload::read(&mut Cursor::new(data)) {
-                return Payload::Lap(lap);
-            }
+        if let Some(lap) = payloads::lap::LapPayload::parse(data) {
+            return Payload::Lap(lap);
         }
         return Payload::Unknown(data.clone());
     }

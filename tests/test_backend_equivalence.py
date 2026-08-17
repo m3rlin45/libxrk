@@ -6,8 +6,8 @@ bit-exact timecodes and values, the laps table, and the complete metadata
 dict.  This is deliberately stronger than the per-file CrossBackend classes
 (which check a subset of metadata keys and use loose GPS tolerances).
 
-Documented residual discrepancies (see the xfail tests at the bottom, which
-flip visibly when the underlying divergence is fixed):
+Documented residual discrepancy (see the xfail test at the bottom, which
+flips visibly when the underlying divergence is fixed):
 
 1. GPS float paths.  Both backends compute GPS-derived channels in float64,
    but with slightly different operation orders:
@@ -20,19 +20,8 @@ flip visibly when the underlying divergence is fixed):
      - GPS_Yaw_Rate: rare 1-ulp float32 rounding differences (<= 1e-12).
    All other GPS channels (Longitude, Speed, InlineAcc, Satellites, Fix,
    pDOP, Position/Velocity Accuracy) are required to be bit-exact.
-
-2. aim_official/test.xrk carries version-2 LAP messages with a 32-byte
-   payload.  Cython's ``struct.unpack`` requires exactly 20 bytes and drops
-   all 33 LAP messages (losing the LAP-derived time_offset candidate);
-   Rust parses the first 20 bytes as if v1, misreading a duration-like
-   field as end_time and deriving a bogus time_offset of -7 (proper v2
-   parsing -- absolute end time at offset [28:32] -- yields 11, which is
-   what Cython arrives at from data timecodes).  Net effect: every
-   timecode and lap boundary in the file differs by a constant 18 ms
-   between backends.  Values are unaffected.
 """
 
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -60,29 +49,18 @@ _GPS_FLOAT_TOLERANCES = {
 }
 
 
-@dataclass(frozen=True)
-class Fixture:
-    path: Path
-    # True when all timecodes/lap times differ by one constant offset
-    # between backends (module docstring, item 2).
-    allow_uniform_time_shift: bool = False
-
-
 FIXTURES = [
-    Fixture(TEST_DATA_DIR / "SFJ/CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrk"),
-    Fixture(TEST_DATA_DIR / "SFJ/CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrz"),
-    Fixture(TEST_DATA_DIR / "SFJ/CMD_SFJ_Fuji GP Sh_Generic testing_a_0101.xrk"),
-    Fixture(TEST_DATA_DIR / "SFJ/CMD_SFJ_Fuji GP Sh_Generic testing_a_0101.xrz"),
-    Fixture(TEST_DATA_DIR / "SFJ/CMD_SFJ_Suzuka Car_Generic testing_a_0090.xrk"),
-    Fixture(TEST_DATA_DIR / "86/CMD_Inferno 86_Fuji GP Sh_Generic testing_a_2248.xrk"),
-    Fixture(TEST_DATA_DIR / "86/CMD_Inferno 86_Fuji GP Sh_Generic testing_a_2248.xrz"),
-    Fixture(
-        TEST_DATA_DIR / "aim_official/test.xrk",
-        allow_uniform_time_shift=True,
-    ),
-    Fixture(TEST_DATA_DIR / "issue49/badGPSdata.xrk"),
-    Fixture(TEST_DATA_DIR / "issue68/CMD_KK-SII_Tsukuba_Car_Generic testing_a_0101.xrz"),
-    Fixture(TEST_DATA_DIR / "issue84/CMD_KK-SII_Tsukuba_Car_Qualifying testing_a_0159.xrz"),
+    TEST_DATA_DIR / "SFJ/CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrk",
+    TEST_DATA_DIR / "SFJ/CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrz",
+    TEST_DATA_DIR / "SFJ/CMD_SFJ_Fuji GP Sh_Generic testing_a_0101.xrk",
+    TEST_DATA_DIR / "SFJ/CMD_SFJ_Fuji GP Sh_Generic testing_a_0101.xrz",
+    TEST_DATA_DIR / "SFJ/CMD_SFJ_Suzuka Car_Generic testing_a_0090.xrk",
+    TEST_DATA_DIR / "86/CMD_Inferno 86_Fuji GP Sh_Generic testing_a_2248.xrk",
+    TEST_DATA_DIR / "86/CMD_Inferno 86_Fuji GP Sh_Generic testing_a_2248.xrz",
+    TEST_DATA_DIR / "aim_official/test.xrk",
+    TEST_DATA_DIR / "issue49/badGPSdata.xrk",
+    TEST_DATA_DIR / "issue68/CMD_KK-SII_Tsukuba_Car_Generic testing_a_0101.xrz",
+    TEST_DATA_DIR / "issue84/CMD_KK-SII_Tsukuba_Car_Qualifying testing_a_0159.xrz",
 ]
 
 
@@ -98,17 +76,7 @@ def _field_metadata(table, name: str) -> dict:
     return {k.decode(): v.decode() for k, v in md.items()}
 
 
-def _compute_shift(cy, rs) -> int:
-    """The single constant offset between the two backends' timecodes."""
-    for name in sorted(cy.channels):
-        cy_tc = cy.channels[name].column("timecodes").to_numpy()
-        rs_tc = rs.channels[name].column("timecodes").to_numpy()
-        if len(cy_tc) and len(cy_tc) == len(rs_tc):
-            return int(rs_tc[0] - cy_tc[0])
-    return 0
-
-
-def _compare_channel(name: str, cy_t, rs_t, shift: int, errors: list) -> None:
+def _compare_channel(name: str, cy_t, rs_t, errors: list) -> None:
     cy_f = cy_t.schema.field(name)
     rs_f = rs_t.schema.field(name)
     if cy_f.type != rs_f.type:
@@ -127,11 +95,10 @@ def _compare_channel(name: str, cy_t, rs_t, shift: int, errors: list) -> None:
     if len(cy_tc) != len(rs_tc):
         errors.append(f"{name}: sample count cython={len(cy_tc)} rust={len(rs_tc)}")
         return
-    if not np.array_equal(cy_tc + shift, rs_tc):
-        i = int(np.argmax((cy_tc + shift) != rs_tc))
+    if not np.array_equal(cy_tc, rs_tc):
+        i = int(np.argmax(cy_tc != rs_tc))
         errors.append(
-            f"{name}: timecodes differ (first at {i}: "
-            f"cython={cy_tc[i]}+{shift} != rust={rs_tc[i]})"
+            f"{name}: timecodes differ (first at {i}: cython={cy_tc[i]} != rust={rs_tc[i]})"
         )
 
     cy_v = cy_t.column(name).to_numpy(zero_copy_only=False)
@@ -158,10 +125,10 @@ def _compare_channel(name: str, cy_t, rs_t, shift: int, errors: list) -> None:
             )
 
 
-@pytest.mark.parametrize("fixture", FIXTURES, ids=lambda f: f.path.name)
-def test_backends_equivalent(fixture: Fixture) -> None:
+@pytest.mark.parametrize("fixture", FIXTURES, ids=lambda p: p.name)
+def test_backends_equivalent(fixture: Path) -> None:
     """Cython and Rust must agree on everything except documented gaps."""
-    cy, rs = _load_both(fixture.path)
+    cy, rs = _load_both(fixture)
     errors: list = []
 
     cy_names = set(cy.channels)
@@ -172,18 +139,12 @@ def test_backends_equivalent(fixture: Fixture) -> None:
             f"only-rust={sorted(rs_names - cy_names)}"
         )
 
-    shift = _compute_shift(cy, rs) if fixture.allow_uniform_time_shift else 0
-    if not fixture.allow_uniform_time_shift:
-        assert _compute_shift(cy, rs) == 0, "unexpected global time shift"
-
     for name in sorted(cy_names & rs_names):
-        _compare_channel(name, cy.channels[name], rs.channels[name], shift, errors)
+        _compare_channel(name, cy.channels[name], rs.channels[name], errors)
 
-    # Laps: exact, modulo the documented uniform shift
+    # Laps: exact
     cy_laps = cy.laps.to_pydict()
     rs_laps = rs.laps.to_pydict()
-    for col in ("start_time", "end_time"):
-        cy_laps[col] = [t + shift for t in cy_laps[col]]
     if cy_laps != rs_laps:
         errors.append(f"laps differ: cython={cy_laps} rust={rs_laps}")
 
@@ -197,29 +158,15 @@ def test_backends_equivalent(fixture: Fixture) -> None:
                     f"rust={rs.metadata.get(k)!r}"
                 )
 
-    assert not errors, f"{fixture.path.name}: backend divergence:\n" + "\n".join(errors)
+    assert not errors, f"{fixture.name}: backend divergence:\n" + "\n".join(errors)
 
 
 # ---------------------------------------------------------------------------
-# Probes for the documented residual discrepancies.  Each is expected to
-# fail today; when the underlying divergence is fixed, the strict xfails
-# turn into XPASS failures, prompting removal of the marker (and of the
-# corresponding carve-out above).
+# Probes for documented residual discrepancies.  The strict xfail below
+# turns into an XPASS failure when the underlying divergence is fixed,
+# prompting removal of the marker (and of the corresponding carve-out
+# above).
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="LAP v2 (32-byte payload): Cython drops all LAP messages while Rust "
-    "misparses the first 20 bytes as v1, so time_offset differs by 18 ms on "
-    "aim_official/test.xrk (see module docstring, item 2)",
-)
-def test_aim_official_absolute_times_match() -> None:
-    cy, rs = _load_both(TEST_DATA_DIR / "aim_official/test.xrk")
-    name = "RPM"
-    cy_tc = cy.channels[name].column("timecodes").to_numpy()
-    rs_tc = rs.channels[name].column("timecodes").to_numpy()
-    np.testing.assert_array_equal(cy_tc, rs_tc)
 
 
 @pytest.mark.parametrize(
