@@ -4,6 +4,60 @@
 
 use std::f64::consts::PI;
 
+/// System-libm `cbrt`/`pow` for bit-exact parity with numpy.
+///
+/// Rust's `f64::cbrt`/`f64::powf` link against the toolchain's vendored
+/// libm (a musl port statically provided by compiler-builtins), which can
+/// differ from the platform libm by 1 ulp on some inputs. numpy calls the
+/// platform libm, so on unix we resolve these two symbols from the system
+/// libm at runtime (`dlsym(RTLD_DEFAULT, ...)` never sees the vendored
+/// copies — they are linked as local symbols) and fall back to std when
+/// resolution fails or on non-unix targets.
+#[cfg(all(unix, not(target_os = "emscripten")))]
+mod plat_libm {
+    use std::ffi::{c_void, CStr};
+    use std::sync::OnceLock;
+
+    type F1 = unsafe extern "C" fn(f64) -> f64;
+    type F2 = unsafe extern "C" fn(f64, f64) -> f64;
+
+    fn resolve(name: &CStr) -> *mut c_void {
+        unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) }
+    }
+
+    pub fn cbrt(x: f64) -> f64 {
+        static F: OnceLock<Option<F1>> = OnceLock::new();
+        match F.get_or_init(|| {
+            let p = resolve(c"cbrt");
+            (!p.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, F1>(p) })
+        }) {
+            Some(f) => unsafe { f(x) },
+            None => x.cbrt(),
+        }
+    }
+
+    pub fn pow(x: f64, y: f64) -> f64 {
+        static F: OnceLock<Option<F2>> = OnceLock::new();
+        match F.get_or_init(|| {
+            let p = resolve(c"pow");
+            (!p.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, F2>(p) })
+        }) {
+            Some(f) => unsafe { f(x, y) },
+            None => x.powf(y),
+        }
+    }
+}
+
+#[cfg(not(all(unix, not(target_os = "emscripten"))))]
+mod plat_libm {
+    pub fn cbrt(x: f64) -> f64 {
+        x.cbrt()
+    }
+    pub fn pow(x: f64, y: f64) -> f64 {
+        x.powf(y)
+    }
+}
+
 /// ECEF to LLA conversion using Vermeille 2003 algorithm.
 ///
 /// Reference: "Computing geodetic coordinates from geocentric coordinates"
@@ -12,27 +66,31 @@ use std::f64::consts::PI;
 /// Input: ECEF coordinates in meters.
 /// Returns (latitude_deg, longitude_deg, altitude_m).
 pub fn ecef2lla_vermeille2003(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
+    // This mirrors gps.py:ecef2lla_vermeille2003 OPERATION FOR OPERATION so
+    // both backends produce bit-identical float64 results: the same
+    // reciprocal-multiply constants, the same left-to-right association,
+    // and libm pow for the e**n constants (matching CPython's `**`).
     let a: f64 = 6378137.0;
     let e: f64 = 8.181919084261345e-2;
-    let e2 = e * e;
-    let e4 = e2 * e2;
+    let e2 = plat_libm::pow(e, 2.0); // Python `e**2`
+    let e4 = plat_libm::pow(e, 4.0); // Python `e**4`
 
-    let p = (x * x + y * y) / (a * a);
-    let q = ((1.0 - e2) / (a * a)) * z * z;
-    let r = (p + q - e4) / 6.0;
-    let s = (e4 / 4.0) * p * q / (r * r * r);
-    let t = (1.0 + s + (s * (2.0 + s)).sqrt()).cbrt();
+    let p = (x * x + y * y) * (1.0 / (a * a));
+    let q = (((1.0 - e * e) / (a * a)) * z) * z;
+    let r = (p + q - e4) * (1.0 / 6.0);
+    let s = (((e4 / 4.0) * p) * q) / plat_libm::pow(r, 3.0); // numpy `r**3`
+    let t = plat_libm::cbrt(1.0 + s + (s * (2.0 + s)).sqrt());
     let u = r * (1.0 + t + 1.0 / t);
     let v = (u * u + e4 * q).sqrt();
     let u = u + v; // u += v
-    let w = (e2 / 2.0) * (u - q) / v;
+    let w = ((e2 / 2.0) * (u - q)) / v;
     let k = (u + w * w).sqrt() - w;
-    let d = k * (x * x + y * y).sqrt() / (k + e2);
+    let d = (k * (x * x + y * y).sqrt()) / (k + e2);
     let rt_dd_zz = (d * d + z * z).sqrt();
 
-    let lat = (180.0 / PI) * 2.0 * z.atan2(d + rt_dd_zz);
+    let lat = ((180.0 / PI) * 2.0) * z.atan2(d + rt_dd_zz);
     let lon = (180.0 / PI) * y.atan2(x);
-    let alt = (k + e2 - 1.0) / k * rt_dd_zz;
+    let alt = ((k + e2 - 1.0) / k) * rt_dd_zz;
 
     (lat, lon, alt)
 }
