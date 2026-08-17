@@ -9,6 +9,7 @@ Key insight: Gate on correlation value, not lag. If channels are properly
 synchronized and measuring the same physical phenomenon, correlation should be high.
 """
 
+import gc
 import unittest
 from pathlib import Path
 from typing import Optional, Tuple
@@ -218,6 +219,15 @@ class TestChannelSynchronization(unittest.TestCase):
 
         if SUZUKA_XRK.exists():
             cls.log_suzuka = aim_xrk(str(SUZUKA_XRK))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        """Release cached logs; unittest keeps class attrs alive otherwise."""
+        del cls.log_0033
+        del cls.log_0101
+        del cls.log_2248
+        del cls.log_suzuka
+        gc.collect()
 
     def _test_inline_acc_gps_correlation(self, log: LogFile, min_correlation: float = 0.5):
         """Test that InlineAcc correlates with GPS-derived longitudinal acceleration.

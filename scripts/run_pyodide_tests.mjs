@@ -42,7 +42,15 @@ function copyDirToFs(pyodide, srcDir, dstDir) {
 }
 
 // Pyodide runtime version -> wheel ABI tag. One entry per supported runtime.
-const ABI_TAG = { "0.29": "pyodide_2025" };
+const ABI_TAG = {
+  "0.29": "pyodide_2025",     // pre-PEP-783 tag, GitHub Releases only
+  "314": "pyemscripten_2026", // PEP 783 tag (Python 3.14), published to PyPI
+};
+
+// "0.29.3" -> "0.29", "314.0.4" -> "314". Keys ABI_TAG and the npm package dir.
+function runtimeSeries(version) {
+  return version.startsWith("314") ? "314" : version.substring(0, 4);
+}
 
 /**
  * Find the Pyodide-compatible wheel file in the dist directory.
@@ -60,7 +68,7 @@ function findWheel(distDir, pyodideVersion) {
   }
 
   // Determine ABI tag based on version
-  const abiTag = ABI_TAG[pyodideVersion.substring(0, 4)] ?? "pyodide_2025";
+  const abiTag = ABI_TAG[runtimeSeries(pyodideVersion)] ?? "pyodide_2025";
 
   // Find wheel matching the ABI tag
   const matchingWheel = wheels.find((w) => w.includes(abiTag));
@@ -113,68 +121,61 @@ function parseArgs() {
  * @param {string} version - Pyodide version (e.g., "0.29")
  */
 async function loadPyodideModule(version) {
-  const majorMinor = version.substring(0, 4); // e.g. "0.29"
-  const mod = await import(`pyodide-${majorMinor}`);
+  const mod = await import(`pyodide-${runtimeSeries(version)}`);
   return mod.loadPyodide;
 }
 
-async function main() {
-  const args = parseArgs();
+// Test classes to run. Each gets a FRESH Pyodide instance: the wasm32 heap
+// only grows, and repeatedly parsing the large fixtures fragments it into the
+// 4GB address-space limit if all classes share one interpreter. Pyodide 314
+// needs ~30% more memory than 0.29 for the same work and hits the wall first.
+const TEST_CLASSES = ["Test86XRK", "TestSFJXRK", "TestChannelMerge"];
 
-  console.log(`Loading Pyodide ${args.pyodideVersion}...`);
+/** Run one test class in its own Pyodide instance. Returns its exit code. */
+async function runClass(args, className) {
   const loadPyodide = await loadPyodideModule(args.pyodideVersion);
   const pyodide = await loadPyodide();
-
-  console.log("Loading packages...");
   await pyodide.loadPackage(["numpy", "pyarrow", "micropip"]);
 
-  // Find and install the wheel
   const wheelPath = findWheel(args.distDir, args.pyodideVersion);
-  console.log(`Installing wheel: ${wheelPath}`);
-
   const micropip = pyodide.pyimport("micropip");
   await micropip.install(`file://${path.resolve(wheelPath)}`);
-
-  // Install parameterized for test parameterization
-  console.log("Installing parameterized...");
   await micropip.install("parameterized");
 
-  // Copy test directory to Pyodide filesystem
-  const testsDir = path.join(projectRoot, "tests");
-  console.log(`Copying test files from ${testsDir}...`);
-  copyDirToFs(pyodide, testsDir, "/tests");
-
-  // Create pyodide_tests directory and copy Python test runner
+  copyDirToFs(pyodide, path.join(projectRoot, "tests"), "/tests");
   try {
     pyodide.FS.mkdir("/pyodide_tests");
-  } catch (e) {
-    // Directory might already exist
+  } catch {
+    // already exists
   }
-
-  if (args.backend) {
-    console.log(`\nRunning tests with backend: ${args.backend}...\n`);
-  } else {
-    console.log("\nRunning tests...\n");
-  }
-
-  // Read and execute Python test runner
   const testRunnerPath = path.join(pyodideTestsDir, "run_unit_tests.py");
-  const testRunnerCode = fs.readFileSync(testRunnerPath, "utf-8");
-  pyodide.FS.writeFile("/pyodide_tests/run_unit_tests.py", testRunnerCode);
+  pyodide.FS.writeFile("/pyodide_tests/run_unit_tests.py", fs.readFileSync(testRunnerPath, "utf-8"));
 
   const backendSetup = args.backend
     ? `import os; os.environ['LIBXRK_BACKEND'] = '${args.backend}'\n`
     : "";
 
-  const testResult = await pyodide.runPythonAsync(`
+  return await pyodide.runPythonAsync(`
 ${backendSetup}import sys
 sys.path.insert(0, '/pyodide_tests')
 from run_unit_tests import run_tests
-run_tests()
+run_tests(only=${JSON.stringify(className)})
 `);
+}
 
-  console.log(`\nTest result: ${testResult === 0 ? "PASSED" : "FAILED"}`);
-  process.exit(testResult);
+async function main() {
+  const args = parseArgs();
+  console.log(`Pyodide ${args.pyodideVersion}${args.backend ? ` (backend: ${args.backend})` : ""}`);
+
+  let failed = 0;
+  for (const className of TEST_CLASSES) {
+    console.log(`\n=== ${className} (fresh interpreter) ===`);
+    const rc = await runClass(args, className);
+    if (rc !== 0) failed++;
+  }
+
+  console.log(`\nTest result: ${failed === 0 ? "PASSED" : "FAILED"}`);
+  process.exit(failed === 0 ? 0 : 1);
 }
 
 main().catch((err) => {

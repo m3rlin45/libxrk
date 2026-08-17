@@ -7,6 +7,7 @@ The official AIM test.xrk file has 0 LAP messages, so lap detection is done via 
 Before the fix, last_time was incorrectly 0, causing the last lap to have end_time=0.
 """
 
+import gc
 import unittest
 from pathlib import Path
 from typing import ClassVar
@@ -132,6 +133,13 @@ class TestAIMOfficialCrossBackend(unittest.TestCase):
 
         cls.rust_log = rust_aim_xrk(str(AIM_OFFICIAL_XRK_FILE))
         cls.cython_log = cython_aim_xrk(str(AIM_OFFICIAL_XRK_FILE))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        """Release cached logs; unittest keeps class attrs alive otherwise."""
+        del cls.cython_log
+        del cls.rust_log
+        gc.collect()
 
     def test_channel_names_match(self) -> None:
         """Both backends should produce the same set of channel names."""

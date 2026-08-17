@@ -5,8 +5,20 @@ import sys
 import unittest
 
 
-def run_tests() -> int:
-    """Run all unit tests and return exit code."""
+# Test classes exercised in Pyodide, in run order. Each is run in its own
+# Pyodide instance by run_pyodide_tests.mjs: the wasm32 heap only ever grows,
+# and parsing the large fixtures repeatedly fragments it into the 4GB address
+# space limit if every class shares one interpreter.
+TEST_CLASSES = ("Test86XRK", "TestSFJXRK", "TestChannelMerge")
+
+
+def run_tests(only: str | None = None) -> int:
+    """Run unit tests and return exit code.
+
+    Args:
+        only: Run just this test class. None runs all of them (uses more
+            memory than Pyodide has for the large fixtures - see TEST_CLASSES).
+    """
     # Change to tests directory so relative paths work
     os.chdir("/tests")
     sys.path.insert(0, "/tests")
@@ -20,10 +32,18 @@ def run_tests() -> int:
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
 
-    # Add all test classes
-    suite.addTests(loader.loadTestsFromTestCase(Test86XRK))
-    suite.addTests(loader.loadTestsFromTestCase(TestSFJXRK))
-    suite.addTests(loader.loadTestsFromTestCase(TestChannelMerge))
+    by_name = {
+        "Test86XRK": Test86XRK,
+        "TestSFJXRK": TestSFJXRK,
+        "TestChannelMerge": TestChannelMerge,
+    }
+    if only is not None:
+        if only not in by_name:
+            raise SystemExit(f"unknown test class {only!r}; expected one of {TEST_CLASSES}")
+        suite.addTests(loader.loadTestsFromTestCase(by_name[only]))
+    else:
+        for name in TEST_CLASSES:
+            suite.addTests(loader.loadTestsFromTestCase(by_name[name]))
 
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)

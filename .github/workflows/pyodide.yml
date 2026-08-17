@@ -8,7 +8,7 @@ env:
   # runtime versions in the matrix below — see the "Install pyodide-build" step.
   # Keep in step with the `pyodide-build` pin in uv.lock so CI and local builds
   # use the same tool.
-  PYODIDE_BUILD_VERSION: "0.32.0"
+  PYODIDE_BUILD_VERSION: "0.39.0"
 
 jobs:
   pyodide-build:
@@ -19,11 +19,32 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # 0.29 predates PEP 783: it has no PYEMSCRIPTEN_PLATFORM_VERSION and
+          # rejects a pyemscripten_* wheel outright, so it keeps the legacy
+          # pyodide_2025_0 tag and ships via GitHub Releases, not PyPI.
           - pyodide-version: "0.29.3"
             python-version: "3.13"
             emscripten-version: "4.0.9"
             artifact-suffix: "-0.29"
+            rust-toolchain: "nightly"
             rust-flags: ""
+            use-legacy-platform: "1"
+            needs-emscripten-shims: "true"
+          # Pyodide 314 = Python 3.14 = PyEmscripten 2026_0 (PEP 783). Builds on
+          # STABLE Rust with the rustflags the xbuildenv provides, and needs
+          # neither the emcc nor the wasm-opt shim (both exist for Emscripten
+          # 3.1.58-era toolchains and would strip flags 5.0.3 wants).
+          - pyodide-version: "314.0.4"
+            python-version: "3.14"
+            emscripten-version: "5.0.3"
+            artifact-suffix: "-314"
+            # Must match `pyodide config get rust_toolchain` for this runtime.
+            # Pinned rather than "stable" so a stable bump cannot silently
+            # change the compiler used for a release wheel.
+            rust-toolchain: "1.93.0"
+            rust-flags: "-C link-arg=-sSIDE_MODULE=2"
+            use-legacy-platform: ""
+            needs-emscripten-shims: "false"
     name: Build wheel for Pyodide ${{ matrix.pyodide-version }}
 
     steps:
@@ -39,9 +60,10 @@ jobs:
     - name: Install uv
       uses: astral-sh/setup-uv@v4
 
-    - name: Install Rust nightly with wasm32-unknown-emscripten
-      uses: dtolnay/rust-toolchain@nightly
+    - name: Install Rust with wasm32-unknown-emscripten
+      uses: dtolnay/rust-toolchain@master
       with:
+        toolchain: ${{ matrix.rust-toolchain }}
         targets: wasm32-unknown-emscripten
         components: rust-src
 
@@ -51,6 +73,7 @@ jobs:
         version: ${{ matrix.emscripten-version }}
 
     - name: Install wasm-opt wrapper for older Emscripten
+      if: matrix.needs-emscripten-shims == 'true'
       run: |
         WASM_OPT="$EMSDK/upstream/bin/wasm-opt"
         mv "$WASM_OPT" "${WASM_OPT}.real"
@@ -74,14 +97,20 @@ jobs:
     - name: Install Pyodide xbuildenv
       run: pyodide xbuildenv install ${{ matrix.pyodide-version }}
 
+    # The emcc shim strips -fwasm-exceptions, which Emscripten 3.1.58 could not
+    # handle. Emscripten 5.0.3 requires it (see `pyodide config get cflags`),
+    # so 314 must link with plain emcc.
     - name: Build wheel for Pyodide
       run: pyodide build --exports whole_archive
       env:
-        RUSTUP_TOOLCHAIN: nightly
+        RUSTUP_TOOLCHAIN: ${{ matrix.rust-toolchain }}
         CARGO_BUILD_TARGET: wasm32-unknown-emscripten
         RUSTFLAGS: ${{ matrix.rust-flags }}
-        CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER: ${{ github.workspace }}/scripts/emcc-no-wasm-exceptions.sh
+        CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER: ${{ matrix.needs-emscripten-shims == 'true' && format('{0}/scripts/emcc-no-wasm-exceptions.sh', github.workspace) || 'emcc' }}
         PYO3_CROSS_PYTHON_VERSION: ${{ matrix.python-version }}
+        # Emit the legacy pyodide_* platform tag instead of PEP 783's
+        # pyemscripten_* for runtimes that predate the PEP and reject it.
+        USE_LEGACY_PLATFORM: ${{ matrix.use-legacy-platform }}
 
     - name: Upload wheel artifact
       uses: actions/upload-artifact@v4
@@ -94,12 +123,17 @@ jobs:
     runs-on: ubuntu-latest
     needs: pyodide-build
     strategy:
+      fail-fast: false
       matrix:
         include:
           - pyodide-version: "0.29.3"
             npm-package: "pyodide-0.29@npm:pyodide@0.29.3"
             artifact-suffix: "-0.29"
-            version-arg: "0.29"
+            version-arg: "0.29.3"
+          - pyodide-version: "314.0.4"
+            npm-package: "pyodide-314@npm:pyodide@314.0.4"
+            artifact-suffix: "-314"
+            version-arg: "314.0.4"
     name: Test with Pyodide ${{ matrix.pyodide-version }}
 
     steps:
