@@ -175,6 +175,32 @@ The SRC message wraps an embedded idn with a 6-byte header:
 ### [62:end] Remaining bytes
 - **Status**: Not used
 
+## LAP version 2 (32 bytes)
+
+The spec's LAPPayload models the 20-byte version-0/1 layout. The AIM
+official sample (`tests/test_data/aim_official/test.xrk`) carries LAP
+messages with `version=2` and a **32-byte** payload. Observations from
+that file (33 messages, 3 segments × 11 laps):
+
+- [0:20]: Same field positions as v1, **except** [16:20] is *not* the
+  absolute lap end time — its value tracks the lap duration [4:8]
+  (always a few ms smaller), purpose unknown.
+- [20:24]: uint32, always 0. **Status**: not decoded.
+- [24:28]: uint32, small bit patterns (`0x0103`, `0x0203`, `0x010203`,
+  `0x0306`). **Hypothesis**: per-segment flags. **Status**: not decoded.
+- [28:32]: uint32, **absolute lap end time [ms]** on the logger clock.
+  `[28:32] - duration` of the first LAP message equals the minimum data
+  timecode of the file (verified: 46957 − 46946 = 11 = min data tc),
+  i.e. this field plays the role that [16:20] plays in v1.
+
+Neither backend implements v2 yet: Cython's exact-20-byte
+`struct.unpack` drops v2 LAP messages entirely (laps then come from
+GPS-based detection); the Rust backend and this spec parse the first
+20 bytes as if v1, misreading [16:20] as end time. This is the source
+of the constant 18 ms time_offset difference between the backends on
+the aim_official fixture — see tests/test_backend_equivalence.py.
+A proper fix must land here (spec) first, per the project rules.
+
 ## ODO (Odometer, n×64 bytes)
 
 Each 64-byte record:

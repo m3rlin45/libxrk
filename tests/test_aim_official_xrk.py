@@ -173,10 +173,14 @@ class TestAIMOfficialCrossBackend(unittest.TestCase):
     def test_non_gps_channel_values_match(self) -> None:
         """Non-GPS CHS channels should produce matching values.
 
-        Note: This file has no LAP messages, so time_offset is computed from
-        the first data message timecode. The backends may differ by a small
-        constant offset (~18ms), so timecodes are compared with tolerance.
-        Values (which are offset-independent) should match exactly.
+        Note: This file carries version-2 LAP messages with a 32-byte payload.
+        Cython's exact-20-byte struct.unpack drops all of them (no LAP-derived
+        time_offset candidate), while Rust parses the first 20 bytes as if v1
+        and derives a different candidate, so the backends' time_offsets differ
+        by a constant 18ms. Timecodes are therefore compared modulo a uniform
+        shift; values (which are offset-independent) must match exactly.
+        See tests/test_backend_equivalence.py and spec/docs/unknown_regions.md
+        ("LAP version 2").
         """
         gps_prefixes = ("GPS ", "GPS_")
         for name in self.rust_log.channels:
