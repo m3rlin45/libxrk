@@ -139,10 +139,12 @@ jobs:
       contents: write
 
     steps:
-    - name: Download Pyodide wheels
+    # Only the legacy-tagged (pyodide_*) wheel is hosted here. PEP 783
+    # (pyemscripten_*) wheels go to PyPI in the publish job instead.
+    - name: Download Pyodide wheels (legacy tag)
       uses: actions/download-artifact@v4
       with:
-        pattern: pyodide-wheel-*
+        pattern: pyodide-wheel-0.*
         path: dist/
         merge-multiple: true
 
@@ -157,7 +159,7 @@ jobs:
   publish:
     name: Publish to PyPI
     runs-on: ubuntu-latest
-    needs: [build-wheels, build-sdist, test-wheels]
+    needs: [build-wheels, build-sdist, test-wheels, pyodide]
     if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish_to_pypi == true)
     environment:
       name: pypi
@@ -179,6 +181,15 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: sdist
+        path: dist/
+
+    # PEP 783 wasm wheels (pyemscripten_*) are accepted by PyPI. Pyodide 0.29
+    # and earlier predate the PEP, so their pyodide_*-tagged wheels are NOT
+    # collected here — they ship as GitHub Release assets.
+    - name: Download PEP 783 Pyodide wheel
+      uses: actions/download-artifact@v4
+      with:
+        name: pyodide-wheel-314
         path: dist/
 
     - name: List artifacts

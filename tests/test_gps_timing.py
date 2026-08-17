@@ -1,5 +1,6 @@
 """Tests for GPS timing gap detection and correction in libxrk."""
 
+import gc
 import unittest
 from typing import ClassVar, Dict, Optional
 
@@ -334,6 +335,13 @@ class TestGpsTimingGapFixIntegration(unittest.TestCase):
         # Load XRZ file (truncated files are now handled gracefully)
         cls.log_xrz = aim_xrk(str(cls.SFJ_0101_XRZ))
 
+    @classmethod
+    def tearDownClass(cls) -> None:
+        """Release cached logs; unittest keeps class attrs alive otherwise."""
+        del cls.log_xrk
+        del cls.log_xrz
+        gc.collect()
+
     def test_0101_file_exists(self):
         """Verify the test data file exists."""
         self.assertTrue(self.SFJ_0101_XRK.exists(), f"Test file not found: {self.SFJ_0101_XRK}")
@@ -582,6 +590,12 @@ class TestSuzukaGnfiIntegration(unittest.TestCase):
         if cls.SUZUKA_XRK.exists():
             cls.log = aim_xrk(str(cls.SUZUKA_XRK))
 
+    @classmethod
+    def tearDownClass(cls) -> None:
+        """Release cached logs; unittest keeps class attrs alive otherwise."""
+        del cls.log
+        gc.collect()
+
     def test_suzuka_file_exists(self) -> None:
         """Verify the Suzuka test file exists."""
         self.assertTrue(self.SUZUKA_XRK.exists(), f"Test file not found: {self.SUZUKA_XRK}")
@@ -647,6 +661,15 @@ class TestGpsTimingCrossBackend(unittest.TestCase):
         if suzuka.exists():
             cls.rust_suzuka = rust_aim_xrk(str(suzuka))
             cls.cython_suzuka = cython_aim_xrk(str(suzuka))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        """Release cached logs; unittest keeps class attrs alive otherwise."""
+        del cls.cython_0101
+        del cls.cython_suzuka
+        del cls.rust_0101
+        del cls.rust_suzuka
+        gc.collect()
 
     def test_0101_channel_names_match(self) -> None:
         """Channel names should match for 0101 file."""
