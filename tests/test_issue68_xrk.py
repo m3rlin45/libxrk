@@ -7,6 +7,7 @@ fix, the shock-pot and accelerometer channels were silently dropped.
 
 from __future__ import annotations
 
+import gc
 import unittest
 from pathlib import Path
 from typing import ClassVar
@@ -58,6 +59,12 @@ class TestIssue68XRK(unittest.TestCase):
         from libxrk.aim_xrk import aim_xrk as cython_aim_xrk
 
         cls.log = cython_aim_xrk(str(ISSUE68_XRZ_FILE))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        """Release cached logs; unittest keeps class attrs alive otherwise."""
+        del cls.log
+        gc.collect()
 
     def test_file_exists(self) -> None:
         self.assertTrue(ISSUE68_XRZ_FILE.exists())
@@ -173,6 +180,13 @@ class TestIssue68CrossBackend(unittest.TestCase):
 
         cls.rust_log = rust_aim_xrk(str(ISSUE68_XRZ_FILE))
         cls.cython_log = cython_aim_xrk(str(ISSUE68_XRZ_FILE))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        """Release cached logs; unittest keeps class attrs alive otherwise."""
+        del cls.cython_log
+        del cls.rust_log
+        gc.collect()
 
     def test_channel_names_match(self) -> None:
         """Both backends produce the same set of channel names."""

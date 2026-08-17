@@ -1,0 +1,21 @@
+# Line endings: LF everywhere, for everyone, regardless of core.autocrlf.
+# Without this the repo only stays LF while every contributor's local git is
+# configured correctly; one clone with autocrlf=true reintroduces CRLF.
+* text=auto eol=lf
+
+# Reference exports compared against the AIM DLL. Left byte-exact: nothing
+# reads them bytewise, and converting ~130k lines would bury real diffs.
+tests/test_data/*.csv -text
+tests/test_data/**/*.csv -text
+
+# Binary fixtures and artifacts — never touch these.
+*.xrk  binary
+*.xrz  binary
+*.dll  binary
+*.exe  binary
+*.so   binary
+*.pyd  binary
+*.png  binary
+*.jpg  binary
+*.wasm binary
+*.zip  binary

@@ -16,7 +16,15 @@ const projectRoot = path.resolve(__dirname, "..");
 const pyodideTestsDir = path.join(__dirname, "pyodide_tests");
 
 // Pyodide runtime version -> wheel ABI tag. One entry per supported runtime.
-const ABI_TAG = { "0.29": "pyodide_2025" };
+const ABI_TAG = {
+  "0.29": "pyodide_2025",     // pre-PEP-783 tag, GitHub Releases only
+  "314": "pyemscripten_2026", // PEP 783 tag (Python 3.14), published to PyPI
+};
+
+// "0.29.3" -> "0.29", "314.0.4" -> "314". Keys ABI_TAG and the npm package dir.
+function runtimeSeries(version) {
+  return version.startsWith("314") ? "314" : version.substring(0, 4);
+}
 
 /**
  * Find the Pyodide-compatible wheel file in the dist directory.
@@ -34,7 +42,7 @@ function findWheel(distDir, pyodideVersion) {
   }
 
   // Determine ABI tag based on version
-  const abiTag = ABI_TAG[pyodideVersion.substring(0, 4)] ?? "pyodide_2025";
+  const abiTag = ABI_TAG[runtimeSeries(pyodideVersion)] ?? "pyodide_2025";
 
   // Find wheel matching the ABI tag
   const matchingWheel = wheels.find((w) => w.includes(abiTag));
@@ -87,8 +95,7 @@ function parseArgs() {
  * @param {string} version - Pyodide version (e.g., "0.29")
  */
 async function loadPyodideModule(version) {
-  const majorMinor = version.substring(0, 4); // e.g. "0.29"
-  const mod = await import(`pyodide-${majorMinor}`);
+  const mod = await import(`pyodide-${runtimeSeries(version)}`);
   return mod.loadPyodide;
 }
 
