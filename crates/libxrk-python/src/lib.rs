@@ -89,6 +89,10 @@ fn aim_xrk(py: Python<'_>, fname: Py<PyAny>, progress: Option<Py<PyAny>>) -> PyR
         .filter_map(|ch| ch.timecodes.last().copied())
         .max();
 
+    // Build metadata while channel_data is still populated (calibration
+    // attribution only considers channels that carry data, like Cython).
+    let metadata_struct = libxrk::metadata::extract_metadata(&result);
+
     // Move channel_data out of result (avoids cloning every channel)
     let channel_data = std::mem::take(&mut result.channel_data);
 
@@ -147,8 +151,7 @@ fn aim_xrk(py: Python<'_>, fname: Py<PyAny>, progress: Option<Py<PyAny>>) -> PyR
         }
     }
 
-    // Build metadata
-    let metadata_struct = libxrk::metadata::extract_metadata(&result);
+    // Convert metadata (extracted above, before channel_data was moved out)
     let metadata_dict = metadata_bridge::metadata_to_pydict(py, &metadata_struct)?;
 
     // Determine file_name

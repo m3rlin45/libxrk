@@ -100,10 +100,17 @@ pub fn read_xrk_with_progress(
         .filter_map(|ch| ch.timecodes.last().copied())
         .max();
 
+    // Build metadata while channel_data is still populated (calibration
+    // attribution only considers channels that carry data, like Cython).
+    let metadata = metadata::extract_metadata(&result);
+
     // Move channel_data out of result (avoids cloning every channel)
     let channel_data = std::mem::take(&mut result.channel_data);
 
-    // Build Channel structs from channel_data + channel info
+    // Build Channel structs from channel_data + channel info, in ascending
+    // channel-index order for deterministic duplicate-name resolution.
+    let mut channel_data: Vec<(u16, ChannelData)> = channel_data.into_iter().collect();
+    channel_data.sort_by_key(|(idx, _)| *idx);
     let channels: Vec<Channel> = channel_data
         .into_iter()
         .filter_map(|(ch_idx, ch_data)| {
@@ -168,9 +175,6 @@ pub fn read_xrk_with_progress(
             gps::timing::apply_corrections(&mut gps.timecodes, &corrections);
         }
     }
-
-    // Build metadata
-    let metadata = metadata::extract_metadata(&result);
 
     // Build laps — GPS timing fix was applied above
     let mut processed_laps = parser::get_processed_laps(&result)?;
