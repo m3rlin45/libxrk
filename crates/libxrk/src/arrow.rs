@@ -140,7 +140,14 @@ pub fn build_all_channel_batches(
 ) -> arrow::error::Result<Vec<(String, RecordBatch)>> {
     let mut batches = Vec::new();
 
-    for (ch_idx, ch_data) in channel_data.into_iter() {
+    // Iterate in ascending channel-index order so consumers that key the
+    // result by name (a dict where later entries win) deterministically
+    // keep the HIGHEST CHS index for a duplicated long_name — matching the
+    // Cython backend's `{ch.long_name: ch}` last-wins semantics.
+    let mut entries: Vec<(u16, ChannelData)> = channel_data.into_iter().collect();
+    entries.sort_by_key(|(idx, _)| *idx);
+
+    for (ch_idx, ch_data) in entries {
         if let Some(ch_info) = channels.get(&ch_idx) {
             let name = ch_info.chs.long_name();
             let metadata = ChannelMetadata::from_channel_info(ch_info).to_hashmap(&format_f32);
