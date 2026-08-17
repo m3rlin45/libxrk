@@ -4,7 +4,7 @@
  * JupyterLite uses IDBFS (IndexedDB Filesystem) which doesn't support mmap.
  * This test demonstrates the failure and tests potential fixes.
  *
- * Usage: node scripts/run_pyodide_tests_idbfs.mjs [--dist-dir=./dist] [--pyodide-version=0.27]
+ * Usage: node scripts/run_pyodide_tests_idbfs.mjs [--dist-dir=./dist] [--pyodide-version=0.29]
  */
 
 import * as fs from "fs";
@@ -15,10 +15,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
 const pyodideTestsDir = path.join(__dirname, "pyodide_tests");
 
+// Pyodide runtime version -> wheel ABI tag. One entry per supported runtime.
+const ABI_TAG = { "0.29": "pyodide_2025" };
+
 /**
  * Find the Pyodide-compatible wheel file in the dist directory.
  * @param {string} distDir - Directory containing wheel files
- * @param {string} pyodideVersion - Pyodide version (e.g., "0.27" or "0.29")
+ * @param {string} pyodideVersion - Pyodide version (e.g., "0.29")
  */
 function findWheel(distDir, pyodideVersion) {
   if (!fs.existsSync(distDir)) {
@@ -31,8 +34,7 @@ function findWheel(distDir, pyodideVersion) {
   }
 
   // Determine ABI tag based on version
-  const abiYear = pyodideVersion.startsWith("0.27") ? "2024" : "2025";
-  const abiTag = `pyodide_${abiYear}`;
+  const abiTag = ABI_TAG[pyodideVersion.substring(0, 4)] ?? "pyodide_2025";
 
   // Find wheel matching the ABI tag
   const matchingWheel = wheels.find((w) => w.includes(abiTag));
@@ -63,7 +65,7 @@ function findWheel(distDir, pyodideVersion) {
 function parseArgs() {
   const args = {
     distDir: path.join(projectRoot, "dist"),
-    pyodideVersion: "0.27",
+    pyodideVersion: "0.29",
     backend: "",
   };
 
@@ -82,10 +84,10 @@ function parseArgs() {
 
 /**
  * Dynamically load the appropriate Pyodide module based on version.
- * @param {string} version - Pyodide version (e.g., "0.27" or "0.29")
+ * @param {string} version - Pyodide version (e.g., "0.29")
  */
 async function loadPyodideModule(version) {
-  const majorMinor = version.substring(0, 4); // "0.27" or "0.29"
+  const majorMinor = version.substring(0, 4); // e.g. "0.29"
   const mod = await import(`pyodide-${majorMinor}`);
   return mod.loadPyodide;
 }

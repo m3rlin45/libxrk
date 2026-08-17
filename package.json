@@ -1,6 +1,5 @@
 {
   "dependencies": {
-    "pyodide-0.27": "npm:pyodide@^0.27.3",
     "pyodide-0.29": "npm:pyodide@^0.29.3"
   }
 }

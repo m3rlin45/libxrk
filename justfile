@@ -51,58 +51,13 @@ rust-build-debug:
     #!/usr/bin/env bash
     source $HOME/.cargo/env && uv run maturin develop
 
-# Install Emscripten SDK for Pyodide 0.27.x
-emsdk-setup:
-    #!/usr/bin/env bash
-    EMSDK_VERSION=$(uv run pyodide config get emscripten_version) && \
-    mkdir -p build && \
-    ([ -d build/emsdk ] || (git clone https://github.com/emscripten-core/emsdk.git build/emsdk && cd build/emsdk && git config core.autocrlf false && git checkout -- .)) && \
-    ./build/emsdk/emsdk install $EMSDK_VERSION && \
-    ./build/emsdk/emsdk activate $EMSDK_VERSION && \
-    WASM_OPT=build/emsdk/upstream/bin/wasm-opt && \
-    ([ -f ${WASM_OPT}.real ] || mv $WASM_OPT ${WASM_OPT}.real) && \
-    sed 's/\r$//' scripts/wasm-opt-wrapper.sh > $WASM_OPT && chmod +x $WASM_OPT
-
-# Install Pyodide 0.27.x npm package
-pyodide-setup:
-    npm install pyodide-0.27@npm:pyodide@0.27.3
-
-# Build Pyodide 0.27.x wheel (Cython + Rust for WASM)
-pyodide-build: emsdk-setup
-    #!/usr/bin/env bash
-    _bak=/tmp/_libxrk_native_$$ && mkdir -p "$_bak" && \
-    find src/libxrk -maxdepth 1 -name '*linux-gnu.so' -exec mv {} "$_bak/" \; && \
-    source $HOME/.cargo/env && \
-    export RUSTUP_TOOLCHAIN=nightly && \
-    source ./build/emsdk/emsdk_env.sh && \
-    export RUSTFLAGS="-C target-feature=-exception-handling -C panic=abort" && \
-    export CARGO_BUILD_TARGET=wasm32-unknown-emscripten && \
-    uv run pyodide build --exports whole_archive; \
-    _rc=$?; mv "$_bak"/*.so src/libxrk/ 2>/dev/null; rm -rf "$_bak"; exit $_rc
-
-# Build and run tests in Pyodide 0.27.x (WebAssembly)
-pyodide-test: emsdk-setup pyodide-setup
-    #!/usr/bin/env bash
-    _bak=/tmp/_libxrk_native_$$ && mkdir -p "$_bak" && \
-    find src/libxrk -maxdepth 1 -name '*linux-gnu.so' -exec mv {} "$_bak/" \; && \
-    rm -f dist/*pyodide_2024*.whl && \
-    source $HOME/.cargo/env && \
-    export RUSTUP_TOOLCHAIN=nightly && \
-    source ./build/emsdk/emsdk_env.sh && \
-    export RUSTFLAGS="-C target-feature=-exception-handling -C panic=abort" && \
-    export CARGO_BUILD_TARGET=wasm32-unknown-emscripten && \
-    uv run pyodide build --exports whole_archive && \
-    node scripts/run_pyodide_tests.mjs --dist-dir=./dist --pyodide-version=0.27 && \
-    node scripts/run_pyodide_tests_idbfs.mjs --dist-dir=./dist --pyodide-version=0.27; \
-    _rc=$?; mv "$_bak"/*.so src/libxrk/ 2>/dev/null; rm -rf "$_bak"; exit $_rc
-
 # pyodide-build is a BUILD TOOL; its version is independent of the Pyodide
 # RUNTIME version. Pinning it to the runtime version (==0.29.3) broke builds:
 # those releases hardcode a cross-build-env metadata URL upstream has removed.
 # One current pyodide-build serves every runtime. The runtime still dictates the
 # host Python (0.29.x xbuildenv refuses to install under 3.12), hence pyenv 3.13.
-# Install Emscripten SDK for Pyodide 0.29.x (requires Python 3.13 via pyenv)
-emsdk-setup-0-29:
+# Install Emscripten SDK for Pyodide (requires Python 3.13 via pyenv)
+emsdk-setup:
     #!/usr/bin/env bash
     export PATH="$HOME/.pyenv/versions/3.13.12/bin:$PATH" && \
     uv pip install --python "$HOME/.pyenv/versions/3.13.12/bin/python" pyodide-build==0.32.0 "wheel<0.44" && \
@@ -114,12 +69,12 @@ emsdk-setup-0-29:
     WASM_OPT=upstream/bin/wasm-opt && ([ -f ${WASM_OPT}.real ] || mv $WASM_OPT ${WASM_OPT}.real) && \
     sed 's/\r$//' ../../scripts/wasm-opt-wrapper.sh > $WASM_OPT && chmod +x $WASM_OPT
 
-# Install Pyodide 0.29.x npm package
-pyodide-setup-0-29:
+# Install Pyodide npm package
+pyodide-setup:
     npm install pyodide-0.29@npm:pyodide@0.29.3
 
-# Build Pyodide 0.29.x wheel (requires Python 3.13 via pyenv)
-pyodide-build-0-29: emsdk-setup-0-29
+# Build the Pyodide wheel (requires Python 3.13 via pyenv)
+pyodide-build: emsdk-setup
     #!/usr/bin/env bash
     _bak=/tmp/_libxrk_native_$$ && mkdir -p "$_bak" && \
     find src/libxrk -maxdepth 1 -name '*linux-gnu.so' -exec mv {} "$_bak/" \; && \
@@ -132,8 +87,8 @@ pyodide-build-0-29: emsdk-setup-0-29
     pyodide build --exports whole_archive; \
     _rc=$?; mv "$_bak"/*.so src/libxrk/ 2>/dev/null; rm -rf "$_bak"; exit $_rc
 
-# Build and test with Pyodide 0.29.x (requires Python 3.13 via pyenv)
-pyodide-test-0-29: emsdk-setup-0-29 pyodide-setup-0-29
+# Build and test with Pyodide (requires Python 3.13 via pyenv)
+pyodide-test: emsdk-setup pyodide-setup
     #!/usr/bin/env bash
     _bak=/tmp/_libxrk_native_$$ && mkdir -p "$_bak" && \
     find src/libxrk -maxdepth 1 -name '*linux-gnu.so' -exec mv {} "$_bak/" \; && \
@@ -149,7 +104,7 @@ pyodide-test-0-29: emsdk-setup-0-29 pyodide-setup-0-29
     node scripts/run_pyodide_tests_idbfs.mjs --dist-dir=./dist --pyodide-version=0.29; \
     _rc=$?; mv "$_bak"/*.so src/libxrk/ 2>/dev/null; rm -rf "$_bak"; exit $_rc
 
-# Build CPython wheel, sdist, and Pyodide 0.27.x wheel
+# Build CPython wheel, sdist, and the Pyodide wheel
 build-all: emsdk-setup
     #!/usr/bin/env bash
     _bak=/tmp/_libxrk_native_$$ && mkdir -p "$_bak" && \
@@ -157,10 +112,12 @@ build-all: emsdk-setup
     source $HOME/.cargo/env && \
     uv build && \
     find src/libxrk -maxdepth 1 -name '*linux-gnu.so' -exec mv {} "$_bak/" \; && \
+    EMSDK=$PWD/build/emsdk-0.29 && \
+    export PATH="$HOME/.pyenv/versions/3.13.12/bin:$HOME/.cargo/bin:$EMSDK/upstream/emscripten:$PATH" && \
+    export EMSDK EM_CONFIG=$EMSDK/.emscripten EMSDK_NODE=$EMSDK/node/22.16.0_64bit/bin/node && \
     export RUSTUP_TOOLCHAIN=nightly && \
-    source ./build/emsdk/emsdk_env.sh && \
-    export RUSTFLAGS="-C target-feature=-exception-handling -C panic=abort" && \
     export CARGO_BUILD_TARGET=wasm32-unknown-emscripten && \
-    uv run pyodide build --exports whole_archive; \
+    uv pip install --python "$HOME/.pyenv/versions/3.13.12/bin/python" pyodide-build==0.32.0 "wheel<0.44" && \
+    pyodide build --exports whole_archive; \
     _rc=$?; mv "$_bak"/*.so src/libxrk/ 2>/dev/null; rm -rf "$_bak"; \
     [ $_rc -eq 0 ] && ls -la dist/; exit $_rc
