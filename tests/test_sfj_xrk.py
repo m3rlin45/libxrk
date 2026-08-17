@@ -1,5 +1,6 @@
 """End-to-end tests for libxrk SFJ XRK/XRZ file reading."""
 
+import gc
 import unittest
 from pathlib import Path
 from typing import ClassVar
@@ -479,6 +480,13 @@ class TestSFJCrossBackend(unittest.TestCase):
 
         cls.rust_log = rust_aim_xrk(str(SFJ_XRK_FILE))
         cls.cython_log = cython_aim_xrk(str(SFJ_XRK_FILE))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        """Release cached logs; unittest keeps class attrs alive otherwise."""
+        del cls.cython_log
+        del cls.rust_log
+        gc.collect()
 
     def test_channel_names_match(self) -> None:
         """Both backends should produce the same set of channel names."""

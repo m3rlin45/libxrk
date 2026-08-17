@@ -4,6 +4,7 @@ Tests both Rust and Cython backends, plus cross-backend comparison.
 """
 
 import os
+import gc
 import unittest
 from pathlib import Path
 from typing import Any, ClassVar
@@ -40,6 +41,12 @@ class TestIssue49XRK(unittest.TestCase):
         from libxrk._aim_xrk_rs import aim_xrk
 
         cls.log = aim_xrk(str(ISSUE49_XRK_FILE))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        """Release cached logs; unittest keeps class attrs alive otherwise."""
+        del cls.log
+        gc.collect()
 
     def test_file_exists(self) -> None:
         """Verify the test data file exists."""
@@ -93,6 +100,12 @@ class TestIssue49CythonXRK(unittest.TestCase):
 
         cls.log = aim_xrk(str(ISSUE49_XRK_FILE))
 
+    @classmethod
+    def tearDownClass(cls) -> None:
+        """Release cached logs; unittest keeps class attrs alive otherwise."""
+        del cls.log
+        gc.collect()
+
     def test_metadata_vet_is_string(self) -> None:
         """VET should be '...' (string), not an integer."""
         vet = self.log.metadata.get("Vehicle Electronics Type")
@@ -144,6 +157,13 @@ class TestIssue49CrossBackend(unittest.TestCase):
 
         cls.rust_log = rust_aim_xrk(str(ISSUE49_XRK_FILE))
         cls.cython_log = cython_aim_xrk(str(ISSUE49_XRK_FILE))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        """Release cached logs; unittest keeps class attrs alive otherwise."""
+        del cls.cython_log
+        del cls.rust_log
+        gc.collect()
 
     def test_metadata_match(self) -> None:
         """Key metadata should match between backends."""

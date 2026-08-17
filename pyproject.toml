@@ -18,6 +18,8 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Cython",
+    # PEP 783: declares that this project ships PyEmscripten wheels.
+    "Environment :: WebAssembly :: Emscripten",
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
