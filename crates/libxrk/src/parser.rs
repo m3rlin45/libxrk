@@ -1512,9 +1512,6 @@ fn parse_lap_messages(
     header_messages: &HashMap<u32, Vec<HeaderMessage>>,
     time_offset: i64,
 ) -> Result<RawLapData, Error> {
-    use binrw::BinRead;
-    use std::io::Cursor;
-
     let mut lap_nums: Vec<i32> = Vec::new();
     let mut start_times: Vec<i64> = Vec::new();
     let mut end_times: Vec<i64> = Vec::new();
@@ -1522,10 +1519,7 @@ fn parse_lap_messages(
 
     if let Some(lap_msgs) = header_messages.get(&tokens::lap()) {
         for m in lap_msgs {
-            if m.payload.len() < 20 {
-                continue;
-            }
-            let Ok(lap) = LapPayload::read(&mut Cursor::new(&m.payload)) else {
+            let Some(lap) = LapPayload::parse(&m.payload) else {
                 continue;
             };
 

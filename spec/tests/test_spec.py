@@ -1038,6 +1038,15 @@ class TestDLLCrossValidation:
         unique = _unique_seg0_laps(parsed)
         assert len(unique) == dll_lap_count, f"Lap count: spec={len(unique)} dll={dll_lap_count}"
 
+    def test_aim_official_v2_lap_times(self, aim_official_dll, aim_official_cython):
+        """The v2 LAP interpretation (absolute end time at [28:32]) must
+        reproduce the official DLL's lap table exactly, to the millisecond."""
+        dll_laps = aim_official_dll["laps"]
+        laps = aim_official_cython.laps
+        assert len(dll_laps) == laps.num_rows
+        assert [lap["start_ms"] for lap in dll_laps] == laps.column("start_time").to_pylist()
+        assert [lap["end_ms"] for lap in dll_laps] == laps.column("end_time").to_pylist()
+
     def test_metadata(self, parsed_and_dll):
         """Metadata should match DLL."""
         parsed, dll_data = parsed_and_dll

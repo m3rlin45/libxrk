@@ -1,10 +1,10 @@
-"""Tests for official AIM test.xrk file - verifies GPS-based lap detection.
+"""Tests for the official AIM test.xrk file.
 
-This file tests the fix for GitHub Issue #2: incorrect lap times when XRK files
-have no embedded LAP messages and rely on GPS-based lap detection.
-
-The official AIM test.xrk file has 0 LAP messages, so lap detection is done via GPS.
-Before the fix, last_time was incorrectly 0, causing the last lap to have end_time=0.
+This file carries version-2 LAP messages (32-byte payload, absolute end time
+at offset [28:32] — see spec/docs/unknown_regions.md "LAP version 2"), which
+historically went unparsed, so laps used to come from GPS-based detection
+(the subject of GitHub Issue #2). With v2 LAP support, lap detection follows
+the LAP messages: 11 segment-0 laps, the first an out-lap starting at t=0.
 """
 
 import gc
@@ -43,25 +43,23 @@ class TestAIMOfficialXRK(unittest.TestCase):
         self.assertIsNotNone(log.metadata, "LogFile.metadata is None")
 
     def test_lap_times_are_valid(self):
-        """Test that lap times are correctly calculated (Issue #2 fix).
-
-        This is the core test for the fix. Before the fix, the last lap had
-        end_time=0 because last_time was not set when there are no LAP messages.
-        """
+        """Test that lap times are correctly calculated from v2 LAP messages."""
         log = aim_xrk(str(AIM_OFFICIAL_XRK_FILE), progress=None)
 
-        # Should have laps detected via GPS (DLL reports 11 laps)
+        # 11 segment-0 LAP messages (the DLL also reports 11 laps)
         self.assertEqual(log.laps.num_rows, 11, "Expected 11 laps (matching DLL)")
         self.assertGreater(log.laps.num_rows, 0, "Expected at least one lap")
 
         # Verify lap_type column exists
         self.assertIn("lap_type", log.laps.column_names, "Laps table missing 'lap_type' column")
 
-        # GPS-detected laps: last is "in", others are "full"
+        # LAP-message laps: first starts at t=0 ("out"), last ends away from
+        # the start/finish line ("in"), the rest are "full"
         lap_types = log.laps.column("lap_type").to_pylist()
-        for i in range(len(lap_types) - 1):
-            self.assertEqual(lap_types[i], "full", f"GPS lap {i} should be 'full'")
-        self.assertEqual(lap_types[-1], "in", "Last GPS lap should be 'in'")
+        self.assertEqual(lap_types[0], "out", "First lap should be 'out' (starts at t=0)")
+        for i in range(1, len(lap_types) - 1):
+            self.assertEqual(lap_types[i], "full", f"Lap {i} should be 'full'")
+        self.assertEqual(lap_types[-1], "in", "Last lap should be 'in'")
 
         # Get lap data as Python lists for easier assertions
         lap_nums = log.laps.column("num").to_pylist()
@@ -171,16 +169,11 @@ class TestAIMOfficialCrossBackend(unittest.TestCase):
             )
 
     def test_non_gps_channel_values_match(self) -> None:
-        """Non-GPS CHS channels should produce matching values.
+        """Non-GPS CHS channels should produce identical timecodes and values.
 
-        Note: This file carries version-2 LAP messages with a 32-byte payload.
-        Cython's exact-20-byte struct.unpack drops all of them (no LAP-derived
-        time_offset candidate), while Rust parses the first 20 bytes as if v1
-        and derives a different candidate, so the backends' time_offsets differ
-        by a constant 18ms. Timecodes are therefore compared modulo a uniform
-        shift; values (which are offset-independent) must match exactly.
-        See tests/test_backend_equivalence.py and spec/docs/unknown_regions.md
-        ("LAP version 2").
+        Both backends parse the file's version-2 LAP messages (32-byte
+        payload, absolute end time at [28:32]) and derive the same
+        time_offset, so timecodes match exactly.
         """
         gps_prefixes = ("GPS ", "GPS_")
         for name in self.rust_log.channels:
@@ -188,13 +181,7 @@ class TestAIMOfficialCrossBackend(unittest.TestCase):
                 continue
             rust_tc = self.rust_log.channels[name].column("timecodes").to_numpy()
             cython_tc = self.cython_log.channels[name].column("timecodes").to_numpy()
-            # Timecodes may have a constant offset; check they differ uniformly
-            tc_diffs = rust_tc - cython_tc
-            np.testing.assert_array_equal(
-                tc_diffs,
-                tc_diffs[0],
-                err_msg=f"{name} timecodes have non-uniform offset",
-            )
+            np.testing.assert_array_equal(rust_tc, cython_tc, err_msg=f"{name} timecodes")
             rust_vals = self.rust_log.channels[name].column(name).to_numpy(zero_copy_only=False)
             cython_vals = self.cython_log.channels[name].column(name).to_numpy(zero_copy_only=False)
             np.testing.assert_array_equal(rust_vals, cython_vals, err_msg=f"{name} values")
@@ -220,21 +207,15 @@ class TestAIMOfficialCrossBackend(unittest.TestCase):
         cython_types = self.cython_log.laps.column("lap_type").to_pylist()
         self.assertEqual(rust_types, cython_types)
 
-    def test_lap_durations_match(self) -> None:
-        """Lap durations should match between backends.
-
-        Note: This file has no LAP messages (GPS-based lap detection), so
-        absolute lap times may differ by a constant time_offset between backends.
-        Durations are offset-independent and should match exactly.
-        """
-        rust_starts = np.array(self.rust_log.laps.column("start_time").to_pylist())
-        rust_ends = np.array(self.rust_log.laps.column("end_time").to_pylist())
-        cython_starts = np.array(self.cython_log.laps.column("start_time").to_pylist())
-        cython_ends = np.array(self.cython_log.laps.column("end_time").to_pylist())
-        np.testing.assert_array_equal(
-            rust_ends - rust_starts,
-            cython_ends - cython_starts,
-            err_msg="Lap durations differ between backends",
+    def test_lap_times_match(self) -> None:
+        """Lap start/end times should match exactly between backends."""
+        self.assertEqual(
+            self.rust_log.laps.column("start_time").to_pylist(),
+            self.cython_log.laps.column("start_time").to_pylist(),
+        )
+        self.assertEqual(
+            self.rust_log.laps.column("end_time").to_pylist(),
+            self.cython_log.laps.column("end_time").to_pylist(),
         )
 
     def test_channel_metadata_match(self) -> None:
