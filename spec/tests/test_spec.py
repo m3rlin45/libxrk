@@ -1158,41 +1158,44 @@ class TestIssue68CVariants:
         that we cannot replicate without its internal clock model; in
         practice we hit ≥99.9% on this fixture.
         """
-        import subprocess
         import json
+        import shutil
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        import filelock
         import numpy as np
-        import os
+        import pytest
+
+        from spec.tests.conftest import ISSUE68_XRZ, REFERENCE_DLL_DIR, _dll_available
 
         # Pull full DLL LR_Shock_Pot samples (only if Wine/DLL available).
+        if not _dll_available():
+            pytest.skip("AIM DLL or Wine not available")
         wine = "/usr/lib/wine/wine64"
-        if not os.path.exists(wine):
-            import pytest
-
-            pytest.skip("Wine not installed")
-        script = "Z:/home/m3rlin45/code/libxrk-3/tests/reference_dll/wine_full_extract.py"
-        dll_path = "/home/m3rlin45/code/libxrk-3/tests/reference_dll/MatLabXRK-2017-64-ReleaseU.dll"
-        if not os.path.exists(dll_path):
-            import pytest
-
-            pytest.skip("AIM DLL not installed")
-        py = "/home/m3rlin45/code/libxrk-3/tests/reference_dll/.setup/python-embed/python.exe"
-        xrz_win = (
-            "Z:/home/m3rlin45/code/libxrk-3/tests/test_data/issue68/"
-            "CMD_KK-SII_Tsukuba_Car_Generic testing_a_0101.xrz"
-        )
-        env = {"WINEDEBUG": "-all", "HOME": "/home/m3rlin45/code", "PATH": "/usr/bin:/bin"}
-        wine_all_script = "Z:/home/m3rlin45/code/libxrk-3/tests/reference_dll/wine_all_samples.py"
-        if not os.path.exists(wine_all_script.replace("Z:", "")):
-            import pytest
-
-            pytest.skip("wine_all_samples.py helper not present")
-        proc = subprocess.run(
-            [wine, py, wine_all_script, xrz_win, "LR_Shock_Pot"],
-            capture_output=True,
-            text=True,
-            timeout=600,
-            env=env,
-        )
+        py = str(REFERENCE_DLL_DIR / ".setup" / "python-embed" / "python.exe")
+        wine_all_script = "Z:" + str(REFERENCE_DLL_DIR / "wine_all_samples.py")
+        env = {
+            "WINELOADER": wine,
+            "WINEDEBUG": "-all",
+            "HOME": str(Path.home()),
+            "PATH": "/usr/bin:/bin",
+        }
+        # The DLL writes scratch files next to its input (an .xrz gets a
+        # sibling .xrk), so hand it a copy in a temp directory.
+        lock = filelock.FileLock(Path(__file__).parent / ".wine_extract.lock")
+        with tempfile.TemporaryDirectory(prefix="libxrk-dll-") as tmp:
+            scratch = Path(tmp) / ISSUE68_XRZ.name
+            shutil.copy2(ISSUE68_XRZ, scratch)
+            with lock:
+                proc = subprocess.run(
+                    [wine, py, wine_all_script, "Z:" + str(scratch), "LR_Shock_Pot"],
+                    capture_output=True,
+                    text=True,
+                    timeout=600,
+                    env=env,
+                )
         dll = json.loads(proc.stdout)
         dll_map = {int(round(t)): v for t, v in zip(dll["t_ms"], dll["v"])}
 
