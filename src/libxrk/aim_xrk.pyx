@@ -561,10 +561,22 @@ def _decode_sequence(s, progress=None):
                                     gc_data[3][m.content.index].Mms = struct.unpack_from(
                                         '<I', m.content.unknown, 64)[0] // 1000
                                 else:
-                                    if channels[m.content.index].short_name != m.content.short_name:
-                                        raise ValueError("Channel short_name mismatch: %s vs %s" % (channels[m.content.index].short_name, m.content.short_name))
-                                    if channels[m.content.index].long_name != m.content.long_name:
-                                        raise ValueError("Channel long_name mismatch: %s vs %s" % (channels[m.content.index].long_name, m.content.long_name))
+                                    if (channels[m.content.index].short_name != m.content.short_name
+                                            or channels[m.content.index].long_name != m.content.long_name):
+                                        # Some loggers rename a channel in a later CNF
+                                        # (e.g. the AIM official sample renames
+                                        # "Temperature 1" to "Exhaust Temp"). Keep the
+                                        # first registration and warn, instead of
+                                        # raising - which would discard the entire CNF
+                                        # via bad-byte recovery and leak its nested
+                                        # messages as top-level ones. Matches the Rust
+                                        # backend's keep-first behavior.
+                                        print("Channel name mismatch at index %d: '%s'/'%s' vs '%s'/'%s'. "
+                                              "Please report at https://github.com/m3rlin45/libxrk/issues" %
+                                              (m.content.index,
+                                               channels[m.content.index].short_name,
+                                               channels[m.content.index].long_name,
+                                               m.content.short_name, m.content.long_name))
                             for m in data.get(_tokdec('GRP'), []):
                                 groups += [None] * (m.content.index - len(groups) + 1)
                                 groups[m.content.index] = m.content
