@@ -6,24 +6,16 @@ bit-exact timecodes and values, the laps table, and the complete metadata
 dict.  This is deliberately stronger than the per-file CrossBackend classes
 (which check a subset of metadata keys and use loose GPS tolerances).
 
-Documented residual discrepancy (see the xfail test at the bottom, which
-flips visibly when the underlying divergence is fixed):
-
-1. GPS float paths.  Both backends compute GPS-derived channels in float64,
-   but with slightly different operation orders:
-     - GPS Latitude / GPS Altitude: the Rust Vermeille-2003 ECEF->LLA uses
-       ``/ (a*a)`` and ``r*r*r`` where numpy uses ``* (1/(a*a))`` and
-       ``r**3`` (and ``np.cbrt`` vs ``f64::cbrt``); observed diffs are
-       <= 1.5e-14 deg / <= 2.9e-9 m.
-     - GPS_LateralAcc: Rust multiplies the float32-rounded yaw rate where
-       Cython uses the intermediate float64 value; observed <= 5e-7 g.
-     - GPS_Yaw_Rate: rare 1-ulp float32 rounding differences (<= 1e-12).
-     - GPS Longitude: pure atan2; bit-exact on some hosts, but numpy's
-       atan2 kernel varies with glibc version and CPU SIMD dispatch while
-       Rust links a vendored libm, so it can differ by 1 ulp elsewhere.
-   All other GPS channels (Speed, InlineAcc, Satellites, Fix, pDOP,
-   Position/Velocity Accuracy) are pure arithmetic + sqrt and are
-   required to be bit-exact on every platform.
+GPS channels derived through libm transcendentals (atan2, cbrt, pow) —
+Latitude, Longitude, Altitude, and the heading-derived float32 products
+LateralAcc and Yaw_Rate — are compared within a few ulp instead of
+bit-exactly.  numpy's math kernels vary with platform, glibc version, and
+CPU SIMD dispatch, while Rust links a vendored libm, so the two pipelines
+agree bit-for-bit on some hosts but not portably.  The Rust backend
+minimizes the gap by mirroring numpy's float operation order, keeping the
+float64 yaw rate for the lateral product, and resolving cbrt/pow from the
+system libm on unix.  Everything else — including GPS Speed and InlineAcc
+(pure arithmetic + sqrt) — must be bit-exact on every platform.
 """
 
 from pathlib import Path
@@ -43,8 +35,9 @@ except ImportError:
 pytestmark = pytest.mark.skipif(not _RUST_AVAILABLE, reason="Rust backend not available")
 
 
-# Per-channel float tolerances for known GPS float-path differences
-# (rtol, atol); channels not listed must match bit-exactly.
+# Tight tolerances for GPS channels derived through libm transcendentals
+# (rtol, atol); see the module docstring for why these are not bit-exact
+# across platforms.  Channels not listed must match bit-exactly everywhere.
 _GPS_FLOAT_TOLERANCES = {
     "GPS Latitude": (0.0, 1e-11),
     "GPS Longitude": (0.0, 1e-11),
@@ -166,14 +159,6 @@ def test_backends_equivalent(fixture: Path) -> None:
     assert not errors, f"{fixture.name}: backend divergence:\n" + "\n".join(errors)
 
 
-# ---------------------------------------------------------------------------
-# Probes for documented residual discrepancies.  The strict xfail below
-# turns into an XPASS failure when the underlying divergence is fixed,
-# prompting removal of the marker (and of the corresponding carve-out
-# above).
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "path",
     [
@@ -214,19 +199,3 @@ def test_duplicate_name_channels_all_exposed(path: Path) -> None:
         assert cy_meta.source_channel_id == src_id, name
         assert rs_meta.source_channel_id == src_id, name
         assert len(cy.channels[name]) == len(rs.channels[name]) > 0, name
-
-
-@pytest.mark.xfail(
-    # Not strict: whether these channels come out bit-identical depends on
-    # the host's numpy kernels (glibc version, SIMD dispatch) — they match
-    # on some machines and differ by 1 ulp on others.
-    strict=False,
-    reason="GPS float paths differ between numpy and Rust at the ulp level "
-    "(module docstring, item 1)",
-)
-def test_gps_channels_bitwise_identical() -> None:
-    cy, rs = _load_both(TEST_DATA_DIR / "SFJ/CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrk")
-    for name in ("GPS Latitude", "GPS Altitude", "GPS_LateralAcc"):
-        cy_v = cy.channels[name].column(name).to_numpy()
-        rs_v = rs.channels[name].column(name).to_numpy()
-        np.testing.assert_array_equal(cy_v, rs_v, err_msg=name)
