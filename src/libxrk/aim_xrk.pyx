@@ -1032,6 +1032,30 @@ def _decode_sequence(s, progress=None):
             messages, time_offset, last_time)
         channels.extend(gps_ch)
 
+    # Disambiguate duplicate long_names following the AIM DLL convention:
+    # the first CHS occurrence (by channel index) keeps the plain name and
+    # the k-th occurrence is exposed as "<name> dup <k>". Numbering runs
+    # over ALL CHS entries in index order, data-bearing or not, matching
+    # the DLL (observed: "Right_Btn_4_led dup 2" on the issue84 fixture).
+    # Duplicates are genuinely distinct channels (own source_channel_id and
+    # data stream), so none of them may be dropped. The synthesized GPS
+    # channels (Channel.index == -1) own their canonical names — a CHS
+    # channel colliding with one (e.g. GPS_InlineAcc on SFJ/86) gets the
+    # suffix, keeping GPS_CHANNEL_NAMES semantics stable. Internal channels
+    # keep their base name so the exclusion filter below still applies.
+    # Reference: spec/xrk_format.py ParseResult.channel_display_names().
+    _name_seen = {}
+    for ch in channels:
+        if ch and ch.index < 0:
+            _name_seen[ch.long_name] = 1
+    for ch in channels:
+        if not ch or ch.index < 0:
+            continue
+        _dup_k = _name_seen.get(ch.long_name, 0) + 1
+        _name_seen[ch.long_name] = _dup_k
+        if _dup_k > 1 and ch.long_name not in ('StrtRec', 'Master Clk'):
+            ch.long_name = '%s dup %d' % (ch.long_name, _dup_k)
+
     return DataStream(
         channels={ch.long_name: ch for ch in channels
                   if ch and len(ch.sampledata)

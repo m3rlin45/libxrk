@@ -1221,6 +1221,40 @@ class ParseResult:
             if m.payload is not None
         ]
 
+    def channel_display_names(self, reserved_names=()):
+        """Map channel index -> user-facing channel name.
+
+        A CHS table may define the same long_name at several channel
+        indices (e.g. the issue68/issue84 fixtures define RotaryMiddle_led
+        three times, each with its own source_channel_id and data stream).
+        The official AIM DLL disambiguates these positionally: the first
+        occurrence keeps the plain name and the k-th occurrence (k >= 2)
+        is exposed as ``"<name> dup <k>"`` (observed on the issue84
+        fixture: ``Right_Btn_4_led dup 2``). Numbering follows ascending
+        channel index over ALL CHS entries, whether or not they carry
+        data, matching the DLL. Both backends follow this convention.
+
+        Args:
+            reserved_names: Names already claimed outside the CHS table,
+                counted as occurrence 1. The backends pass their 12
+                synthesized GPS channel names here (when the file carries
+                GPS data), so a CHS channel that collides with e.g.
+                ``GPS_InlineAcc`` — observed on the SFJ and 86 fixtures —
+                is exposed as ``"GPS_InlineAcc dup 2"`` while the
+                synthesized channel keeps its canonical name.
+
+        Returns:
+            dict: {channel_index: display_name}
+        """
+        seen = {name: 1 for name in reserved_names}
+        out = {}
+        for idx in sorted(self.channels):
+            base = self.channels[idx].name
+            k = seen.get(base, 0) + 1
+            seen[base] = k
+            out[idx] = base if k == 1 else f"{base} dup {k}"
+        return out
+
     def get_gps_samples(self):
         """Return parsed GPS samples as list of Containers."""
         return [p for raw in self.gps_payloads if (p := _parse_payload(GPSPayload, raw))]

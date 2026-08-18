@@ -219,6 +219,21 @@ them into a single table:
 
 Reference: `base.py` (`get_channels_as_table`)
 
+### Duplicate channel names
+
+A CHS table may define the same long_name at several channel indices — each a
+genuinely distinct channel with its own `source_channel_id` and data stream
+(the issue68/issue84 fixtures define `RotaryLeft/Middle/Right_led` three times
+each and `Right_Btn_4_led` twice, all data-bearing). The official AIM DLL
+disambiguates positionally: the first occurrence keeps the plain name, and the
+k-th occurrence is exposed as `"<name> dup <k>"` (observed on the issue84
+fixture: `Right_Btn_4_led dup 2`). Numbering follows ascending channel index
+over all CHS entries, whether or not they carry data.
+
+Both backends implement this convention; the reference mapping is
+`ParseResult.channel_display_names()` in `spec/xrk_format.py`. No duplicate is
+ever collapsed or dropped.
+
 ## 9. Unit Type Map
 
 The CHS `unit_type_byte` (offset [12], lower 7 bits) maps to display units and

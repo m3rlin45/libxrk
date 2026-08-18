@@ -1627,6 +1627,50 @@ pub struct ProcessedLap {
 }
 
 /// Get processed laps from ParseResult (with proper start/end times).
+/// Map channel index -> user-facing channel name.
+///
+/// A CHS table may define the same long_name at several channel indices,
+/// each a genuinely distinct channel with its own source_channel_id and
+/// data stream. Following the official AIM DLL's convention, the first
+/// occurrence keeps the plain name and the k-th occurrence (k >= 2) is
+/// exposed as `"<name> dup <k>"` (observed on the issue84 fixture:
+/// `Right_Btn_4_led dup 2`). Numbering follows ascending channel index
+/// over ALL CHS entries, whether or not they carry data, matching the
+/// DLL. Mirrors `channel_display_names()` in spec/xrk_format.py and the
+/// Cython backend's rename pass.
+///
+/// `reserved` holds names already claimed outside the CHS table, counted
+/// as occurrence 1: callers pass the 12 synthesized GPS channel names
+/// when the file carries GPS data, so a CHS channel colliding with e.g.
+/// `GPS_InlineAcc` (observed on SFJ/86) becomes `"GPS_InlineAcc dup 2"`
+/// while the synthesized channel keeps its canonical name.
+pub fn channel_display_names(
+    channels: &HashMap<u16, ChannelInfo>,
+    reserved: &[&str],
+) -> HashMap<u16, String> {
+    let mut idxs: Vec<u16> = channels.keys().copied().collect();
+    idxs.sort_unstable();
+    let mut seen: HashMap<String, u32> = HashMap::new();
+    for name in reserved {
+        seen.insert((*name).to_string(), 1);
+    }
+    let mut out = HashMap::new();
+    for idx in idxs {
+        let base = channels[&idx].chs.long_name();
+        let k = seen
+            .entry(base.clone())
+            .and_modify(|k| *k += 1)
+            .or_insert(1);
+        let name = if *k > 1 {
+            format!("{} dup {}", base, k)
+        } else {
+            base
+        };
+        out.insert(idx, name);
+    }
+    out
+}
+
 pub fn get_processed_laps(result: &ParseResult) -> Result<Vec<ProcessedLap>, Error> {
     let raw = parse_lap_messages(&result.header_messages, result.time_offset)?;
 

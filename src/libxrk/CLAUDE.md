@@ -82,6 +82,13 @@ Each channel table has:
 
 Channels have different sample rates. Use `get_channels_as_table()` to merge.
 
+**Duplicate channel names:** a file's CHS table may define the same long_name
+at several channel indices — each is a genuinely distinct channel with its own
+`source_channel_id` and data stream. Following the official AIM DLL's
+convention, the first occurrence keeps the plain name and the k-th occurrence
+is exposed as `"<name> dup <k>"` (e.g. `"RotaryMiddle_led dup 2"`), numbered
+by ascending channel index. No duplicate is ever dropped.
+
 ## Channel Metadata
 
 Use the `ChannelMetadata` dataclass for typed access to channel metadata:
