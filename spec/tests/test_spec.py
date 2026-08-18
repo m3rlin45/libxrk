@@ -108,6 +108,14 @@ class TestParseAllFiles:
         assert len(result.messages_by_token("LAP")) > 0
         assert len(result.gps_payloads) > 0
 
+    def test_cnf_redefinition_last_name_wins(self, aim_official_parsed):
+        """A later CNF re-definition wins on names: test.xrk's final CNFs
+        rename index 11 'Temperature 1' -> 'Exhaust Temp' and index 12
+        'Temperature 2' -> 'Water Temp 2' (null-terminated to 'Water Temp'),
+        which is what the official DLL exposes."""
+        assert aim_official_parsed.channels[11].name == "Exhaust Temp"
+        assert aim_official_parsed.channels[12].name == "Water Temp"
+
     @pytest.mark.parametrize("filepath", ALL_XRK_FILES, ids=lambda p: p.name)
     def test_xrk_xrz_equivalence(self, filepath):
         """XRK and XRZ variants should produce the same channel definitions."""
@@ -1046,6 +1054,19 @@ class TestDLLCrossValidation:
         assert len(dll_laps) == laps.num_rows
         assert [lap["start_ms"] for lap in dll_laps] == laps.column("start_time").to_pylist()
         assert [lap["end_ms"] for lap in dll_laps] == laps.column("end_time").to_pylist()
+
+    def test_aim_official_renamed_channels_match_dll(self, aim_official_dll, aim_official_cython):
+        """Last-write-wins channel renames must match the DLL: test.xrk's
+        final CNFs rename 'Temperature 1'/'Temperature 2' to
+        'Exhaust Temp'/'Water Temp', and the DLL exposes the new names
+        carrying the full data stream."""
+        dll_by_name = {ch["name"]: ch["sample_count"] for ch in aim_official_dll["channels"]}
+        for name in ("Exhaust Temp", "Water Temp"):
+            assert name in dll_by_name
+            assert name in aim_official_cython.channels
+            assert len(aim_official_cython.channels[name]) == dll_by_name[name]
+        assert "Temperature 1" not in aim_official_cython.channels
+        assert "Temperature 2" not in aim_official_cython.channels
 
     def test_metadata(self, parsed_and_dll):
         """Metadata should match DLL."""

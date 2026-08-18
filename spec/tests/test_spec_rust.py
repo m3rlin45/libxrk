@@ -92,6 +92,18 @@ class TestLAPVsRust:
         assert [lap["start_ms"] for lap in dll_laps] == laps.column("start_time").to_pylist()
         assert [lap["end_ms"] for lap in dll_laps] == laps.column("end_time").to_pylist()
 
+    def test_aim_official_renamed_channels_match_dll(self, aim_official_dll, aim_official_rust):
+        """Last-write-wins channel renames must match the DLL: the Rust
+        backend exposes 'Exhaust Temp'/'Water Temp' (not the original
+        'Temperature 1'/'Temperature 2') with the full data stream."""
+        dll_by_name = {ch["name"]: ch["sample_count"] for ch in aim_official_dll["channels"]}
+        for name in ("Exhaust Temp", "Water Temp"):
+            assert name in dll_by_name
+            assert name in aim_official_rust.channels
+            assert len(aim_official_rust.channels[name]) == dll_by_name[name]
+        assert "Temperature 1" not in aim_official_rust.channels
+        assert "Temperature 2" not in aim_official_rust.channels
+
 
 class TestGPSVsRust:
     """GPS record counts must match the spec's GPS payload count."""

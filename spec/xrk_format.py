@@ -808,6 +808,18 @@ def _merge_cnf_result(sub, result):
     for idx, ch in sub.channels.items():
         if idx not in result.channels:
             _register_chs(ch, result)
+        else:
+            # A later CNF re-definition reflects the logger's current
+            # configuration: the last write wins on names. The AIM official
+            # sample renames "Temperature 1" -> "Exhaust Temp" in its final
+            # CNF, and the official DLL exposes the new name carrying the
+            # full data stream. Other CHS fields are assumed stable across
+            # re-definitions. Both backends implement the same rule.
+            existing = result.channels[idx]
+            existing.short_name = ch.short_name
+            existing.long_name = ch.long_name
+            existing.name = ch.name
+            existing.short_name_str = ch.short_name_str
     for idx, grp in sub.groups.items():
         if idx not in result.groups:
             _register_grp(grp, result)
