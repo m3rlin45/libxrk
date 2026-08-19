@@ -184,7 +184,7 @@ You can test the library in a WebAssembly environment using Pyodide.
 This requires Node.js to be installed.
 
 ```bash
-# Build and run tests in Pyodide 0.29.x (Python 3.13, requires pyenv)
+# Build and run tests in Pyodide (Python 3.14)
 just pyodide-test
 ```
 
