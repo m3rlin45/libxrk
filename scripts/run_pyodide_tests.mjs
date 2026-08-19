@@ -1,9 +1,10 @@
 /**
  * Run libxrk tests in Pyodide (WebAssembly) environment.
  *
- * Usage: node scripts/run_pyodide_tests.mjs [--dist-dir=./dist] [--pyodide-version=0.29]
+ * Usage: node scripts/run_pyodide_tests.mjs [--dist-dir=./dist] [--backend=rust]
  */
 
+import { loadPyodide } from "pyodide";
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
@@ -11,6 +12,9 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
 const pyodideTestsDir = path.join(__dirname, "pyodide_tests");
+
+// Wheel ABI tag for the supported runtime (PEP 783, Python 3.14).
+const ABI_TAG = "pyemscripten_2026";
 
 /**
  * Recursively copy a directory to the Pyodide virtual filesystem.
@@ -41,23 +45,11 @@ function copyDirToFs(pyodide, srcDir, dstDir) {
   }
 }
 
-// Pyodide runtime version -> wheel ABI tag. One entry per supported runtime.
-const ABI_TAG = {
-  "0.29": "pyodide_2025",     // pre-PEP-783 tag, GitHub Releases only
-  "314": "pyemscripten_2026", // PEP 783 tag (Python 3.14), published to PyPI
-};
-
-// "0.29.3" -> "0.29", "314.0.4" -> "314". Keys ABI_TAG and the npm package dir.
-function runtimeSeries(version) {
-  return version.startsWith("314") ? "314" : version.substring(0, 4);
-}
-
 /**
  * Find the Pyodide-compatible wheel file in the dist directory.
  * @param {string} distDir - Directory containing wheel files
- * @param {string} pyodideVersion - Pyodide version (e.g., "0.29")
  */
-function findWheel(distDir, pyodideVersion) {
+function findWheel(distDir) {
   if (!fs.existsSync(distDir)) {
     throw new Error(`Dist directory not found: ${distDir}`);
   }
@@ -67,26 +59,15 @@ function findWheel(distDir, pyodideVersion) {
     throw new Error(`No wheel files found in ${distDir}`);
   }
 
-  // Determine ABI tag based on version
-  const abiTag = ABI_TAG[runtimeSeries(pyodideVersion)] ?? "pyodide_2025";
-
-  // Find wheel matching the ABI tag
-  const matchingWheel = wheels.find((w) => w.includes(abiTag));
+  const matchingWheel = wheels.find((w) => w.includes(ABI_TAG));
   if (matchingWheel) {
     return path.join(distDir, matchingWheel);
   }
 
-  // Fallback: try any pyodide wheel
-  const pyodideWheel = wheels.find((w) => w.includes("pyodide"));
-  if (pyodideWheel) {
-    console.log(`Warning: No wheel found with ABI tag ${abiTag}, using ${pyodideWheel}`);
-    return path.join(distDir, pyodideWheel);
-  }
-
-  // Fallback: try emscripten wheel
+  // Fallback: try any emscripten wheel
   const emscriptenWheel = wheels.find((w) => w.includes("emscripten"));
   if (emscriptenWheel) {
-    console.log(`Warning: No Pyodide wheel found, using ${emscriptenWheel}`);
+    console.log(`Warning: No wheel found with ABI tag ${ABI_TAG}, using ${emscriptenWheel}`);
     return path.join(distDir, emscriptenWheel);
   }
 
@@ -99,15 +80,12 @@ function findWheel(distDir, pyodideVersion) {
 function parseArgs() {
   const args = {
     distDir: path.join(projectRoot, "dist"),
-    pyodideVersion: "0.29",
     backend: "",
   };
 
   for (const arg of process.argv.slice(2)) {
     if (arg.startsWith("--dist-dir=")) {
       args.distDir = arg.split("=")[1];
-    } else if (arg.startsWith("--pyodide-version=")) {
-      args.pyodideVersion = arg.split("=")[1];
     } else if (arg.startsWith("--backend=")) {
       args.backend = arg.split("=")[1];
     }
@@ -116,28 +94,17 @@ function parseArgs() {
   return args;
 }
 
-/**
- * Dynamically load the appropriate Pyodide module based on version.
- * @param {string} version - Pyodide version (e.g., "0.29")
- */
-async function loadPyodideModule(version) {
-  const mod = await import(`pyodide-${runtimeSeries(version)}`);
-  return mod.loadPyodide;
-}
-
 // Test classes to run. Each gets a FRESH Pyodide instance: the wasm32 heap
 // only grows, and repeatedly parsing the large fixtures fragments it into the
-// 4GB address-space limit if all classes share one interpreter. Pyodide 314
-// needs ~30% more memory than 0.29 for the same work and hits the wall first.
+// 4GB address-space limit if all classes share one interpreter.
 const TEST_CLASSES = ["Test86XRK", "TestSFJXRK", "TestChannelMerge"];
 
 /** Run one test class in its own Pyodide instance. Returns its exit code. */
 async function runClass(args, className) {
-  const loadPyodide = await loadPyodideModule(args.pyodideVersion);
   const pyodide = await loadPyodide();
   await pyodide.loadPackage(["numpy", "pyarrow", "micropip"]);
 
-  const wheelPath = findWheel(args.distDir, args.pyodideVersion);
+  const wheelPath = findWheel(args.distDir);
   const micropip = pyodide.pyimport("micropip");
   await micropip.install(`file://${path.resolve(wheelPath)}`);
   await micropip.install("parameterized");
@@ -165,7 +132,7 @@ run_tests(only=${JSON.stringify(className)})
 
 async function main() {
   const args = parseArgs();
-  console.log(`Pyodide ${args.pyodideVersion}${args.backend ? ` (backend: ${args.backend})` : ""}`);
+  console.log(`Pyodide${args.backend ? ` (backend: ${args.backend})` : ""}`);
 
   let failed = 0;
   for (const className of TEST_CLASSES) {
