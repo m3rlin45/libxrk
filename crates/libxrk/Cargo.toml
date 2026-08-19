@@ -13,6 +13,10 @@ arrow = ["dep:arrow"]
 binrw = { workspace = true }
 flate2 = { workspace = true }
 
+# System-libm resolution for float parity with numpy (see gps/utils.rs).
+[target.'cfg(all(unix, not(target_os = "emscripten")))'.dependencies]
+libc = "0.2"
+
 [dependencies.arrow]
 workspace = true
 optional = true
