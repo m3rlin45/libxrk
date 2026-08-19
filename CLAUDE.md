@@ -75,79 +75,60 @@ Test data: `tests/test_data/` contains real XRK/XRZ files (SFJ and 86 vehicles).
 
 ## Pyodide (WebAssembly) Builds
 
-The library supports running in the browser via Pyodide. Two runtimes:
+The library supports running in the browser via Pyodide. One runtime:
 
 | Version | Python | Emscripten | Rust | ABI Tag | Distribution |
 |---------|--------|------------|------|---------|--------------|
-| Pyodide 0.29.x | 3.13 | 4.0.9 | nightly | `pyodide_2025_0` | GitHub Release |
 | Pyodide 314.x | 3.14 | 5.0.3 | 1.93.0 (stable) | `pyemscripten_2026_0` | **PyPI** |
 
 [PEP 783](https://peps.python.org/pep-0783/) defines the `pyemscripten_*`
 platform tag, which PyPI accepts. Only runtimes that set
-`PYEMSCRIPTEN_PLATFORM_VERSION` can consume such a wheel:
+`PYEMSCRIPTEN_PLATFORM_VERSION` can consume such a wheel; Pyodide 314 reports
+`2026_0` and installs the PyPI wheel.
 
-* **314** reports `2026_0` and installs the PyPI wheel.
-* **0.29** reports nothing — it predates the PEP and *rejects* a
-  `pyemscripten_*` wheel with "Wheel was built with Emscripten
-  vpyemscripten.2025.0 but Pyodide was built with Emscripten v4.0.9". Since
-  `pyodide-build` >= 0.35 emits the new tag by default, the 0.29 build sets
-  `USE_LEGACY_PLATFORM=1` to keep `pyodide_2025_0`. Do not remove that.
+Older runtimes were dropped: 0.27.x (Python 3.12, `pyodide_2024_0`) and 0.29.x
+(Python 3.13, `pyodide_2025_0`, shipped via GitHub Releases) — no remaining
+consumer; the only downstream, motorsports_data_notebook, now installs from
+PyPI.
 
-Pyodide 0.27.x (Python 3.12, `pyodide_2024_0`) was dropped: no known consumer,
-and PEP 783 starts at the 2025 ABI.
-
-The 314 build differs from 0.29 in ways the xbuildenv dictates — query them with
-`pyodide config get rust_toolchain` / `rustflags`:
-
-* **stable** Rust, not nightly, and no `build-std`.
-* Plain `emcc`, **not** `scripts/emcc-no-wasm-exceptions.sh`: that shim strips
-  `-fwasm-exceptions`, which Emscripten 5.0.3 requires.
-* No `wasm-opt` wrapper — that exists for Emscripten 3.1.58's binaryen.
+The build follows what the xbuildenv dictates — query it with
+`pyodide config get rust_toolchain` / `rustflags` / `emscripten_version`:
+stable Rust, plain `emcc`, and the reported `RUSTFLAGS`.
 
 Note `rustup` treats a pinned version like `1.93.0` as its own toolchain: the
 wasm target must be added *for that toolchain by name*, even if `stable` is
 currently the same version.
 
 **`pyodide-build` version is independent of the Pyodide runtime version.** It is
-a build tool: one current version (pinned to `0.32.0` in `uv.lock`, the justfile
-and `PYODIDE_BUILD_VERSION` in `.github/workflows/pyodide.yml`) builds for every
-runtime, and the runtime is chosen by the argument to `pyodide xbuildenv install`.
+a build tool: one current version (pinned to `0.39.0` in the justfile and
+`PYODIDE_BUILD_VERSION` in `.github/workflows/pyodide.yml`) builds for every
+runtime, and the runtime is chosen by the argument to `pyodide xbuildenv
+install`.
 
 Do not pin `pyodide-build` to the runtime version. Doing so previously broke all
 Pyodide builds: `pyodide-build` 0.27.3/0.29.3 hardcode a cross-build-environment
 metadata URL that upstream has since removed, so `xbuildenv install` fails with a
-404. The *host Python* still has to match the runtime (the 0.29.x xbuildenv
-refuses to install under Python 3.12), which is why the 0.29 recipes use pyenv.
+404. The *host Python* still has to match the runtime — `just emsdk-setup`
+creates `build/venv-314` with Python 3.14 via uv for exactly that.
 
-### Building (requires Python 3.13 via pyenv)
+### Building
 
 ```bash
-just emsdk-setup      # Install Emscripten SDK 4.0.9 (first time only)
-just pyodide-setup    # Install Pyodide npm package (first time only)
-just pyodide-build    # Build the Pyodide wheel
+just emsdk-setup      # Install the toolchain: Python 3.14 venv, xbuildenv, Emscripten SDK (first time only)
+just pyodide-setup    # Install Pyodide npm package for Node-based tests (first time only)
+just pyodide-build    # Build the PyPI-publishable Pyodide wheel
 just pyodide-test     # Build and run tests in Pyodide
 just build-all        # Build CPython wheel, sdist, and the Pyodide wheel
 ```
 
-```bash
-just pyodide-build-314   # Build the PyPI-publishable wheel
-just pyodide-test-314    # Build and test it
-```
-
-Pyodide test scripts are in `scripts/run_pyodide_tests*.mjs`. They take
-`--pyodide-version=` (default `0.29`); `ABI_TAG` in each script maps a runtime
-version to the wheel ABI tag to look for.
+Pyodide test scripts are in `scripts/run_pyodide_tests*.mjs`; they take
+`--dist-dir=` and `--backend=` (empty for Cython, `rust` for the Rust backend).
 
 **Each test class runs in a fresh Pyodide instance.** The wasm32 heap only ever
 grows and the address space is capped at 4GB. One `aim_xrk()` on the 86 fixture
 (41.8MB, 100 channels, 7.7M rows) peaks around 190MB, and `Test86XRK` parses it
-~30 times; sharing one interpreter across classes ratchets the heap to 3.8GB on
-314 (which needs ~30% more than 0.29) and dies with `MemoryError`.
-
-`scripts/emcc-no-wasm-exceptions.sh`, `scripts/wasm-opt-wrapper.sh` and the
-`build-std` setting in `.cargo/config.toml` were all added for Emscripten 3.1.58
-(Pyodide 0.27) but are still applied to the 0.29 build. Whether 0.29 still needs
-them is untested — check before removing.
+~30 times; sharing one interpreter across classes ratchets the heap to 3.8GB
+and dies with `MemoryError`.
 
 ## Cython Rebuild
 
