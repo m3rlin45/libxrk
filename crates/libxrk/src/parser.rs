@@ -334,23 +334,16 @@ impl ParserState {
     fn register_chs(&mut self, chs: &ChsPayload) {
         let idx = chs.index as usize;
 
-        // Check for duplicate CHS with different names (D)
-        if let Some(existing) = self.channels.get(&chs.index) {
-            if existing.chs.short_name() != chs.short_name()
-                || existing.chs.long_name() != chs.long_name()
-            {
-                eprintln!(
-                    "Channel name mismatch at index {}: '{}'/'{}' vs '{}'/'{}'. \
-                     Please report at https://github.com/m3rlin45/libxrk/issues",
-                    chs.index,
-                    existing.chs.short_name(),
-                    existing.chs.long_name(),
-                    chs.short_name(),
-                    chs.long_name()
-                );
-                // Skip registration (matches Cython error-recovery behavior)
-                return;
-            }
+        // A later re-definition of an existing index reflects the logger's
+        // current configuration: the last write wins on names. The AIM
+        // official sample renames "Temperature 1" -> "Exhaust Temp" in its
+        // final CNF, and the official DLL exposes the new name carrying
+        // the full data stream. Other CHS fields and the accumulator
+        // layout are assumed stable across re-definitions. Matches the
+        // spec's _merge_cnf_result and the Cython backend.
+        if let Some(existing) = self.channels.get_mut(&chs.index) {
+            existing.chs.short_name_raw = chs.short_name_raw;
+            existing.chs.long_name_raw = chs.long_name_raw;
         }
 
         // Warn for unknown unit types (I)
@@ -867,9 +860,15 @@ fn handle_header_message(msg: &HeaderMessage, state: &mut ParserState) {
         let mut sub_state = ParserState::new();
         scan_stream(&msg.payload, &mut sub_state, None);
 
-        // Merge CHS and GRP from sub-parse
+        // Merge CHS and GRP from sub-parse. A later CNF re-definition wins
+        // on names (matching the AIM DLL, which exposes the renamed channel
+        // carrying the full data stream); other fields and the accumulator
+        // layout stay as first registered.
         for (idx, ch_info) in &sub_state.channels {
-            if !state.channels.contains_key(idx) {
+            if let Some(existing) = state.channels.get_mut(idx) {
+                existing.chs.short_name_raw = ch_info.chs.short_name_raw;
+                existing.chs.long_name_raw = ch_info.chs.long_name_raw;
+            } else {
                 state.register_chs(&ch_info.chs);
             }
         }
@@ -2207,8 +2206,10 @@ mod tests {
     }
 
     #[test]
-    fn test_register_chs_duplicate_different_name_skips() {
-        // Re-registering with a different name at the same index warns and skips
+    fn test_register_chs_redefinition_last_name_wins() {
+        // A later re-definition at the same index wins on names (matching
+        // the AIM DLL, which exposes the renamed channel with the full
+        // data stream); the data itself is unaffected.
         let chs1 = make_chs_bytes(0, "RPM", "Engine RPM", 0, 4, 15, 0);
         let chs2 = make_chs_bytes(0, "SPD", "Speed", 0, 4, 16, 0);
         let f1 = make_header_frame("CHS", 0, &chs1);
@@ -2216,8 +2217,8 @@ mod tests {
         let s_msg = make_s_message(1000, 0, &5000i32.to_le_bytes());
         let stream = build_xrk_stream(&[f1, f2], &[s_msg]);
         let result = parse_xrk(&stream, None).unwrap();
-        // The first registration should stick
-        assert_eq!(result.channels[&0].chs.long_name(), "Engine RPM");
+        assert_eq!(result.channels[&0].chs.long_name(), "Speed");
+        assert!(result.channel_data.contains_key(&0));
     }
 
     // ── V-unit conversion ──────────────────────────────────────────────

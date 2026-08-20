@@ -234,6 +234,21 @@ Both backends implement this convention; the reference mapping is
 `ParseResult.channel_display_names()` in `spec/xrk_format.py`. No duplicate is
 ever collapsed or dropped.
 
+### CNF re-definitions (channel renames)
+
+A file may carry several CNF configuration blocks, and a later CNF may
+re-define an existing channel index under a **new name**: the AIM official
+sample renames index 11 `Temperature 1` → `Exhaust Temp` and index 12
+`Temperature 2` → `Water Temp 2` in its final CNFs. The official DLL applies
+last-write-wins: it exposes only the new names, carrying the channel's full
+data stream (verified via the Wine harness — `Exhaust Temp` / `Water Temp`
+with all 11,971 samples).
+
+The spec (`_merge_cnf_result`) and both backends implement the same rule: a
+re-definition refreshes the channel's names; the data stream is continuous
+across the rename, and other CHS fields plus the accumulator layout are
+assumed stable across re-definitions.
+
 ## 9. Unit Type Map
 
 The CHS `unit_type_byte` (offset [12], lower 7 bits) maps to display units and
