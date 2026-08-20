@@ -561,10 +561,17 @@ def _decode_sequence(s, progress=None):
                                     gc_data[3][m.content.index].Mms = struct.unpack_from(
                                         '<I', m.content.unknown, 64)[0] // 1000
                                 else:
-                                    if channels[m.content.index].short_name != m.content.short_name:
-                                        raise ValueError("Channel short_name mismatch: %s vs %s" % (channels[m.content.index].short_name, m.content.short_name))
-                                    if channels[m.content.index].long_name != m.content.long_name:
-                                        raise ValueError("Channel long_name mismatch: %s vs %s" % (channels[m.content.index].long_name, m.content.long_name))
+                                    # A later CNF re-definition reflects the logger's
+                                    # current configuration: the last write wins on
+                                    # names. The AIM official sample renames
+                                    # "Temperature 1" -> "Exhaust Temp" in its final
+                                    # CNF, and the official DLL exposes the new name
+                                    # carrying the full data stream. Other CHS fields
+                                    # and the accumulator layout are assumed stable
+                                    # across re-definitions. Matches the spec's
+                                    # _merge_cnf_result and the Rust backend.
+                                    channels[m.content.index].short_name = m.content.short_name
+                                    channels[m.content.index].long_name = m.content.long_name
                             for m in data.get(_tokdec('GRP'), []):
                                 groups += [None] * (m.content.index - len(groups) + 1)
                                 groups[m.content.index] = m.content

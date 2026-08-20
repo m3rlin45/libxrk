@@ -83,6 +83,19 @@ class TestAIMOfficialXRK(unittest.TestCase):
             f"Last lap end_time ({last_end_time}) is too low - GPS-based detection may have failed",
         )
 
+    def test_cnf_renamed_channels_use_final_names(self):
+        """Last-write-wins channel renames: the file's final CNFs rename
+        'Temperature 1' -> 'Exhaust Temp' and 'Temperature 2' ->
+        'Water Temp 2' (null-terminated to 'Water Temp'). Both backends
+        expose the new names with the full data stream, matching the
+        official AIM DLL."""
+        log = aim_xrk(str(AIM_OFFICIAL_XRK_FILE), progress=None)
+        for name in ("Exhaust Temp", "Water Temp"):
+            self.assertIn(name, log.channels)
+            self.assertGreater(len(log.channels[name]), 10000)
+        self.assertNotIn("Temperature 1", log.channels)
+        self.assertNotIn("Temperature 2", log.channels)
+
     def test_lap_durations_are_reasonable(self):
         """Test that all lap durations are reasonable (not negative or zero)."""
         log = aim_xrk(str(AIM_OFFICIAL_XRK_FILE), progress=None)
