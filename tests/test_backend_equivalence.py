@@ -25,14 +25,7 @@ flip visibly when the underlying divergence is fixed):
    Position/Velocity Accuracy) are pure arithmetic + sqrt and are
    required to be bit-exact on every platform.
 
-2. Duplicate CHS long_names (issue68/issue84 fixtures define e.g.
-   RotaryMiddle_led three times at different channel indices).  Cython's
-   ``{ch.long_name: ch}`` dict deterministically keeps the *last* CHS index;
-   the Rust backend builds its channels dict while iterating a HashMap, so
-   which CHS index wins is nondeterministic per run (observed: different
-   source_channel_id, sample counts, and even Arrow dtype across runs).
-
-3. aim_official/test.xrk carries version-2 LAP messages with a 32-byte
+2. aim_official/test.xrk carries version-2 LAP messages with a 32-byte
    payload.  Cython's ``struct.unpack`` requires exactly 20 bytes and drops
    all 33 LAP messages (losing the LAP-derived time_offset candidate);
    Rust parses the first 20 bytes as if v1, misreading a duration-like
@@ -43,7 +36,7 @@ flip visibly when the underlying divergence is fixed):
    between backends.  Values are unaffected.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -75,12 +68,8 @@ _GPS_FLOAT_TOLERANCES = {
 @dataclass(frozen=True)
 class Fixture:
     path: Path
-    # Channel long_names defined by more than one CHS entry in this file.
-    # Cython deterministically exposes the last CHS index with that name;
-    # Rust exposes a nondeterministic one (see module docstring, item 2).
-    duplicate_name_channels: frozenset = field(default_factory=frozenset)
     # True when all timecodes/lap times differ by one constant offset
-    # between backends (module docstring, item 3).
+    # between backends (module docstring, item 2).
     allow_uniform_time_shift: bool = False
 
 
@@ -97,18 +86,8 @@ FIXTURES = [
         allow_uniform_time_shift=True,
     ),
     Fixture(TEST_DATA_DIR / "issue49/badGPSdata.xrk"),
-    Fixture(
-        TEST_DATA_DIR / "issue68/CMD_KK-SII_Tsukuba_Car_Generic testing_a_0101.xrz",
-        duplicate_name_channels=frozenset(
-            {"RotaryLeft_led", "RotaryMiddle_led", "RotaryRight_led", "Right_Btn_4_led"}
-        ),
-    ),
-    Fixture(
-        TEST_DATA_DIR / "issue84/CMD_KK-SII_Tsukuba_Car_Qualifying testing_a_0159.xrz",
-        duplicate_name_channels=frozenset(
-            {"RotaryLeft_led", "RotaryMiddle_led", "RotaryRight_led", "Right_Btn_4_led"}
-        ),
-    ),
+    Fixture(TEST_DATA_DIR / "issue68/CMD_KK-SII_Tsukuba_Car_Generic testing_a_0101.xrz"),
+    Fixture(TEST_DATA_DIR / "issue84/CMD_KK-SII_Tsukuba_Car_Qualifying testing_a_0159.xrz"),
 ]
 
 
@@ -203,8 +182,6 @@ def test_backends_equivalent(fixture: Fixture) -> None:
         assert _compute_shift(cy, rs) == 0, "unexpected global time shift"
 
     for name in sorted(cy_names & rs_names):
-        if name in fixture.duplicate_name_channels:
-            continue  # documented discrepancy 2 (see module docstring)
         _compare_channel(name, cy.channels[name], rs.channels[name], shift, errors)
 
     # Laps: exact, modulo the documented uniform shift
@@ -240,7 +217,7 @@ def test_backends_equivalent(fixture: Fixture) -> None:
     strict=True,
     reason="LAP v2 (32-byte payload): Cython drops all LAP messages while Rust "
     "misparses the first 20 bytes as v1, so time_offset differs by 18 ms on "
-    "aim_official/test.xrk (see module docstring, item 3)",
+    "aim_official/test.xrk (see module docstring, item 2)",
 )
 def test_aim_official_absolute_times_match() -> None:
     cy, rs = _load_both(TEST_DATA_DIR / "aim_official/test.xrk")
@@ -250,34 +227,46 @@ def test_aim_official_absolute_times_match() -> None:
     np.testing.assert_array_equal(cy_tc, rs_tc)
 
 
-@pytest.mark.xfail(
-    strict=False,  # Rust picks a random CHS index per run; may match by chance
-    reason="Duplicate CHS long_names: Rust exposes a nondeterministic CHS index "
-    "per run where Cython deterministically keeps the last (module docstring, item 2)",
-)
 @pytest.mark.parametrize(
-    "path, dup_channels",
+    "path",
     [
-        (
-            TEST_DATA_DIR / "issue68/CMD_KK-SII_Tsukuba_Car_Generic testing_a_0101.xrz",
-            ("RotaryLeft_led", "RotaryMiddle_led", "RotaryRight_led", "Right_Btn_4_led"),
-        ),
-        (
-            TEST_DATA_DIR / "issue84/CMD_KK-SII_Tsukuba_Car_Qualifying testing_a_0159.xrz",
-            ("RotaryLeft_led", "RotaryMiddle_led", "RotaryRight_led", "Right_Btn_4_led"),
-        ),
+        TEST_DATA_DIR / "issue68/CMD_KK-SII_Tsukuba_Car_Generic testing_a_0101.xrz",
+        TEST_DATA_DIR / "issue84/CMD_KK-SII_Tsukuba_Car_Qualifying testing_a_0159.xrz",
     ],
     ids=["issue68", "issue84"],
 )
-def test_duplicate_name_channels_match(path: Path, dup_channels: tuple) -> None:
+def test_duplicate_name_channels_all_exposed(path: Path) -> None:
+    """Duplicated CHS long_names are distinct channels (own source_channel_id
+    and data stream); every one must be exposed, with later occurrences
+    renamed "<name> dup <k>" per the AIM DLL convention (the DLL exposes
+    "Right_Btn_4_led dup 2" on the issue84 fixture), identically in both
+    backends."""
     from libxrk.base import ChannelMetadata
 
+    # Both fixtures define these channels 3x/3x/3x/2x with ascending
+    # source_channel_ids; index order fixes the dup numbering.
+    expected = {
+        "RotaryLeft_led": 1003,
+        "RotaryLeft_led dup 2": 1004,
+        "RotaryLeft_led dup 3": 1005,
+        "RotaryMiddle_led": 1006,
+        "RotaryMiddle_led dup 2": 1007,
+        "RotaryMiddle_led dup 3": 1008,
+        "RotaryRight_led": 1009,
+        "RotaryRight_led dup 2": 1010,
+        "RotaryRight_led dup 3": 1011,
+        "Right_Btn_4_led": 1020,
+        "Right_Btn_4_led dup 2": 1270,
+    }
     cy, rs = _load_both(path)
-    for name in dup_channels:
+    for name, src_id in expected.items():
+        assert name in cy.channels, f"cython missing {name!r}"
+        assert name in rs.channels, f"rust missing {name!r}"
         cy_meta = ChannelMetadata.from_channel_table(cy.channels[name])
         rs_meta = ChannelMetadata.from_channel_table(rs.channels[name])
-        assert cy_meta.source_channel_id == rs_meta.source_channel_id, name
-        assert len(cy.channels[name]) == len(rs.channels[name]), name
+        assert cy_meta.source_channel_id == src_id, name
+        assert rs_meta.source_channel_id == src_id, name
+        assert len(cy.channels[name]) == len(rs.channels[name]) > 0, name
 
 
 @pytest.mark.xfail(

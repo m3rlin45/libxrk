@@ -100,10 +100,26 @@ pub fn read_xrk_with_progress(
         .filter_map(|ch| ch.timecodes.last().copied())
         .max();
 
+    // Build metadata while channel_data is still populated (calibration
+    // attribution only considers channels that carry data, like Cython).
+    let metadata = metadata::extract_metadata(&result);
+
     // Move channel_data out of result (avoids cloning every channel)
     let channel_data = std::mem::take(&mut result.channel_data);
 
-    // Build Channel structs from channel_data + channel info
+    // Build Channel structs from channel_data + channel info, in ascending
+    // channel-index order. Duplicate long_names are exposed with the AIM
+    // DLL's "<name> dup <k>" convention (parser::channel_display_names);
+    // when the file carries GPS data, the 12 synthesized GPS channel names
+    // are reserved so CHS channels colliding with them get the suffix.
+    let gps_reserved: Vec<&str> = if result.gps_data.is_empty() {
+        Vec::new()
+    } else {
+        gps::GPS_CHANNEL_DEFS.iter().map(|d| d.name).collect()
+    };
+    let display_names = parser::channel_display_names(&result.channels, &gps_reserved);
+    let mut channel_data: Vec<(u16, ChannelData)> = channel_data.into_iter().collect();
+    channel_data.sort_by_key(|(idx, _)| *idx);
     let channels: Vec<Channel> = channel_data
         .into_iter()
         .filter_map(|(ch_idx, ch_data)| {
@@ -116,7 +132,10 @@ pub fn read_xrk_with_progress(
             });
             Some(Channel {
                 index: ch_idx,
-                name: ch_info.chs.long_name(),
+                name: display_names
+                    .get(&ch_idx)
+                    .cloned()
+                    .unwrap_or_else(|| ch_info.chs.long_name()),
                 group: group_name,
                 timecodes: ch_data.timecodes,
                 values: ch_data.values,
@@ -168,9 +187,6 @@ pub fn read_xrk_with_progress(
             gps::timing::apply_corrections(&mut gps.timecodes, &corrections);
         }
     }
-
-    // Build metadata
-    let metadata = metadata::extract_metadata(&result);
 
     // Build laps — GPS timing fix was applied above
     let mut processed_laps = parser::get_processed_laps(&result)?;

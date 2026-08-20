@@ -241,20 +241,56 @@ pub fn extract_metadata(result: &ParseResult) -> Metadata {
     // Calibrations (CAL)
     let mut calibrations = Vec::new();
     if let Some(msg_list) = msgs.get(&tokens::cal()) {
-        // Build map from (cal_val_1, cal_val_2) -> channel name via CHS fields
+        // Build map from (cal_val_1, cal_val_2) -> channel display name via
+        // CHS fields. This replicates the Cython backend's semantics:
+        //   - only channels that actually carry data participate
+        //     (Cython builds the map from its data-bearing channels dict);
+        //   - channels are visited in ascending index order with duplicate
+        //     long_names disambiguated to "<name> dup <k>" (see
+        //     parser::channel_display_names), so names are unique and on a
+        //     cal-value collision the later index wins;
+        //   - keys compare like Python floats: -0.0 == 0.0, NaN never matches.
+        let gps_reserved: Vec<&str> = if result.gps_data.is_empty() {
+            Vec::new()
+        } else {
+            crate::gps::GPS_CHANNEL_DEFS
+                .iter()
+                .map(|d| d.name)
+                .collect()
+        };
+        let display_names = crate::parser::channel_display_names(&result.channels, &gps_reserved);
+        let mut data_indices: Vec<u16> = result
+            .channels
+            .keys()
+            .copied()
+            .filter(|idx| result.channel_data.contains_key(idx))
+            .collect();
+        data_indices.sort_unstable();
+
+        let cal_key = |a: f32, b: f32| -> Option<(u32, u32)> {
+            if a.is_nan() || b.is_nan() {
+                return None; // Python dicts never match a distinct NaN key
+            }
+            let norm = |v: f32| (if v == 0.0 { 0.0f32 } else { v }).to_bits();
+            Some((norm(a), norm(b)))
+        };
+
         let mut cal_to_channel: HashMap<(u32, u32), String> = HashMap::new();
-        for ch_info in result.channels.values() {
-            let key = (
-                ch_info.chs.cal_value_1.to_bits(),
-                ch_info.chs.cal_value_2.to_bits(),
-            );
-            cal_to_channel.insert(key, ch_info.chs.long_name());
+        for idx in data_indices {
+            let chs = &result.channels[&idx].chs;
+            if let Some(key) = cal_key(chs.cal_value_1, chs.cal_value_2) {
+                let name = display_names
+                    .get(&idx)
+                    .cloned()
+                    .unwrap_or_else(|| chs.long_name());
+                cal_to_channel.insert(key, name);
+            }
         }
 
         for msg in msg_list {
             if let Payload::Cal(cal) = messages::dispatch_payload(msg) {
-                let key = (cal.raw_1.to_bits(), cal.raw_2.to_bits());
-                let channel = cal_to_channel.get(&key).cloned();
+                let channel =
+                    cal_key(cal.raw_1, cal.raw_2).and_then(|key| cal_to_channel.get(&key).cloned());
                 calibrations.push(Calibration {
                     cal_type: cal.cal_type,
                     raw_1: cal.raw_1,

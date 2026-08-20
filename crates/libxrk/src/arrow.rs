@@ -136,13 +136,25 @@ pub fn build_channel_batch(
 pub fn build_all_channel_batches(
     channel_data: HashMap<u16, ChannelData>,
     channels: &HashMap<u16, ChannelInfo>,
+    reserved_names: &[&str],
     format_f32: impl Fn(f32) -> String,
 ) -> arrow::error::Result<Vec<(String, RecordBatch)>> {
     let mut batches = Vec::new();
 
-    for (ch_idx, ch_data) in channel_data.into_iter() {
+    // Duplicate long_names are distinct channels; expose every one, with
+    // later occurrences renamed "<name> dup <k>" per the AIM DLL
+    // convention (see parser::channel_display_names). Iterate in ascending
+    // channel-index order for deterministic output.
+    let display_names = crate::parser::channel_display_names(channels, reserved_names);
+    let mut entries: Vec<(u16, ChannelData)> = channel_data.into_iter().collect();
+    entries.sort_by_key(|(idx, _)| *idx);
+
+    for (ch_idx, ch_data) in entries {
         if let Some(ch_info) = channels.get(&ch_idx) {
-            let name = ch_info.chs.long_name();
+            let name = display_names
+                .get(&ch_idx)
+                .cloned()
+                .unwrap_or_else(|| ch_info.chs.long_name());
             let metadata = ChannelMetadata::from_channel_info(ch_info).to_hashmap(&format_f32);
             let batch = build_channel_batch(&name, ch_data, metadata)?;
             batches.push((name, batch));
