@@ -90,7 +90,7 @@ class TestGPSRoundTrip:
 
 
 # ---------------------------------------------------------------------------
-# LAP round-trip (20 bytes)
+# LAP round-trip (20 bytes for v0/v1, 32 bytes for v2)
 # ---------------------------------------------------------------------------
 
 
@@ -105,6 +105,20 @@ class TestLAPRoundTrip:
             raw = msg.raw_payload
             assert len(raw) == 20
             parsed = LAPPayload.parse(raw)
+            rebuilt = LAPPayload.build(parsed)
+            assert rebuilt == raw
+
+    def test_lap_v2_round_trip(self, aim_official_parsed):
+        """Every v2 (32-byte) LAP payload should round-trip byte-identically,
+        and the derived end_time must come from offset [28:32]."""
+        lap_msgs = aim_official_parsed.messages_by_token("LAP")
+        assert len(lap_msgs) > 0
+        for msg in lap_msgs:
+            raw = msg.raw_payload
+            assert len(raw) == 32
+            assert msg.version == 2
+            parsed = LAPPayload.parse(raw)
+            assert parsed.end_time == int.from_bytes(raw[28:32], "little")
             rebuilt = LAPPayload.build(parsed)
             assert rebuilt == raw
 

@@ -79,11 +79,18 @@ class TestLAPVsRust:
         assert len(_unique_seg0_laps(file_86_parsed)) == len(file_86_rust.laps)
 
     def test_aim_official_lap_count(self, aim_official_parsed, aim_official_rust):
-        # aim_official carries v2 (32-byte) LAP payloads whose first-20-byte
-        # parse yields degenerate laps; the Rust backend invalidates them and
-        # falls back to GPS-based detection, which finds the same 11 laps as
-        # the file's segment-0 LAP records describe.
+        # aim_official carries v2 (32-byte) LAP payloads; both the spec and
+        # the backends read the absolute end time at [28:32].
         assert len(_unique_seg0_laps(aim_official_parsed)) == len(aim_official_rust.laps)
+
+    def test_aim_official_v2_lap_times_match_dll(self, aim_official_dll, aim_official_rust):
+        """The Rust backend's v2 LAP laps must reproduce the official DLL's
+        lap table exactly, to the millisecond."""
+        dll_laps = aim_official_dll["laps"]
+        laps = aim_official_rust.laps
+        assert len(dll_laps) == laps.num_rows
+        assert [lap["start_ms"] for lap in dll_laps] == laps.column("start_time").to_pylist()
+        assert [lap["end_ms"] for lap in dll_laps] == laps.column("end_time").to_pylist()
 
 
 class TestGPSVsRust:

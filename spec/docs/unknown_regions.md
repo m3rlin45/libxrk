@@ -192,14 +192,9 @@ that file (33 messages, 3 segments × 11 laps):
   `[28:32] - duration` of the first LAP message equals the minimum data
   timecode of the file (verified: 46957 − 46946 = 11 = min data tc),
   i.e. this field plays the role that [16:20] plays in v1.
-
-Neither backend implements v2 yet: Cython's exact-20-byte
-`struct.unpack` drops v2 LAP messages entirely (laps then come from
-GPS-based detection); the Rust backend and this spec parse the first
-20 bytes as if v1, misreading [16:20] as end time. This is the source
-of the constant 18 ms time_offset difference between the backends on
-the aim_official fixture — see tests/test_backend_equivalence.py.
-A proper fix must land here (spec) first, per the project rules.
+  **Status**: decoded; implemented by the spec (`LAPPayload.end_time`
+  Computed field) and by both backends, discriminated by payload length.
+  Round-trip coverage: `TestLAPRoundTrip.test_lap_v2_round_trip`.
 
 ## ODO (Odometer, n×64 bytes)
 

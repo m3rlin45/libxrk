@@ -279,6 +279,14 @@ def issue84_dll_gps():
 
 
 @pytest.fixture(scope="session")
+def aim_official_dll():
+    """Extract aim_official data from the official AIM DLL."""
+    if not _dll_available():
+        pytest.skip("AIM DLL or Wine not available")
+    return _dll_extract(AIM_OFFICIAL_XRK)
+
+
+@pytest.fixture(scope="session")
 def sfj_dll():
     """Extract SFJ data from the official AIM DLL."""
     if not _dll_available():
