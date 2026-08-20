@@ -12,27 +12,36 @@ use std::f64::consts::PI;
 /// Input: ECEF coordinates in meters.
 /// Returns (latitude_deg, longitude_deg, altitude_m).
 pub fn ecef2lla_vermeille2003(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
+    // This mirrors gps.py:ecef2lla_vermeille2003 operation for operation —
+    // the same reciprocal-multiply constants, the same left-to-right
+    // association, and pow for the e**n constants (matching CPython's `**`)
+    // — so the two backends agree to within a very few ulp. Bit-exactness
+    // is deliberately NOT a goal: Rust's f64::cbrt/powf come from the
+    // toolchain's vendored libm while numpy's kernels vary with platform,
+    // glibc version, and CPU SIMD dispatch, so the residual 1-ulp-scale
+    // differences (nanometers in position) are bounded by documented
+    // tolerances in tests/test_backend_equivalence.py instead.
     let a: f64 = 6378137.0;
     let e: f64 = 8.181919084261345e-2;
-    let e2 = e * e;
-    let e4 = e2 * e2;
+    let e2 = e.powf(2.0); // Python `e**2`
+    let e4 = e.powf(4.0); // Python `e**4`
 
-    let p = (x * x + y * y) / (a * a);
-    let q = ((1.0 - e2) / (a * a)) * z * z;
-    let r = (p + q - e4) / 6.0;
-    let s = (e4 / 4.0) * p * q / (r * r * r);
+    let p = (x * x + y * y) * (1.0 / (a * a));
+    let q = (((1.0 - e * e) / (a * a)) * z) * z;
+    let r = (p + q - e4) * (1.0 / 6.0);
+    let s = (((e4 / 4.0) * p) * q) / r.powf(3.0); // numpy `r**3` = pow
     let t = (1.0 + s + (s * (2.0 + s)).sqrt()).cbrt();
     let u = r * (1.0 + t + 1.0 / t);
     let v = (u * u + e4 * q).sqrt();
     let u = u + v; // u += v
-    let w = (e2 / 2.0) * (u - q) / v;
+    let w = ((e2 / 2.0) * (u - q)) / v;
     let k = (u + w * w).sqrt() - w;
-    let d = k * (x * x + y * y).sqrt() / (k + e2);
+    let d = (k * (x * x + y * y).sqrt()) / (k + e2);
     let rt_dd_zz = (d * d + z * z).sqrt();
 
-    let lat = (180.0 / PI) * 2.0 * z.atan2(d + rt_dd_zz);
+    let lat = ((180.0 / PI) * 2.0) * z.atan2(d + rt_dd_zz);
     let lon = (180.0 / PI) * y.atan2(x);
-    let alt = (k + e2 - 1.0) / k * rt_dd_zz;
+    let alt = ((k + e2 - 1.0) / k) * rt_dd_zz;
 
     (lat, lon, alt)
 }

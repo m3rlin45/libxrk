@@ -291,9 +291,12 @@ pub fn decode_gps(
         inline_acc.push((dv / dt_sec[i] / 9.81) as f32);
     }
 
-    // GPS_Yaw_Rate = d(heading)/dt (deg/s) with ±180° wrap handling
-    let mut yaw_rate = Vec::with_capacity(n);
-    yaw_rate.push(0.0f32);
+    // GPS_Yaw_Rate = d(heading)/dt (deg/s) with ±180° wrap handling.
+    // Kept in float64 for the lateral-acceleration product (matching
+    // Cython, which uses the intermediate float64 yaw rate there); the
+    // yaw-rate channel itself is float32.
+    let mut yaw_rate_f64 = Vec::with_capacity(n);
+    yaw_rate_f64.push(0.0f64);
     for i in 0..dt_sec.len() {
         let mut dh = heading_deg[i + 1] - heading_deg[i];
         if dh > 180.0 {
@@ -302,12 +305,13 @@ pub fn decode_gps(
         if dh < -180.0 {
             dh += 360.0;
         }
-        yaw_rate.push((dh / dt_sec[i]) as f32);
+        yaw_rate_f64.push(dh / dt_sec[i]);
     }
+    let yaw_rate: Vec<f32> = yaw_rate_f64.iter().map(|&v| v as f32).collect();
 
     // GPS_LateralAcc = speed × yaw_rate × π/180 / 9.81 (g)
     let lateral_acc: Vec<f32> = (0..n)
-        .map(|i| (speed[i] * yaw_rate[i] as f64 * (PI / 180.0) / 9.81) as f32)
+        .map(|i| (((speed[i] * yaw_rate_f64[i]) * (PI / 180.0)) / 9.81) as f32)
         .collect();
 
     // Float32 channels from NAV-SOL raw fields
