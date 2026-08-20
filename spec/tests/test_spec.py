@@ -1324,17 +1324,6 @@ class TestIssue68SpecVsBackends:
     decode of V1/V2/V3 (c)-message samples — byte-for-byte, every sample.
     """
 
-    def _spec_chs_index_for_cython(self, parsed, name):
-        """Find the spec CHS index that matches what the backend exposes.
-
-        CHS may carry duplicate long_names (e.g. RotaryMiddle_led appears
-        thrice on this fixture). Cython's `channels={ch.long_name: ch}`
-        dict-overwrite keeps the last CHS with that name; Rust follows
-        suit. Mirror that by returning the highest matching CHS index.
-        """
-        candidates = sorted(i for i, ch in parsed.channels.items() if ch.name == name)
-        return candidates[-1] if candidates else None
-
     def _decode_spec_channel(self, parsed, ch_idx, expansion_ch_indices, arrays_cache):
         """Produce the spec's canonical samples for one channel.
 
@@ -1362,22 +1351,19 @@ class TestIssue68SpecVsBackends:
         arrays_cache = TestExhaustiveChannelValues()._build_channel_arrays(parsed)
         # CHS names are not always unique — on issue68, RotaryLeft_led,
         # RotaryMiddle_led and RotaryRight_led each have 3 CHS entries.
-        # Cython (Python dict insertion order) and Rust (HashMap iteration
-        # order) may expose different CHS indices for the same name.
-        # This is a pre-existing cross-backend quirk unrelated to issue #68;
-        # skip duplicate-named CHS channels here.
-        name_counts = {}
-        for ch in parsed.channels.values():
-            name_counts[ch.name] = name_counts.get(ch.name, 0) + 1
-        duplicate_names = {n for n, c in name_counts.items() if c > 1}
+        # Both backends expose every entry, disambiguated per the AIM DLL
+        # "<name> dup <k>" convention; the spec's channel_display_names()
+        # defines the same mapping, so display names identify CHS indices
+        # uniquely — duplicate-named channels are compared like any other.
+        spec_index_by_display_name = {
+            name: idx for idx, name in parsed.channel_display_names().items()
+        }
 
         errors = []
         checked = 0
 
         for name in backend_log.channels:
-            if name in duplicate_names:
-                continue
-            ch_idx = self._spec_chs_index_for_cython(parsed, name)
+            ch_idx = spec_index_by_display_name.get(name)
             if ch_idx is None:
                 # GPS-derived channels are synthesized by the backend
                 # outside CHS; they have no spec equivalent here.
