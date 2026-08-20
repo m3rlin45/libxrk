@@ -689,7 +689,14 @@ def _decode_sequence(s, progress=None):
                             data.sampledata = bytearray()
                         elif tok == _tokdec('LAP'):
                             # cache first time offset for use later
-                            duration, end_time = struct.unpack('4xI8xI', data)
+                            # v0/v1: 20-byte payload, absolute end time at [16:20].
+                            # v2: 32-byte payload, absolute end time at [28:32]
+                            # ([16:20] tracks the duration instead). See
+                            # spec/docs/unknown_regions.md ("LAP version 2").
+                            if len(data) >= 32:
+                                duration, end_time = struct.unpack_from('<4xI20xI', data, 0)
+                            else:
+                                duration, end_time = struct.unpack('<4xI8xI', data)
                             if time_offset is None:
                                 time_offset = end_time - duration
                             last_time = end_time
@@ -1344,7 +1351,12 @@ def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
         has_lap_messages = True
         for m in msg_by_type[_tokdec('LAP')]:
             # 2nd byte is segment #, see M4GT4
-            segment, lap, duration, end_time = struct.unpack('xBHIxxxxxxxxI', m.content)
+            # v2 (32-byte payload) carries the absolute end time at [28:32];
+            # see spec/docs/unknown_regions.md ("LAP version 2").
+            if len(m.content) >= 32:
+                segment, lap, duration, end_time = struct.unpack_from('<xBHI20xI', m.content, 0)
+            else:
+                segment, lap, duration, end_time = struct.unpack('<xBHIxxxxxxxxI', m.content)
             end_time -= time_offset
             if segment:
                 continue

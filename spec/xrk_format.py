@@ -404,15 +404,31 @@ GNFIPayload = Struct(
 )
 
 
-# LAP — Lap Marker (20 bytes)
+# LAP — Lap Marker (20 bytes for version 0/1, 32 bytes for version 2)
 # Reference: aim_xrk.pyx:517-521, 1038-1047
+#
+# Version 2 (observed on the AIM official sample, message version byte = 2)
+# extends the payload to 32 bytes and MOVES the absolute lap end time to
+# [28:32]; the v1 end-time slot [16:20] instead tracks the duration (always
+# a few ms smaller — purpose unknown). The variant is discriminated by
+# payload length. See spec/docs/unknown_regions.md ("LAP version 2").
 LAPPayload = Struct(
     "_pad" / Bytes(1),  # [0]     padding
     "segment" / Int8ul,  # [1]     segment number
     "lap_num" / Int16ul,  # [2:4]   lap number
     "duration" / Int32ul,  # [4:8]   lap duration [ms]
     "_reserved" / Bytes(8),  # [8:16]  reserved
-    "end_time" / Int32ul,  # [16:20] lap end time [ms]
+    "_end_time_v1" / Int32ul,  # [16:20] v1: lap end time [ms]; v2: ~duration
+    # v2 tail (12 bytes): [20:24] zero, [24:28] flags?, [28:32] end time [ms]
+    "_v2_tail" / GreedyBytes,
+    "end_time"
+    / Computed(
+        lambda ctx: (
+            int.from_bytes(ctx._v2_tail[8:12], "little")
+            if len(ctx._v2_tail) >= 12
+            else ctx._end_time_v1
+        )
+    ),
 )
 
 
