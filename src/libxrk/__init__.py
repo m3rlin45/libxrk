@@ -26,6 +26,15 @@ import os as _os
 _backend = _os.environ.get("LIBXRK_BACKEND", "").lower()
 
 if _backend == "rust":
+    # Import the Cython submodule FIRST, then rebind the name. `libxrk.aim_xrk`
+    # is both a submodule and an exported function: whichever module imports
+    # `libxrk.aim_xrk` first makes the import machinery set the submodule as an
+    # attribute of the package, which shadows the function exported here. On the
+    # Cython path the two are the same object, so nothing shows; on the Rust path
+    # `from libxrk import aim_xrk` then yields a module and calling it raises
+    # "TypeError: 'module' object is not callable" — depending on import order,
+    # which makes it look like a random failure.
+    from . import aim_xrk as _aim_xrk_cython_module  # noqa: F401
     from ._aim_xrk_rs import aim_xrk, aim_track_dbg
 else:
     from .aim_xrk import aim_xrk, aim_track_dbg
