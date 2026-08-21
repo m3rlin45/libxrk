@@ -54,6 +54,7 @@ dev = [
     "pyyaml>=6.0",
     "pytest-xdist>=3.8.0",
     "maturin>=1.11.5",
+    "filelock>=3.32.3",
 ]
 
 [tool.setuptools.packages.find]
