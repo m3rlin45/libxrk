@@ -57,6 +57,16 @@ fn read_source_bytes(_py: Python<'_>, source: &Bound<'_, PyAny>) -> PyResult<Vec
     })
 }
 
+/// Bytes between two progress callbacks, overridable without rebuilding through
+/// the `LIBXRK_PROGRESS_INTERVAL` environment variable (same knob as the Cython
+/// backend). Values below the parser's floor are clamped by the parser.
+fn progress_interval() -> usize {
+    std::env::var("LIBXRK_PROGRESS_INTERVAL")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(libxrk::parser::DEFAULT_PROGRESS_INTERVAL)
+}
+
 /// Parse an AIM XRK/XRZ file and return a LogFile.
 #[pyfunction]
 #[pyo3(signature = (fname, progress=None))]
@@ -79,8 +89,12 @@ fn aim_xrk(py: Python<'_>, fname: Py<PyAny>, progress: Option<Py<PyAny>>) -> PyR
         closure
     });
 
-    let mut result = libxrk::parser::parse_xrk(&data, progress_cb.as_ref().map(|cb| cb.as_ref()))
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let mut result = libxrk::parser::parse_xrk_with_interval(
+        &data,
+        progress_cb.as_ref().map(|cb| cb.as_ref()),
+        progress_interval(),
+    )
+    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
     // Compute non-GPS max end time before moving channel_data out
     let non_gps_max_end_time: Option<i64> = result
