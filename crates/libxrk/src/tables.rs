@@ -4,15 +4,21 @@
 
 /// Unit type map: unit_type_byte -> (unit_string, decimal_points).
 /// From aim_xrk.pyx:144-169.
+///
+/// Checked against the official AIM `MatLabXRK` DLL over the whole test
+/// corpus (`get_channel_units`, 253 channel observations). Every entry the
+/// DLL also reports agrees, except unit code 11 — see the test at the bottom
+/// of this file.
 pub fn unit_map(unit_type: u8) -> (&'static str, u8) {
     match unit_type & 0x7F {
         1 => ("%", 2),
         3 => ("g", 2),
         4 => ("deg", 1),
         5 => ("deg/s", 1),
-        6 => ("", 0),
+        6 => ("", 0),   // "number" — not exposed by the AIM DLL on any
+        // corpus file, so no ground truth; left as-is.
         9 => ("Hz", 0),
-        11 => ("", 0),
+        11 => ("#", 0), // "number" — the AIM DLL reports "#", see below.
         12 => ("mm", 0),
         14 => ("bar", 2),
         15 => ("rpm", 0),
@@ -270,6 +276,38 @@ pub fn logger_model_name(model_id: u16) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Unit code 11 is "#", not the empty string.
+    ///
+    /// Both maps carried `11: ('', 0)` with the comment `# number`. The
+    /// comment was right about the meaning and wrong about the string: the
+    /// official AIM DLL reports "#" for these channels.
+    ///
+    /// Measured with `tests/reference_dll` over the whole corpus — every
+    /// channel of every `.xrk`, matched by name between `get_channel_units`
+    /// and the CHS unit byte:
+    ///
+    /// ```text
+    ///  code   libxrk    AIM DLL     observations
+    ///    11      ""         "#"               28
+    ///   139      ""         "#"                8      (11 | calibrated flag)
+    /// ```
+    ///
+    /// Channels seen: StartRec, BrakeSw, ClutchSw, CH, TPMS_ALM_{LF,LR,RF,RR},
+    /// Brake, Clutch, TIRE_ALM, Oil_Temp, Water_Temp, Lateral Grip — counts
+    /// and flags, which is what "number" should be. No corpus channel with
+    /// code 11 was reported as anything but "#".
+    ///
+    /// Codes the DLL never exposes (6, 26, 28, 146, 154, 156) are left
+    /// untouched: no ground truth, so no change.
+    #[test]
+    fn unit_code_11_is_hash_not_empty() {
+        assert_eq!(unit_map(11), ("#", 0));
+        assert_eq!(resolve_unit(11), "#");
+        // The calibrated flag must not turn it into something else: that
+        // rewrite exists only for mV -> V.
+        assert_eq!(resolve_unit(139), "#");
+    }
 
     #[test]
     fn test_unit_map_known_types() {
