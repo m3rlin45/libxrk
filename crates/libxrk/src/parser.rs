@@ -187,6 +187,17 @@ pub struct LapInfo {
     pub end_time: u32,
 }
 
+/// Default number of bytes between two progress callbacks.
+///
+/// The previous value, 8 MB, meant no callback at all fired for any file
+/// smaller than 8 MB — which is most single-session logs. 256 KB gives ~20
+/// callbacks on a 5 MB file and ~160 on a 42 MB one, for no measurable cost.
+pub const DEFAULT_PROGRESS_INTERVAL: usize = 262_144;
+
+/// Lower bound on the progress interval, to keep a caller from asking for a
+/// callback on every byte.
+pub const MIN_PROGRESS_INTERVAL: usize = 4096;
+
 /// Parse an XRK byte stream.
 ///
 /// This is the main entry point equivalent to `_decode_sequence()`.
@@ -194,6 +205,18 @@ pub fn parse_xrk(
     data: &[u8],
     progress: Option<&dyn Fn(usize, usize)>,
 ) -> Result<ParseResult, Error> {
+    parse_xrk_with_interval(data, progress, DEFAULT_PROGRESS_INTERVAL)
+}
+
+/// Parse an XRK byte stream, choosing how often `progress` is called.
+///
+/// `progress_interval` is clamped to [`MIN_PROGRESS_INTERVAL`].
+pub fn parse_xrk_with_interval(
+    data: &[u8],
+    progress: Option<&dyn Fn(usize, usize)>,
+    progress_interval: usize,
+) -> Result<ParseResult, Error> {
+    let progress_interval = progress_interval.max(MIN_PROGRESS_INTERVAL);
     let mut state = ParserState::new();
 
     // Pre-scan: learn channel structure from headers and count data sizes.
@@ -202,7 +225,7 @@ pub fn parse_xrk(
     let hints = prescan(data, &mut state);
     state.apply_prescan_hints(&hints);
 
-    let final_pos = scan_stream(data, &mut state, progress);
+    let final_pos = scan_stream(data, &mut state, progress, progress_interval);
     if final_pos != data.len() {
         return Err(Error::InvalidData(format!(
             "Parser did not consume entire input: pos={}, len={}",
@@ -692,7 +715,7 @@ fn prescan_header_message(msg: &HeaderMessage, state: &mut ParserState, hints: &
     if token == tokens::cnf() {
         // Recursively discover channels from CNF payload.
         let mut sub_state = ParserState::new();
-        scan_stream(&msg.payload, &mut sub_state, None);
+        scan_stream(&msg.payload, &mut sub_state, None, DEFAULT_PROGRESS_INTERVAL);
         for ch_info in sub_state.channels.values() {
             if !state.channels.contains_key(&ch_info.chs.index) {
                 state.register_chs(&ch_info.chs);
@@ -737,12 +760,12 @@ fn scan_stream(
     data: &[u8],
     state: &mut ParserState,
     progress: Option<&dyn Fn(usize, usize)>,
+    progress_interval: usize,
 ) -> usize {
     let len = data.len();
     let mut pos: usize = 0;
     let mut bad_pos: usize = 0;
     let mut bad_count: usize = 0;
-    let progress_interval: usize = 8_000_000;
     let mut next_progress: usize = progress_interval;
 
     while pos < len {
@@ -858,7 +881,7 @@ fn handle_header_message(msg: &HeaderMessage, state: &mut ParserState) {
 
         // Recursively parse the CNF payload
         let mut sub_state = ParserState::new();
-        scan_stream(&msg.payload, &mut sub_state, None);
+        scan_stream(&msg.payload, &mut sub_state, None, DEFAULT_PROGRESS_INTERVAL);
 
         // Merge CHS and GRP from sub-parse. A later CNF re-definition wins
         // on names (matching the AIM DLL, which exposes the renamed channel
@@ -887,7 +910,7 @@ fn handle_header_message(msg: &HeaderMessage, state: &mut ParserState) {
     // ENF: recursive parse — store sub-messages separately per ENF
     if token == tokens::enf() {
         let mut sub_state = ParserState::new();
-        scan_stream(&msg.payload, &mut sub_state, None);
+        scan_stream(&msg.payload, &mut sub_state, None, DEFAULT_PROGRESS_INTERVAL);
         // Store each ENF's sub-messages separately for expansion device extraction
         state.enf_sub_messages.push(sub_state.header_messages);
         return;
