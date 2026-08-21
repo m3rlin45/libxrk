@@ -276,8 +276,27 @@ fn aim_xrk(py: Python<'_>, fname: Py<PyAny>, progress: Option<Py<PyAny>>) -> PyR
 
     let base_module = py.import("libxrk.base")?;
     let logfile_class = base_module.getattr("LogFile")?;
-    let logfile =
-        logfile_class.call1((channels_dict, laps_table, metadata_dict.bind(py), file_name))?;
+    // Diagnostics travel with the file rather than to stderr: a library
+    // embedded in an app, a notebook or a WASM module has nowhere to put those
+    // lines, and cannot act on them either.
+    let diagnostics: Vec<String> = result
+        .diagnostics
+        .kept
+        .iter()
+        .map(|d| d.to_string())
+        .chain(
+            (result.diagnostics.dropped > 0)
+                .then(|| format!("… and {} more", result.diagnostics.dropped)),
+        )
+        .collect();
+    let logfile = logfile_class.call1((
+        channels_dict,
+        laps_table,
+        metadata_dict.bind(py),
+        file_name,
+        diagnostics,
+        result.diagnostics.bad_bytes,
+    ))?;
 
     Ok(logfile.unbind())
 }

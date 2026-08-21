@@ -81,6 +81,10 @@ class DataStream:
     time_offset: int
     gnfi_timecodes: Optional[object] = None
     has_lap_messages: bool = False
+    #: Notes du décodeur, en clair. Vide sur un fichier sain.
+    diagnostics: Optional[list] = None
+    #: Octets que le décodeur a dû sauter, au total.
+    bad_bytes: int = 0
 
 @dataclass(**dc_slots)
 class Decoder:
@@ -356,6 +360,14 @@ def _decode_sequence(s, progress=None):
     gnfimsg: vector[cython.uchar]
     show_all: cython.int = 0
     show_bad: cython.int = 0
+    # Les constats voyagent avec le fichier, ils ne s'impriment pas : une
+    # bibliothèque embarquée n'a nulle part où écrire, et l'appelant ne peut
+    # rien faire d'un texte qu'il ne voit pas. Plafonné pour qu'un fichier de
+    # bruit ne fasse pas exploser la mémoire ; les totaux, eux, restent justes.
+    diagnostics: list = []
+    bad_bytes_total: cython.Py_ssize_t = 0
+    MAX_KEPT: cython.Py_ssize_t = 256
+    diagnostics_dropped: cython.Py_ssize_t = 0
     # Buffers for V2/V3 (c)-message variants — see spec/docs/unknown_regions.md
     # and spec/xrk_format.py:_resolve_c_variants. Channel_index resolution for
     # these variants can't happen at parse time (the channel_field→channel_index
@@ -604,8 +616,12 @@ def _decode_sequence(s, progress=None):
                             try:
                                 data.units, data.dec_pts = _unit_map[dcopy[12] & 127]
                             except KeyError:
-                                print('Unknown units[%d] for %s' %
-                                      (dcopy[12] & 127, data.long_name))
+                                if len(diagnostics) < MAX_KEPT:
+                                    diagnostics.append(
+                                        'unknown unit code %d for channel %s'
+                                        % (dcopy[12] & 127, data.long_name))
+                                else:
+                                    diagnostics_dropped += 1
                                 data.units = ''
                                 data.dec_pts = 0
                             if dcopy[12] & 0x80 and data.units == 'mV':
@@ -664,7 +680,7 @@ def _decode_sequence(s, progress=None):
                                         70, 71, 73, 74, 75,
                                         85, 86, 87, 93, 94, 95)
                                 ]
-                                print(
+                                _pad_note = (
                                     'CHS padding non-zero for channel %s: %s. '
                                     'Please report at '
                                     'https://github.com/m3rlin45/libxrk/issues '
@@ -672,6 +688,10 @@ def _decode_sequence(s, progress=None):
                                     (_ch_name,
                                      ', '.join('[%d]=0x%02x' % (i, b)
                                                for i, b in _nonzero)))
+                                if len(diagnostics) < MAX_KEPT:
+                                    diagnostics.append(_pad_note)
+                                else:
+                                    diagnostics_dropped += 1
 
                             data.source_type = dcopy[16]
                             data.source_channel_id = struct.unpack_from('<H', dcopy, 6)[0]
@@ -809,6 +829,12 @@ def _decode_sequence(s, progress=None):
                     raise ValueError("Unknown byte sequence %02x%02x at %x" % (s[pos], s[pos+1], pos))
         except Exception as _err: # pylint: disable=broad-exception-caught
             if oldpos != badpos + badbytes and badbytes:
+                bad_bytes_total += badbytes
+                if len(diagnostics) < MAX_KEPT:
+                    diagnostics.append('%d unrecognised byte(s) at 0x%x, skipped'
+                                       % (badbytes, badpos))
+                else:
+                    diagnostics_dropped += 1
                 if show_bad:
                     print('Bad bytes(%d at %x):' % (badbytes, badpos),
                           ', '.join('%02x' % c for c in s[badpos:badpos + badbytes])
@@ -824,6 +850,12 @@ def _decode_sequence(s, progress=None):
                 pos = oldpos + 1
     t2 = time.perf_counter()
     if badbytes:
+        bad_bytes_total += badbytes
+        if len(diagnostics) < MAX_KEPT:
+            diagnostics.append('%d unrecognised byte(s) at 0x%x, skipped'
+                               % (badbytes, badpos))
+        else:
+            diagnostics_dropped += 1
         if show_bad:
             print('Bad bytes(%d at %x):' % (badbytes, badpos),
                   ', '.join('%02x' % c for c in s[badpos:badpos + badbytes])
@@ -1078,7 +1110,11 @@ def _decode_sequence(s, progress=None):
         laps=laps,
         time_offset=time_offset,
         gnfi_timecodes=gnfi_timecodes,
-        has_lap_messages=has_lap_messages)
+        has_lap_messages=has_lap_messages,
+        diagnostics=(diagnostics
+                     + (['… and %d more' % diagnostics_dropped]
+                        if diagnostics_dropped else [])),
+        bad_bytes=bad_bytes_total)
 
 def _get_metadata(msg_by_type, channels=None):
     ret = {}
@@ -1590,7 +1626,9 @@ def aim_xrk(fname, progress=None):
         {ch.long_name: _channel_to_table(ch) for ch in data.channels.values()},
         data.laps,
         _get_metadata(data.messages, data.channels),
-        fname if not isinstance(fname, (bytes, bytearray, memoryview)) and not hasattr(fname, 'read') else "<bytes>")
+        fname if not isinstance(fname, (bytes, bytearray, memoryview)) and not hasattr(fname, 'read') else "<bytes>",
+        data.diagnostics or [],
+        data.bad_bytes)
 
     # Fix GPS timing gaps (spurious timestamp jumps in some AIM loggers)
     # Pass GNFI timecodes for more robust detection (if available)

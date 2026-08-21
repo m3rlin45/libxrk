@@ -1,7 +1,7 @@
 # Copyright 2024, Scott Smith.  MIT License (see LICENSE).
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import sys
 from typing import Any
 import pyarrow as pa
@@ -136,6 +136,16 @@ class LogFile:
             lap_type (str: "full", "out", "in"). Times are in milliseconds.
         metadata: Dict of session metadata (racer, vehicle, venue, etc.)
         file_name: Original filename or "<bytes>" if loaded from bytes.
+        diagnostics: Human-readable notes from the parser — bytes it had to
+            skip, channels with no usable sample interval, unknown unit codes.
+            Empty on a healthy file. Nothing is printed: an embedded library
+            has no business writing to stderr, and a caller cannot act on text
+            it never sees. Both backends produce the same list.
+        bad_bytes: Total bytes the parser had to skip. Exact, and identical
+            between the two backends. NOT a corruption threshold: a healthy
+            MyChron 6 log skips 33% of its bytes, while other loggers skip
+            none. What carries meaning is a change on the same file — flipping
+            one byte took a sample from 33% to 67%, and from 29 channels to 12.
 
     Example:
         >>> log = aim_xrk('file.xrk')
@@ -147,6 +157,8 @@ class LogFile:
     laps: pa.Table
     metadata: dict[str, Any]
     file_name: str
+    diagnostics: list[str] = field(default_factory=list)
+    bad_bytes: int = 0
 
     def get_channels_as_table(self) -> pa.Table:
         """

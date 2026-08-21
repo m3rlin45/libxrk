@@ -54,6 +54,9 @@ pub struct GroupInfo {
 
 /// Result of parsing the stream — raw data before decode/Arrow conversion.
 pub struct ParseResult {
+    /// What the parser had to work around. Never printed; see
+    /// [`crate::diagnostics`].
+    pub diagnostics: crate::diagnostics::Diagnostics,
     pub channels: HashMap<u16, ChannelInfo>,
     pub groups: HashMap<u16, GroupInfo>,
     pub header_messages: HashMap<u32, Vec<HeaderMessage>>,
@@ -230,6 +233,7 @@ struct ParserState {
     /// Group sizes: group_index -> total data size
     group_sizes: HashMap<u16, usize>,
     time_offset: Option<i64>,
+    diagnostics: crate::diagnostics::Diagnostics,
     last_time: Option<i64>,
     /// ENF sub-messages: each entry is the sub-parsed messages from one ENF message
     enf_sub_messages: Vec<HashMap<u32, Vec<HeaderMessage>>>,
@@ -298,6 +302,7 @@ impl ParserState {
             channel_sizes: HashMap::new(),
             group_sizes: HashMap::new(),
             time_offset: None,
+            diagnostics: Default::default(),
             last_time: None,
             enf_sub_messages: Vec::new(),
             v2v3_by_cf: HashMap::new(),
@@ -348,11 +353,10 @@ impl ParserState {
 
         // Warn for unknown unit types (I)
         if !tables::is_known_unit(chs.unit_type_byte) {
-            eprintln!(
-                "Unknown units[{}] for {}",
-                chs.unit_type_byte & 0x7F,
-                chs.long_name()
-            );
+            self.diagnostics.push(crate::diagnostics::Diagnostic::UnknownUnit {
+                code: chs.unit_type_byte & 0x7F,
+                channel: chs.long_name(),
+            });
         }
 
         // Warn for non-zero CHS padding bytes (I)
@@ -382,12 +386,11 @@ impl ParserState {
                     }
                 }
             }
-            eprintln!(
-                "CHS padding non-zero for channel {}: {}. \
-                 Please report at https://github.com/m3rlin45/libxrk/issues with your XRK file.",
-                chs.long_name(),
-                details.join(", ")
-            );
+            self.diagnostics
+                .push(crate::diagnostics::Diagnostic::UnexpectedChsPadding {
+                    channel: chs.long_name(),
+                    details: details.join(", "),
+                });
         }
 
         // Register in channel_sizes
@@ -531,9 +534,11 @@ impl ParserState {
             decode_all_channels(&self.gc_data, &self.channels, &self.groups, time_offset)?;
 
         // Extract and process lap info from LAP messages
-        let laps = process_laps(&self.header_messages, time_offset);
+        let mut diagnostics = self.diagnostics;
+        let laps = process_laps(&self.header_messages, time_offset, &mut diagnostics);
 
         Ok(ParseResult {
+            diagnostics,
             channels: self.channels,
             groups: self.groups,
             header_messages: self.header_messages,
@@ -715,19 +720,18 @@ fn prescan_header_message(msg: &HeaderMessage, state: &mut ParserState, hints: &
 }
 
 /// Print accumulated bad bytes as a diagnostic warning.
-fn flush_bad_bytes(data: &[u8], bad_pos: usize, bad_count: usize) {
+fn flush_bad_bytes(
+    #[cfg_attr(not(debug_assertions), allow(unused_variables))] data: &[u8],
+    bad_pos: usize,
+    bad_count: usize,
+    diagnostics: &mut crate::diagnostics::Diagnostics,
+) {
     if bad_count > 0 {
-        let end = (bad_pos + bad_count).min(data.len());
-        let hex: Vec<String> = data[bad_pos..end]
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect();
-        eprintln!(
-            "Bad bytes({} at {:x}): {}",
-            bad_count,
-            bad_pos,
-            hex.join(", ")
-        );
+        debug_assert!(bad_pos + bad_count <= data.len());
+        diagnostics.push(crate::diagnostics::Diagnostic::BadBytes {
+            offset: bad_pos as u64,
+            len: bad_count,
+        });
     }
 }
 
@@ -764,7 +768,7 @@ fn scan_stream(
                 b'G' => {
                     // G message: group data
                     if let Some(consumed) = try_parse_g_message(data, pos, state) {
-                        flush_bad_bytes(data, bad_pos, bad_count);
+                        flush_bad_bytes(data, bad_pos, bad_count, &mut state.diagnostics);
                         bad_count = 0;
                         pos += consumed;
                         continue;
@@ -773,7 +777,7 @@ fn scan_stream(
                 b'S' => {
                     // S message: single channel sample
                     if let Some(consumed) = try_parse_s_message(data, pos, state) {
-                        flush_bad_bytes(data, bad_pos, bad_count);
+                        flush_bad_bytes(data, bad_pos, bad_count, &mut state.diagnostics);
                         bad_count = 0;
                         pos += consumed;
                         continue;
@@ -782,7 +786,7 @@ fn scan_stream(
                 b'M' => {
                     // M message: multi-sample burst
                     if let Some(consumed) = try_parse_m_message(data, pos, state) {
-                        flush_bad_bytes(data, bad_pos, bad_count);
+                        flush_bad_bytes(data, bad_pos, bad_count, &mut state.diagnostics);
                         bad_count = 0;
                         pos += consumed;
                         continue;
@@ -791,7 +795,7 @@ fn scan_stream(
                 b'c' => {
                     // c message: expansion device channel
                     if let Some(consumed) = try_parse_c_message(data, pos, state) {
-                        flush_bad_bytes(data, bad_pos, bad_count);
+                        flush_bad_bytes(data, bad_pos, bad_count, &mut state.diagnostics);
                         bad_count = 0;
                         pos += consumed;
                         continue;
@@ -809,7 +813,7 @@ fn scan_stream(
             }
 
             if let Ok((msg, consumed)) = HeaderMessage::parse(data, pos) {
-                flush_bad_bytes(data, bad_pos, bad_count);
+                flush_bad_bytes(data, bad_pos, bad_count, &mut state.diagnostics);
                 bad_count = 0;
                 handle_header_message(&msg, state);
                 pos += consumed;
@@ -826,7 +830,7 @@ fn scan_stream(
     }
 
     // Flush any remaining bad bytes
-    flush_bad_bytes(data, bad_pos, bad_count);
+    flush_bad_bytes(data, bad_pos, bad_count, &mut state.diagnostics);
 
     pos
 }
@@ -1031,7 +1035,9 @@ fn try_parse_m_message(data: &[u8], pos: usize, state: &mut ParserState) -> Opti
             .get(&(index as u16))
             .map(|c| c.chs.long_name())
             .unwrap_or_else(|| "unknown".to_string());
-        eprintln!("No ms understood for channel {}", ch_name);
+        state
+            .diagnostics
+            .push(crate::diagnostics::Diagnostic::NoSampleInterval { channel: ch_name });
         return None;
     }
 
@@ -1588,11 +1594,12 @@ fn parse_lap_messages(
 fn process_laps(
     header_messages: &HashMap<u32, Vec<HeaderMessage>>,
     time_offset: i64,
+    diagnostics: &mut crate::diagnostics::Diagnostics,
 ) -> Vec<LapInfo> {
     let raw = match parse_lap_messages(header_messages, time_offset) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("Warning: lap parsing error: {}", e);
+            diagnostics.push(crate::diagnostics::Diagnostic::LapParsing { message: e.to_string() });
             return Vec::new();
         }
     };
