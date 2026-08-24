@@ -149,7 +149,7 @@ _unit_map = {
     5:  ('deg/s', 1),
     6:  ('', 0), # number
     9:  ('Hz', 0),
-    11: ('', 0), # number
+    11: ('#', 0), # number - the AIM DLL reports '#'
     12: ('mm', 0),
     14: ('bar', 2),
     15: ('rpm', 0),
