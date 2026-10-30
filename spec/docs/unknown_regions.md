@@ -148,9 +148,37 @@ regions have known purpose but unknown exact semantics:
 - **Status**: Not decoded
 
 ### [32:36] `u32_32` (uint32)
-- **Observed**: Always 410
-- **Hypothesis**: GPS message rate or protocol version
-- **Status**: Constant across all test files; unexpected values trigger a warning
+- **Observed**: 410 (`0x019A`) in every local test file, independent of receiver type
+  and logger: SFJ sessions with the internal receiver (`iGPS`, channel index 37/38),
+  the 86 file with an external receiver (`GPS`, channel index 109), and the KK-SII
+  Tsukuba files with an external receiver (`GPS`, channel index 96), across sessions
+  from several years. Those files each carry exactly one GPSR record, placed
+  immediately before CAL. A Rush SR session logged 2025-09-27 carries nine GPSR
+  records with 688144 (`0x000A8010`) and 688391 (`0x000A8107`) in this field, with
+  the same GPS channels at the same 25 Hz as the files that carry 410, and the
+  decoded channel data is unaffected.
+- **Structure**: Read as two little-endian uint16s the three values are
+  (410, 0), (32784, 10) and (33031, 10). The two Rush SR values share the high
+  word and both have bit 15 set in the low word; 410 does not. This may be two
+  fields, or a flags word plus a small counter, but three distinct values are too
+  few to tell. It may also be a logger firmware or configuration variant.
+- **Vendor behaviour** (from disassembly of RaceStudio 3, reported in
+  [#103](https://github.com/m3rlin45/libxrk/pull/103)): the GPSR record has exactly
+  one consumer in RS3, the `.sall` header parser `CParserAiM_2Gv4::FoundTagEvent`,
+  where the literal `GPSR` tag string has a single cross-reference. That branch
+  compares the tag and pushes the record into a list verbatim (payload pointer and
+  length copied as-is); no payload field is parsed. It also performs no length
+  validation, unlike sibling branches that check `len == 0x10` / `len == 0x14`
+  ("Bad speed sensor struct len"), so the parser tolerates variable GPSR records.
+  `0x19A` appears as a compare constant zero times in the binary; the only hits
+  are unrelated MFC control IDs. AiM's XRK-2-DRK log converter ships the same
+  `CParserAiM_2Gv4` code and also stores the record raw.
+- **Hypothesis**: Not a constant and not consumed by AiM's own software. The
+  earlier guess of a GPS message rate or protocol version does not fit a value that
+  differs between GPSR records within one session.
+- **Status**: Not decoded. No parser reads it, so any value is accepted without a
+  warning. Full 36-byte dumps of GPSR records from loggers that emit values other
+  than 410, with logger model, firmware and GPS module, would help.
 
 ## idn (Logger Identity, 56 bytes)
 

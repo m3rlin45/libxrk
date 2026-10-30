@@ -16,16 +16,6 @@ impl GpsrPayload {
     pub fn parse(data: &[u8]) -> Self {
         let gps_type = nullterm_string(&data[4..8]);
         let channel_index = u16::from_le_bytes([data[22], data[23]]);
-        if data.len() >= 36 {
-            let u32_32 = u32::from_le_bytes([data[32], data[33], data[34], data[35]]);
-            if u32_32 != 410 {
-                eprintln!(
-                    "libxrk: unexpected GPSR u32[32]={} (expected 410). \
-                     Please report at https://github.com/m3rlin45/libxrk/issues",
-                    u32_32
-                );
-            }
-        }
         GpsrPayload {
             gps_type,
             channel_index,
@@ -51,6 +41,17 @@ mod tests {
         let gpsr = GpsrPayload::parse(&data);
         assert_eq!(gpsr.gps_type, "NAV");
         assert_eq!(gpsr.channel_index, 42);
+    }
+
+    #[test]
+    fn test_gpsr_parse_other_u32_32() {
+        // Seen in real logs instead of 410; the field is not decoded.
+        for value in [688144, 688391] {
+            let data = make_gpsr_data(b"NAV\0", 42, value);
+            let gpsr = GpsrPayload::parse(&data);
+            assert_eq!(gpsr.gps_type, "NAV");
+            assert_eq!(gpsr.channel_index, 42);
+        }
     }
 
     #[test]
