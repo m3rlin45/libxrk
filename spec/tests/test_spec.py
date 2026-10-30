@@ -1106,6 +1106,45 @@ class TestDLLCrossValidation:
         assert "Temperature 1" not in aim_official_backend.channels
         assert "Temperature 2" not in aim_official_backend.channels
 
+    # Unit codes where libxrk deliberately spells the unit differently from
+    # the DLL. Code 30 comes back from the DLL as the single byte 0xBB, a
+    # symbol-font lambda ("\xbb" in latin-1); libxrk writes "lambda". Code 158
+    # (30 | calibrated flag) is reported as "A/F" on the one corpus channel
+    # that carries it, which is too little evidence to encode a rewrite.
+    _KNOWN_UNIT_DIVERGENCES = {30: ("lambda", "\xbb"), 158: ("lambda", "A/F")}
+
+    def test_channel_units(self, parsed_and_dll):
+        """Every unit string the DLL reports should match the spec's UNIT_MAP.
+
+        The DLL has reported units all along (``get_channel_units``), but
+        nothing asserted on them until unit code 11 turned out to be "#"
+        rather than "" (PR #101).
+        """
+        parsed, dll_data = parsed_and_dll
+        dll_channels = self._dll_channels_by_name(dll_data)
+        checked, errors = 0, []
+        for ch in parsed.channels.values():
+            dll_ch = dll_channels.get(ch.name)
+            if dll_ch is None:
+                continue
+            known = self._KNOWN_UNIT_DIVERGENCES.get(ch.unit_type_byte)
+            if known is not None:
+                assert (
+                    ch.units,
+                    dll_ch["units"],
+                ) == known, (
+                    f"Ch {ch.name!r}: known divergence for unit code {ch.unit_type_byte} changed"
+                )
+                continue
+            checked += 1
+            if ch.units != dll_ch["units"]:
+                errors.append(
+                    f"Ch {ch.name!r} (code {ch.unit_type_byte}): "
+                    f"spec={ch.units!r} dll={dll_ch['units']!r}"
+                )
+        assert not errors, f"{len(errors)} unit mismatches:\n" + "\n".join(errors)
+        assert checked > 0
+
     def test_metadata(self, parsed_and_dll):
         """Metadata should match DLL."""
         parsed, dll_data = parsed_and_dll

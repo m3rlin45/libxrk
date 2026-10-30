@@ -114,7 +114,7 @@ UNIT_MAP = {
     5: ("deg/s", 1),
     6: ("", 0),
     9: ("Hz", 0),
-    11: ("", 0),
+    11: ("#", 0),  # "number"; the AIM DLL reports "#" (36/36 corpus observations)
     12: ("mm", 0),
     14: ("bar", 2),
     15: ("rpm", 0),
