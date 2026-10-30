@@ -220,14 +220,14 @@ fn build_gps_channel_batch(
     }
 }
 
-/// Build Arrow RecordBatches for all 12 GPS channels.
+/// Build Arrow RecordBatches for all 14 GPS channels.
 ///
 /// Returns a Vec of (channel_name, RecordBatch) pairs.
 pub fn build_gps_channel_batches(
     gps: GpsDecodeResult,
     format_f32: impl Fn(f32) -> String,
 ) -> arrow::error::Result<Vec<(String, RecordBatch)>> {
-    let mut batches = Vec::with_capacity(12);
+    let mut batches = Vec::with_capacity(14);
 
     let GpsDecodeResult {
         timecodes,
@@ -235,6 +235,7 @@ pub fn build_gps_channel_batches(
         latitude,
         longitude,
         altitude,
+        itow,
         satellites,
         fix,
         pdop,
@@ -243,9 +244,10 @@ pub fn build_gps_channel_batches(
         inline_acc,
         lateral_acc,
         yaw_rate,
+        week,
     } = gps;
 
-    let mut f64_channels = vec![speed, latitude, longitude, altitude].into_iter();
+    let mut f64_channels = vec![speed, latitude, longitude, altitude, itow].into_iter();
     let mut f32_channels = vec![
         satellites,
         fix,
@@ -255,6 +257,7 @@ pub fn build_gps_channel_batches(
         inline_acc,
         lateral_acc,
         yaw_rate,
+        week,
     ]
     .into_iter();
 

@@ -82,6 +82,28 @@ Each channel table has:
 
 Channels have different sample rates. Use `get_channels_as_table()` to merge.
 
+**GPS-derived channels:** the parser synthesizes 14 channels from the GPS
+receiver's NAV-SOL records (all listed in `libxrk.GPS_CHANNEL_NAMES`, all on
+the GPS fix timebase):
+
+| Channel | Units | Notes |
+|---------|-------|-------|
+| `GPS Speed` | m/s | |
+| `GPS Latitude`, `GPS Longitude` | deg | |
+| `GPS Altitude` | m | |
+| `GPS_Satellites`, `GPS_Fix`, `GPS_pDOP` | | Fix type: 0=none, 2=2D, 3=3D |
+| `GPS_Position_Accuracy` | m | |
+| `GPS_Velocity_Accuracy` | m/s | |
+| `GPS_InlineAcc`, `GPS_LateralAcc` | g | Derived from ECEF velocity |
+| `GPS_Yaw_Rate` | deg/s | Derived from heading |
+| `GPS_ITOW` | ms | Raw GPS time of week; wraps every 604,800,000 ms |
+| `GPS_Week` | | Raw GPS week number |
+
+`GPS_ITOW` and `GPS_Week` carry the receiver clock unmodified, so a session can
+be tied to absolute UTC even when the file header's date/time is unreliable:
+`utc = 1980-01-06 + GPS_Week weeks + GPS_ITOW ms - leap_seconds` (18 s as of
+2017). The weekly wrap is left to the caller.
+
 **Duplicate channel names:** a file's CHS table may define the same long_name
 at several channel indices — each is a genuinely distinct channel with its own
 `source_channel_id` and data stream. Following the official AIM DLL's
@@ -182,7 +204,7 @@ df = (log
 
 Some AIM loggers have a firmware bug causing 65533ms timestamp gaps in GPS data (16-bit overflow). This is automatically corrected when loading files - no action needed.
 
-Affected channels: `GPS Speed`, `GPS Latitude`, `GPS Longitude`, `GPS Altitude`
+Affected channels: every GPS-derived channel in `GPS_CHANNEL_NAMES` (see Channel Tables above).
 
 ## Common Patterns
 

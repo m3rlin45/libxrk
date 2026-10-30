@@ -1232,9 +1232,9 @@ def _decode_gps(gpsmsg, time_offset):
         deltas = (((np.diff(timecodes.astype(np.int64)) & 0xFFFF) ^ 0x8000) - 0x8000)
         timecodes = (timecodes[0] + np.concatenate(([0], deltas.cumsum()))).astype(timecodes.dtype)
     # NAV-SOL fields (known, used for position/velocity)
-    #itow_ms = alldata[4:].cast('I')[::56//4]       # iTOW - GPS time of week
+    itow_ms = np.asarray(alldata[4:].cast('I')[::56//4])      # iTOW - GPS time of week [ms]
     #fTOW_ns = alldata[8:].cast('i')[::56//4]       # fTOW - fractional TOW [ns]
-    #weekN = alldata[12:].cast('H')[::56//2]         # GPS week number
+    weekN = np.asarray(alldata[12:].cast('H')[::56//2])       # GPS week number
     ecefX_cm = alldata[16:].cast('i')[::56//4]       # ecefX [cm]
     ecefY_cm = alldata[20:].cast('i')[::56//4]       # ecefY [cm]
     ecefZ_cm = alldata[24:].cast('i')[::56//4]       # ecefZ [cm]
@@ -1318,7 +1318,12 @@ def _decode_gps(gpsmsg, time_offset):
             Channel(long_name='GPS_LateralAcc', units='g', dec_pts=2, interpolate=True,
                     timecodes=timecodes, sampledata=memoryview(lateral_acc.astype(np.float32))),
             Channel(long_name='GPS_Yaw_Rate', units='deg/s', dec_pts=1, interpolate=True,
-                    timecodes=timecodes, sampledata=memoryview(yaw_rate.astype(np.float32)))]
+                    timecodes=timecodes, sampledata=memoryview(yaw_rate.astype(np.float32))),
+            # Raw GPS clock (NAV-SOL iTOW / week). iTOW wraps every 604800000 ms.
+            Channel(long_name='GPS_ITOW', units='ms', dec_pts=0, interpolate=False,
+                    timecodes=timecodes, sampledata=memoryview(itow_ms.astype(np.float64))),
+            Channel(long_name='GPS_Week', units='', dec_pts=0, interpolate=False,
+                    timecodes=timecodes, sampledata=memoryview(weekN.astype(np.float32)))]
 
 def _decode_gnfi(gnfimsg, time_offset):
     """Parse GNFI messages and return timecodes array.

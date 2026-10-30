@@ -25,6 +25,8 @@ GPS_CHANNEL_NAMES = (
     "GPS_InlineAcc",
     "GPS_LateralAcc",
     "GPS_Yaw_Rate",
+    "GPS_ITOW",
+    "GPS_Week",
 )
 
 GPS = namedtuple("GPS", ["lat", "long", "alt"])
