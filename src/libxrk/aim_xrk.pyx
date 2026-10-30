@@ -752,11 +752,6 @@ def _decode_sequence(s, progress=None):
                             if len(data) >= 36:
                                 gps_type = _nullterm_string(data[4:8])
                                 gps_channel_idx = struct.unpack_from('<H', data, 22)[0]
-                                _gpsr_u32_32 = struct.unpack_from('<I', data, 32)[0]
-                                if _gpsr_u32_32 != 410:
-                                    print('libxrk: unexpected GPSR u32[32]=%d (expected 410).'
-                                          ' Please report at https://github.com/m3rlin45/libxrk/issues'
-                                          % _gpsr_u32_32)
                                 data = {'type': gps_type,
                                         'channel_index': gps_channel_idx}
                         elif tok == _tokdec('RACM'):
