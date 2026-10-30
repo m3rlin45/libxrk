@@ -6,6 +6,7 @@ Tests in this module verify that:
 3. Construct-parsed values match the Cython parser for all fields
 """
 
+import math
 import struct
 
 import numpy as np
@@ -68,6 +69,9 @@ def _decode_and_fixup(data_bytes, ch):
     # Voltage channels are stored as mV, Cython divides by 1000
     if ch.units == "V":
         value = value / 1000.0
+    # Non-finite float samples are reported as NaN (companion.md section 3)
+    if ch.decoder_type in (6, 20) and not math.isfinite(value):
+        return float("nan")
     return float(value)
 
 
@@ -909,6 +913,9 @@ class TestExhaustiveChannelValues:
         if ch.units == "V":
             # Voltage channels are stored as mV, the backends divide by 1000
             values = values / 1000.0
+        if ch.decoder_type in (6, 20):
+            # Non-finite float samples are reported as NaN (companion.md section 3)
+            values = np.where(np.isfinite(values), values, np.nan)
         return values
 
     def _compare_all_values(self, result, cython_log):

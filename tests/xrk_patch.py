@@ -92,3 +92,23 @@ def chs_frames(data: bytes) -> dict[str, dict]:
             name = data[f["pstart"] + 32 : f["pstart"] + 56].split(b"\0")[0].decode("latin1")
             out.setdefault(name, f)
     return out
+
+
+def s_message_offsets(data: bytes, channel_index: int, size: int) -> list[int]:
+    """Offsets of ``(S`` sample messages for ``channel_index``, in file order.
+
+    An S message is ``(S`` + int32 timecode + uint16 index + ``size`` data
+    bytes + ``)``. The sample bytes start 8 bytes into the message. Only
+    messages with the closing ``)`` in place are returned.
+    """
+    out: list[int] = []
+    pos = 0
+    while True:
+        pos = data.find(b"(S", pos)
+        if pos < 0 or pos + 9 + size > len(data):
+            return out
+        if struct.unpack_from("<H", data, pos + 6)[0] == channel_index and data[
+            pos + 8 + size
+        ] == ord(")"):
+            out.append(pos)
+        pos += 1

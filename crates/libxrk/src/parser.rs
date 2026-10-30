@@ -155,6 +155,29 @@ impl ChannelValues {
     }
 
     /// Apply mV→V conversion (divide by 1000). Valid for Float64 and Float32 variants.
+    /// Replace non-finite float samples with NaN.
+    ///
+    /// Loggers write IEEE infinities into float channels as "no value"
+    /// sentinels (fp16 0x7C00 on an unconnected External Voltage, fp32
+    /// 0xFF800000 on CAN channels during bus dropouts). The AIM DLL returns
+    /// 0.0 for those; libxrk reports NaN so they read as missing. Integer
+    /// variants are untouched. See spec/docs/companion.md section 3.
+    pub fn non_finite_to_nan(&mut self) {
+        match self {
+            ChannelValues::Float64(v) => {
+                for val in v.iter_mut().filter(|x| !x.is_finite()) {
+                    *val = f64::NAN;
+                }
+            }
+            ChannelValues::Float32(v) => {
+                for val in v.iter_mut().filter(|x| !x.is_finite()) {
+                    *val = f32::NAN;
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn apply_mv_to_v(&mut self) {
         match self {
             ChannelValues::Float64(v) => {
@@ -1407,6 +1430,7 @@ fn decode_all_channels(
                     if ch_info.chs.units() == "V" {
                         values.apply_mv_to_v();
                     }
+                    values.non_finite_to_nan();
 
                     if !timecodes.is_empty() {
                         let _ = grp_info; // used for validation
@@ -1484,6 +1508,7 @@ fn decode_all_channels(
                 if ch_info.chs.units() == "V" {
                     values.apply_mv_to_v();
                 }
+                values.non_finite_to_nan();
 
                 if !timecodes.is_empty() {
                     result.insert(ch_idx, ChannelData { timecodes, values });
@@ -1518,6 +1543,7 @@ fn decode_all_channels(
                     if ch_info.chs.units() == "V" {
                         values.apply_mv_to_v();
                     }
+                    values.non_finite_to_nan();
 
                     if !timecodes.is_empty() {
                         result.insert(ch_idx, ChannelData { timecodes, values });
