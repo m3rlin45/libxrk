@@ -1,0 +1,38 @@
+name: PR branch access
+
+# Nudge fork submitters to let maintainers push to the PR branch, so a PR can be
+# rebased or fixed up in place rather than replaced. Runs in the base repo's
+# context and never checks out or executes PR code.
+on:
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  nudge:
+    if: github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const orgFork = pr.head.repo.owner.type === 'Organization';
+            if (pr.maintainer_can_modify && !orgFork) return;
+
+            const owner = context.repo.owner;
+            const fork = pr.head.repo.full_name;
+            let body;
+            if (orgFork) {
+              body = `Thanks for the PR. Your fork \`${fork}\` is owned by an organization, and GitHub does not let upstream maintainers push to organization-owned forks even when "Allow edits by maintainers" is ticked. That means we cannot rebase or fix up this PR in place; we would have to open a replacement PR.\n\nIf you would like to avoid that, either grant \`${owner}\` write access to \`${fork}\`, or reopen the PR from a fork under your personal account with "Allow edits by maintainers" ticked.`;
+            } else {
+              body = `Thanks for the PR. "Allow edits by maintainers" is not ticked on this PR. Please enable it in the sidebar of the PR page so we can rebase or fix up the branch in place rather than opening a replacement PR.`;
+            }
+            await github.rest.issues.createComment({
+              owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body,
+            });
