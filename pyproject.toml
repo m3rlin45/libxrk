@@ -102,6 +102,7 @@ exclude = [
     "^tests/reference_dll/",
     "^spec/",
     "^scripts/investigate_missing_data/",
+    "^scripts/investigate_mp4/",
 ]
 
 [[tool.mypy.overrides]]
