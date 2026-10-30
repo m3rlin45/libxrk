@@ -25,10 +25,20 @@ import os as _os
 
 _backend = _os.environ.get("LIBXRK_BACKEND", "").lower()
 
+# Import the Cython submodule before binding the public ``aim_xrk`` name, on
+# both backends. Python binds a submodule to its parent package attribute the
+# first time it is loaded, so if ``libxrk.aim_xrk`` (the module) were first
+# imported later -- e.g. by a test doing ``from libxrk.aim_xrk import aim_xrk``
+# while LIBXRK_BACKEND=rust -- that import would silently replace the Rust
+# ``libxrk.aim_xrk`` function with the module. Loading it here, then rebinding
+# the name below, makes the public name stable whatever is imported afterwards.
+from . import aim_xrk as _cython_backend
+
 if _backend == "rust":
     from ._aim_xrk_rs import aim_xrk, aim_track_dbg
 else:
-    from .aim_xrk import aim_xrk, aim_track_dbg
+    aim_xrk = _cython_backend.aim_xrk
+    aim_track_dbg = _cython_backend.aim_track_dbg
 
 from .base import ChannelMetadata, LogFile
 from .gps import GPS_CHANNEL_NAMES

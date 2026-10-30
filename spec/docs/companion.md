@@ -263,6 +263,7 @@ decimal precision. The high bit indicates whether the channel has been calibrate
 | 4  | deg    | 1 |
 | 5  | deg/s  | 1 |
 | 6  | (none) | 0 |
+| 8  | m      | 0 |
 | 9  | Hz     | 0 |
 | 11 | (none) | 0 |
 | 12 | mm     | 0 |
