@@ -14,6 +14,7 @@
 //! ```
 
 pub mod decoders;
+pub mod diagnostics;
 pub mod error;
 pub mod gps;
 pub mod messages;
@@ -27,6 +28,7 @@ pub mod arrow;
 
 use std::path::Path;
 
+pub use diagnostics::{Diagnostic, Diagnostics};
 pub use error::Error;
 pub use gps::GpsDecodeResult;
 pub use metadata::Metadata;
@@ -47,6 +49,9 @@ pub struct XrkFile {
     pub raw: ParseResult,
     /// GPS decode result (if GPS data was present).
     pub gps: Option<GpsDecodeResult>,
+    /// What the parser had to work around while reading the file. Empty on a
+    /// healthy log. Nothing is printed; see [`diagnostics`].
+    pub diagnostics: diagnostics::Diagnostics,
 }
 
 /// A decoded telemetry channel with metadata.
@@ -265,6 +270,7 @@ pub fn read_xrk_with_progress(
         channels,
         laps: processed_laps,
         metadata,
+        diagnostics: result.diagnostics.clone(),
         raw: result,
         gps: gps_result,
     })

@@ -97,3 +97,4 @@ spec/test_vectors/*.yaml
 # Rust / Cargo
 target/
 Cargo.lock
+dist-*/
