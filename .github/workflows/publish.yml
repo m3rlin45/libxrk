@@ -1,5 +1,9 @@
 name: Build and Publish
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: [ master, main ]
@@ -16,15 +20,40 @@ on:
         type: boolean
 
 jobs:
-  build-wheels:
-    name: Build wheel (${{ matrix.os }}, Python ${{ matrix.python-version }})
+  # One runner per OS/arch does everything that used to be spread over
+  # 15 "Run tests" + 25 "Build wheel" + 25 "Test wheel" runners:
+  #   1. build the wheels for every supported Python with cibuildwheel
+  #   2. test each wheel from a fresh venv outside the checkout, so the
+  #      tests only see what the wheel installed
+  #   3. (where the from-source matrix used to run) sync the project per
+  #      Python and run the full suite incl. spec/ on both backends
+  # Wheels are built first so the from-source sync (which compiles into
+  # src/ and build/) cannot leak into the wheel.
+  build-and-test:
+    name: Build and test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         # Note: windows-11-arm excluded until pyarrow publishes Windows ARM64 wheels
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-latest, windows-latest]
-        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+        include:
+          # The from-source test matrix only ever covered these three.
+          # source-lanes: how many Pythons' test phases run concurrently.
+          # A spec/tests run holds ~3 GB of parsed fixtures, so the lane
+          # count is set by runner RAM: 16 GB on the hosted Ubuntu and
+          # Windows runners, 7 GB on Apple Silicon.
+          - os: ubuntu-latest
+            source-tests: true
+            source-lanes: 3
+          - os: macos-latest
+            source-tests: true
+            source-lanes: 1
+          - os: windows-latest
+            source-tests: true
+            source-lanes: 3
+    env:
+      PYTHON_VERSIONS: "3.10 3.11 3.12 3.13 3.14"
 
     steps:
     - uses: actions/checkout@v4
@@ -34,13 +63,19 @@ jobs:
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
 
+    - name: Install system dependencies (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential python3-dev g++
+
     - name: Install uv
       uses: astral-sh/setup-uv@v4
 
-    - name: Build wheel
+    # The Python versions to build come from [tool.cibuildwheel] in pyproject.toml.
+    - name: Build wheels (all Python versions)
       run: uvx cibuildwheel==3.3.1 --output-dir wheelhouse
       env:
-        CIBW_BUILD: "cp${{ matrix.python-version == '3.10' && '310' || matrix.python-version == '3.11' && '311' || matrix.python-version == '3.12' && '312' || matrix.python-version == '3.13' && '313' || '314' }}-*"
         CIBW_BUILD_VERBOSITY: 1
         CIBW_BEFORE_BUILD: "pip install numpy cython"
         # Install Rust inside manylinux container (host toolchain not available)
@@ -49,14 +84,120 @@ jobs:
         # Build only native arch per runner (no cross-compilation or emulation)
         CIBW_ARCHS_LINUX: "native"
         CIBW_ARCHS_MACOS: "native"
-        # Build only native arch per runner (no cross-compilation)
         CIBW_ARCHS_WINDOWS: "native"
 
-    - name: Upload wheel
+    # One artifact per wheel (wheel-<os>-<python>), as before the
+    # consolidation; the publish job merges them with a wheel-* pattern.
+    - name: Upload wheel (Python 3.10)
       uses: actions/upload-artifact@v4
       with:
-        name: wheel-${{ matrix.os }}-${{ matrix.python-version }}
-        path: ./wheelhouse/*.whl
+        name: wheel-${{ matrix.os }}-3.10
+        path: ./wheelhouse/*-cp310-cp310-*.whl
+        if-no-files-found: error
+
+    - name: Upload wheel (Python 3.11)
+      uses: actions/upload-artifact@v4
+      with:
+        name: wheel-${{ matrix.os }}-3.11
+        path: ./wheelhouse/*-cp311-cp311-*.whl
+        if-no-files-found: error
+
+    - name: Upload wheel (Python 3.12)
+      uses: actions/upload-artifact@v4
+      with:
+        name: wheel-${{ matrix.os }}-3.12
+        path: ./wheelhouse/*-cp312-cp312-*.whl
+        if-no-files-found: error
+
+    - name: Upload wheel (Python 3.13)
+      uses: actions/upload-artifact@v4
+      with:
+        name: wheel-${{ matrix.os }}-3.13
+        path: ./wheelhouse/*-cp313-cp313-*.whl
+        if-no-files-found: error
+
+    - name: Upload wheel (Python 3.14)
+      uses: actions/upload-artifact@v4
+      with:
+        name: wheel-${{ matrix.os }}-3.14
+        path: ./wheelhouse/*-cp314-cp314-*.whl
+        if-no-files-found: error
+
+    # Each wheel is installed into its own venv outside the checkout and run
+    # through the venv's interpreter directly (not `uv run`, which would sync
+    # the project into the env and replace the wheel with a source build).
+    - name: Test wheels in isolated venvs
+      shell: bash
+      run: |
+        set -euo pipefail
+        for v in $PYTHON_VERSIONS; do
+          tag="cp${v/./}"
+          wheel=$(ls wheelhouse/*-"${tag}"-"${tag}"-*.whl)
+          venv="../wheel-venv-$v"
+          echo "::group::Python $v: $(basename "$wheel")"
+          uv venv "$venv" --python "$v"
+          uv pip install --python "$venv" "${wheel}[test]" pytest-xdist
+          if [ "$RUNNER_OS" = "Windows" ]; then py="$venv/Scripts/python.exe"; else py="$venv/bin/python"; fi
+          "$py" -m pytest tests/ -v --tb=short -n auto
+          LIBXRK_BACKEND=rust "$py" -m pytest tests/ -v --tb=short -n auto
+          echo "::endgroup::"
+        done
+
+    # Each Python gets its own project environment (UV_PROJECT_ENVIRONMENT)
+    # so the syncs can proceed while earlier Pythons are still testing. The
+    # syncs stay sequential: the editable build compiles into the shared
+    # source tree. Each Python's test phase then runs in a background lane,
+    # at most $SOURCE_TEST_LANES at a time, writing to its own log; the logs
+    # are printed in order once every lane has finished.
+    - name: Test from source (both backends + spec suite)
+      if: matrix.source-tests
+      shell: bash
+      env:
+        SOURCE_TEST_LANES: ${{ matrix.source-lanes }}
+      run: |
+        set -euo pipefail
+        logs=../source-test-logs
+        mkdir -p "$logs"
+
+        # Called from an `if`, so `set -e` is off inside: every command
+        # must propagate its own failure.
+        run_tests() {
+          local v="$1" py
+          if [ "$RUNNER_OS" = "Windows" ]; then py="../venv-$v/Scripts/python.exe"; else py="../venv-$v/bin/python"; fi
+          "$py" -m pytest tests/ -v --tb=short -n auto || return 1
+          LIBXRK_BACKEND=rust "$py" -m pytest tests/ -v --tb=short -n auto || return 1
+          # spec/ covers both backends in one session (parametrized `backend`
+          # fixture) and stays single-process: it holds every parsed fixture
+          # in session fixtures (~3 GB) and each xdist worker would hold its own copy.
+          "$py" -m pytest spec/tests/ -v --tb=short || return 1
+        }
+
+        for v in $PYTHON_VERSIONS; do
+          echo "::group::uv sync (Python $v)"
+          # --reinstall-package: never let uv reuse a cached build of the
+          # extensions compiled from an older checkout.
+          UV_PROJECT_ENVIRONMENT="../venv-$v" uv sync --python "$v" --reinstall-package libxrk
+          echo "::endgroup::"
+          # Throttle to $SOURCE_TEST_LANES running lanes. Polling, not
+          # `wait -n`: macOS ships bash 3.2, which lacks it.
+          while [ "$(jobs -rp | wc -l | tr -d ' ')" -ge "$SOURCE_TEST_LANES" ]; do sleep 5; done
+          echo "lane start: Python $v"
+          (
+            if run_tests "$v" > "$logs/$v.log" 2>&1; then echo ok > "$logs/$v.status"; else echo FAILED > "$logs/$v.status"; fi
+            echo "lane done: Python $v ($(cat "$logs/$v.status"))"
+          ) &
+        done
+        wait
+
+        rc=0
+        for v in $PYTHON_VERSIONS; do
+          status=$(cat "$logs/$v.status")
+          echo "::group::Python $v: $status"
+          cat "$logs/$v.log"
+          echo "::endgroup::"
+          [ "$status" = ok ] || rc=1
+        done
+        exit $rc
 
   build-sdist:
     name: Build source distribution
@@ -79,61 +220,13 @@ jobs:
         name: sdist
         path: dist/*.tar.gz
 
-  test-wheels:
-    name: Test wheel (${{ matrix.os }}, Python ${{ matrix.python-version }})
-    runs-on: ${{ matrix.os }}
-    needs: build-wheels
-    strategy:
-      fail-fast: false
-      matrix:
-        # Note: windows-11-arm excluded until pyarrow publishes Windows ARM64 wheels
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-latest, windows-latest]
-        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
-
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        lfs: true
-
-    - name: Install uv
-      uses: astral-sh/setup-uv@v4
-
-    - name: Download wheel artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: wheel-${{ matrix.os }}-${{ matrix.python-version }}
-        path: dist/
-
-    - name: Create venv and install wheel (Unix)
-      if: runner.os != 'Windows'
-      run: |
-        uv venv .venv --python ${{ matrix.python-version }}
-        WHEEL=$(ls dist/*.whl | head -1)
-        uv pip install --python .venv "${WHEEL}[test]"
-
-    - name: Create venv and install wheel (Windows)
-      if: runner.os == 'Windows'
-      shell: pwsh
-      run: |
-        uv venv .venv --python ${{ matrix.python-version }}
-        $wheel = (Get-ChildItem dist/*.whl | Select-Object -First 1).FullName
-        uv pip install --python .venv "${wheel}[test]"
-
-    - name: Run tests
-      run: uv run --python .venv pytest tests/ -v --tb=short
-
-    - name: Run tests (Rust backend)
-      run: uv run --python .venv pytest tests/ -v --tb=short
-      env:
-        LIBXRK_BACKEND: rust
-
   pyodide:
     uses: ./.github/workflows/pyodide.yml
 
   publish:
     name: Publish to PyPI
     runs-on: ubuntu-latest
-    needs: [build-wheels, build-sdist, test-wheels, pyodide]
+    needs: [build-and-test, build-sdist, pyodide]
     if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish_to_pypi == true)
     environment:
       name: pypi

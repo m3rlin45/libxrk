@@ -20,7 +20,7 @@ uv build             # Build wheel
 
 `spec/xrk_format.py` is the **single source of truth for the XRK wire format**, built with the Construct library. It parses real XRK/XRZ files and round-trips bytes byte-identically (every message type has a `TestXxxRoundTrip` in `spec/tests/test_round_trip.py` asserting `build(parse(raw)) == raw`).
 
-**Any change to how the wire format is interpreted must land in `spec/xrk_format.py` first.** The Cython and Rust backends then conform to the spec — not the other way around. Cross-implementation tests in `spec/tests/test_spec.py` compare the spec's output against the Cython parser and, when available, the official AIM DLL (via Wine, in `tests/reference_dll/`) as ground truth.
+**Any change to how the wire format is interpreted must land in `spec/xrk_format.py` first.** The Cython and Rust backends then conform to the spec — not the other way around. Cross-implementation tests in `spec/tests/test_spec.py` compare the spec's output against both compiled backends (the session-scoped `backend` fixture in `spec/tests/conftest.py` runs each spec-vs-backend test for Cython and Rust) and, when available, the official AIM DLL (via Wine, in `tests/reference_dll/`) as ground truth.
 
 When you find data parsing differs from AIM's RaceStudio output, start by reading `spec/xrk_format.py` and `spec/docs/`. Do not patch the Cython or Rust parsers without first updating the spec.
 
@@ -72,6 +72,11 @@ uv run pytest tests/test_sfj_xrk.py -k name      # Specific test
 ```
 
 Test data: `tests/test_data/` contains real XRK/XRZ files (SFJ and 86 vehicles).
+
+The spec suite (`just spec-test`) parses each fixture once into session-scoped
+fixtures in `spec/tests/conftest.py` and holds them all (~3 GB peak). Run it
+single-process: under `pytest -n` every worker holds its own copy of every
+fixture. Tests that need every file take the `any_parsed` fixture.
 
 ## Pyodide (WebAssembly) Builds
 
