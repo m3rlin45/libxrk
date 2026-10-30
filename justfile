@@ -22,9 +22,10 @@ typecheck:
 test:
     uv run pytest tests/ -v -n auto
 
-# Run spec tests
+# Run spec tests. Single-process on purpose: the suite holds every parsed
+# fixture in session fixtures (~3 GB) and each xdist worker would hold its own copy.
 spec-test:
-    uv run pytest spec/tests/ -v -n auto
+    uv run pytest spec/tests/ -v
 
 # Run all checks (lint, clippy, typecheck, test, spec-test)
 check: lint clippy typecheck test spec-test

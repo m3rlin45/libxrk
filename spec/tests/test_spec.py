@@ -8,18 +8,16 @@ Tests in this module verify that:
 
 import struct
 
+import numpy as np
 import pytest
 
 from spec.xrk_format import (
     ParseResult,
+    _decompress_if_zlib,
     chs_padding_bytes,
-    parse_xrk_file,
     DECODER_TABLE,
 )
-from spec.tests.conftest import (
-    ALL_FILES,
-    ALL_XRK_FILES,
-)
+from spec.tests.conftest import ALL_XRK_FILES
 
 
 # ---------------------------------------------------------------------------
@@ -94,15 +92,12 @@ def _unique_seg0_laps(parsed):
 class TestParseAllFiles:
     """Verify that all test files parse successfully."""
 
-    @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
-    def test_parse_validates(self, filepath):
+    def test_parse_validates(self, any_parsed):
         """Each file should parse completely and contain expected message types."""
-        result = parse_xrk_file(str(filepath))
+        result = any_parsed
         assert isinstance(result, ParseResult)
         assert len(result.messages) > 0
-        assert (
-            result.leftover_bytes < 20
-        ), f"{filepath.name}: {result.leftover_bytes} leftover bytes"
+        assert result.leftover_bytes < 20, f"{result.leftover_bytes} leftover bytes"
         assert len(result.header_messages()) > 0
         assert len(result.channels) > 0
         assert len(result.messages_by_token("LAP")) > 0
@@ -118,15 +113,21 @@ class TestParseAllFiles:
 
     @pytest.mark.parametrize("filepath", ALL_XRK_FILES, ids=lambda p: p.name)
     def test_xrk_xrz_equivalence(self, filepath):
-        """XRK and XRZ variants should produce the same channel definitions."""
+        """An XRZ is its XRK twin zlib-compressed. Decompressed, it is a
+        strict prefix of the XRK: the only difference is a short trailer of
+        RaceStudio-appended session metadata strings (RCR, VEH, CMP, VTY,
+        NTE) that the XRK gained after the XRZ was exported. So every
+        parse-level property proven on the XRK fixture (channel definitions,
+        data messages) holds for the XRZ without parsing it a second time."""
         xrz = filepath.with_suffix(".xrz")
         if not xrz.exists():
             pytest.skip(f"No XRZ counterpart for {filepath.name}")
-        result_xrk = parse_xrk_file(str(filepath))
-        result_xrz = parse_xrk_file(str(xrz))
-        assert set(result_xrk.channels.keys()) == set(result_xrz.channels.keys())
-        for idx in result_xrk.channels:
-            assert result_xrk.channels[idx].name == result_xrz.channels[idx].name
+        xrk_bytes = filepath.read_bytes()
+        xrz_bytes = _decompress_if_zlib(xrz.read_bytes())
+        assert xrk_bytes.startswith(xrz_bytes)
+        trailer = xrk_bytes[len(xrz_bytes) :]
+        assert len(trailer) < 1024, f"unexpected {len(trailer)}-byte trailer"
+        assert trailer == b"" or trailer.startswith(b"<h"), trailer[:16]
 
 
 # ---------------------------------------------------------------------------
@@ -174,9 +175,9 @@ class TestCHSCrossValidation:
         "GPS_Yaw_Rate",
     }
 
-    def test_channel_names(self, parsed_and_cython):
+    def test_channel_names(self, parsed_and_backend):
         """All CHS long_names should match channels known to Cython parser."""
-        parsed, cython_log = parsed_and_cython
+        parsed, cython_log = parsed_and_backend
         spec_names = {ch.name for ch in parsed.channels.values()}
         for name in cython_log.channels:
             # GPS-derived channels don't have CHS entries
@@ -184,9 +185,9 @@ class TestCHSCrossValidation:
                 continue
             assert name in spec_names, f"Cython channel {name!r} not in spec CHS definitions"
 
-    def test_channel_metadata(self, parsed_and_cython):
+    def test_channel_metadata(self, parsed_and_backend):
         """Every CHS metadata field should match the Cython parser."""
-        parsed, cython_log = parsed_and_cython
+        parsed, cython_log = parsed_and_backend
         for idx, ch in parsed.channels.items():
             name = ch.name
             if name in self._GPS_COMPUTED_CHANNELS:
@@ -232,10 +233,9 @@ class TestCHSCrossValidation:
                 str(ch.display_range_max) == md["display_range_max"]
             ), f"Ch {name!r}: display_range_max mismatch"
 
-    @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
-    def test_chs_padding_is_zero(self, filepath):
+    def test_chs_padding_is_zero(self, any_parsed):
         """All CHS padding fields should be zero across all test files."""
-        result = parse_xrk_file(str(filepath))
+        result = any_parsed
         for idx, ch in result.channels.items():
             padding = chs_padding_bytes(ch)
             if any(padding):
@@ -243,10 +243,9 @@ class TestCHSCrossValidation:
                 nonzero = [(i, b) for i, b in enumerate(padding) if b != 0]
                 pytest.fail(f"CHS padding non-zero for {name!r}: {nonzero}")
 
-    @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
-    def test_chs_data_size_consistent(self, filepath):
+    def test_chs_data_size_consistent(self, any_parsed):
         """CHS data_size should match decoder_type expectations."""
-        result = parse_xrk_file(str(filepath))
+        result = any_parsed
         for idx, ch in result.channels.items():
             dt = ch.decoder_type
             if dt in DECODER_TABLE:
@@ -297,9 +296,9 @@ class TestGRPCrossValidation:
 class TestGPSCrossValidation:
     """Verify GPS message parsing matches Cython output."""
 
-    def test_gps_count(self, parsed_and_cython):
+    def test_gps_count(self, parsed_and_backend):
         """GPS message count should match Cython channel row count."""
-        parsed, cython_log = parsed_and_cython
+        parsed, cython_log = parsed_and_backend
         spec_count = len(parsed.gps_payloads)
         cython_count = len(cython_log.channels["GPS Speed"])
         assert spec_count == cython_count
@@ -349,13 +348,18 @@ class TestGPSCrossValidation:
 class TestLAPCrossValidation:
     """Verify LAP messages match Cython laps table."""
 
-    def test_lap_count(self, parsed_and_cython):
+    def test_lap_count(self, parsed_and_backend):
         """Lap count should match Cython laps table."""
-        parsed, cython_log = parsed_and_cython
+        parsed, cython_log = parsed_and_backend
         unique_laps = _unique_seg0_laps(parsed)
         assert len(unique_laps) == len(cython_log.laps)
 
-    def test_sfj_lap_times(self, sfj_parsed, sfj_cython):
+    def test_aim_official_lap_count(self, aim_official_parsed, aim_official_backend):
+        # aim_official carries v2 (32-byte) LAP payloads; both the spec and
+        # the backends read the absolute end time at [28:32].
+        assert len(_unique_seg0_laps(aim_official_parsed)) == len(aim_official_backend.laps)
+
+    def test_sfj_lap_times(self, sfj_parsed, sfj_backend):
         """SFJ lap end_time and duration should produce matching start/end times."""
         unique = _unique_seg0_laps(sfj_parsed)
 
@@ -363,7 +367,7 @@ class TestLAPCrossValidation:
         first_lap = unique[0]
         time_offset = first_lap["end_time"] - first_lap["duration"]
 
-        cython_laps = sfj_cython.laps
+        cython_laps = sfj_backend.laps
         for i, lap in enumerate(unique):
             start = lap["end_time"] - lap["duration"] - time_offset
             end = lap["end_time"] - time_offset
@@ -381,7 +385,7 @@ class TestLAPCrossValidation:
 class TestMetadataCrossValidation:
     """Verify metadata from string and structured messages."""
 
-    def test_sfj_string_metadata(self, sfj_parsed, sfj_cython):
+    def test_sfj_string_metadata(self, sfj_parsed, sfj_backend):
         """String metadata should match Cython output for SFJ."""
         # Map token -> metadata key
         string_checks = {
@@ -399,22 +403,22 @@ class TestMetadataCrossValidation:
             if not msgs:
                 continue
             spec_val = msgs[-1].payload
-            if meta_key in sfj_cython.metadata:
+            if meta_key in sfj_backend.metadata:
                 assert (
-                    spec_val == sfj_cython.metadata[meta_key]
-                ), f"{meta_key}: {spec_val!r} != {sfj_cython.metadata[meta_key]!r}"
+                    spec_val == sfj_backend.metadata[meta_key]
+                ), f"{meta_key}: {spec_val!r} != {sfj_backend.metadata[meta_key]!r}"
 
-    def test_sfj_logger_identity(self, sfj_parsed, sfj_cython):
+    def test_sfj_logger_identity(self, sfj_parsed, sfj_backend):
         """Logger ID and Model ID should match for SFJ."""
         # SRC message contains embedded idn
         src_msgs = sfj_parsed.messages_by_token("SRC")
         assert len(src_msgs) > 0
         src = src_msgs[-1].payload
         assert src is not None
-        assert src["logger_id"] == sfj_cython.metadata["Logger ID"]
-        assert src["model_id"] == sfj_cython.metadata["Logger Model ID"]
+        assert src["logger_id"] == sfj_backend.metadata["Logger ID"]
+        assert src["model_id"] == sfj_backend.metadata["Logger Model ID"]
 
-    def test_86_logger_identity(self, file_86_parsed, file_86_cython):
+    def test_86_logger_identity(self, file_86_parsed, file_86_backend):
         """Logger ID and Model ID should match for 86."""
         # 86 file may use idn or SRC
         idn_msgs = file_86_parsed.messages_by_token("idn")
@@ -425,69 +429,69 @@ class TestMetadataCrossValidation:
         elif src_msgs and src_msgs[-1].payload:
             found = src_msgs[-1].payload
         assert found is not None
-        assert found["logger_id"] == file_86_cython.metadata["Logger ID"]
-        assert found["model_id"] == file_86_cython.metadata["Logger Model ID"]
+        assert found["logger_id"] == file_86_backend.metadata["Logger ID"]
+        assert found["model_id"] == file_86_backend.metadata["Logger Model ID"]
 
-    def test_sfj_gps_receiver(self, sfj_parsed, sfj_cython):
+    def test_sfj_gps_receiver(self, sfj_parsed, sfj_backend):
         """GPS Receiver type should match for SFJ."""
         gpsr_msgs = sfj_parsed.messages_by_token("GPSR")
         assert len(gpsr_msgs) > 0
         gpsr = gpsr_msgs[-1].payload
-        assert gpsr["type"] == sfj_cython.metadata["GPS Receiver"]
+        assert gpsr["type"] == sfj_backend.metadata["GPS Receiver"]
 
-    def test_86_gps_receiver(self, file_86_parsed, file_86_cython):
+    def test_86_gps_receiver(self, file_86_parsed, file_86_backend):
         """GPS Receiver type should match for 86."""
         gpsr_msgs = file_86_parsed.messages_by_token("GPSR")
         assert len(gpsr_msgs) > 0
         gpsr = gpsr_msgs[-1].payload
-        assert gpsr["type"] == file_86_cython.metadata["GPS Receiver"]
+        assert gpsr["type"] == file_86_backend.metadata["GPS Receiver"]
 
-    def test_sfj_race_mode(self, sfj_parsed, sfj_cython):
+    def test_sfj_race_mode(self, sfj_parsed, sfj_backend):
         """Race Mode should match for SFJ ('speed')."""
         racm_msgs = sfj_parsed.messages_by_token("RACM")
         found_string_mode = None
         for m in racm_msgs:
             if m.payload and m.payload["mode"] == "string":
                 found_string_mode = m.payload["value"]
-        assert found_string_mode == sfj_cython.metadata.get("Race Mode")
+        assert found_string_mode == sfj_backend.metadata.get("Race Mode")
 
-    def test_sfj_vet(self, sfj_parsed, sfj_cython):
+    def test_sfj_vet(self, sfj_parsed, sfj_backend):
         """VET should match for SFJ."""
         vet_msgs = sfj_parsed.messages_by_token("VET")
         assert len(vet_msgs) > 0
-        assert vet_msgs[-1].payload.value == sfj_cython.metadata["Vehicle Electronics Type"]
+        assert vet_msgs[-1].payload.value == sfj_backend.metadata["Vehicle Electronics Type"]
 
-    def test_sfj_trk(self, sfj_parsed, sfj_cython):
+    def test_sfj_trk(self, sfj_parsed, sfj_backend):
         """Track info should match for SFJ."""
         trk_msgs = sfj_parsed.messages_by_token("TRK")
         assert len(trk_msgs) > 0
         trk = trk_msgs[-1].payload
-        assert trk["name"] == sfj_cython.metadata["Venue"]
+        assert trk["name"] == sfj_backend.metadata["Venue"]
 
-    def test_sfj_odo(self, sfj_parsed, sfj_cython):
+    def test_sfj_odo(self, sfj_parsed, sfj_backend):
         """ODO records should match for SFJ."""
         odo_msgs = sfj_parsed.messages_by_token("ODO")
         assert len(odo_msgs) > 0
         odo = odo_msgs[-1].payload
         # Check System distance
         assert "System" in odo
-        expected_dist_km = sfj_cython.metadata["Odo/System Distance (km)"]
+        expected_dist_km = sfj_backend.metadata["Odo/System Distance (km)"]
         actual_dist_km = odo["System"]["dist"] / 1000
         assert abs(actual_dist_km - expected_dist_km) < 0.01
 
-    def test_86_expansion_devices(self, file_86_parsed, file_86_cython):
+    def test_86_expansion_devices(self, file_86_parsed, file_86_backend):
         """86 should have expansion devices matching Cython metadata."""
         enf_msgs = file_86_parsed.messages_by_token("ENF")
         assert len(enf_msgs) > 0
         # Expansion devices should exist in Cython metadata
-        assert "Expansion Devices" in file_86_cython.metadata
-        cython_devices = file_86_cython.metadata["Expansion Devices"]
+        assert "Expansion Devices" in file_86_backend.metadata
+        cython_devices = file_86_backend.metadata["Expansion Devices"]
         assert len(enf_msgs) == len(cython_devices)
 
-    def test_sfj_calibrations(self, sfj_parsed, sfj_cython):
+    def test_sfj_calibrations(self, sfj_parsed, sfj_backend):
         """CAL messages should match Cython metadata."""
         cal_msgs = sfj_parsed.messages_by_token("CAL")
-        cython_cals = sfj_cython.metadata.get("Calibrations", [])
+        cython_cals = sfj_backend.metadata.get("Calibrations", [])
         assert len(cal_msgs) == len(cython_cals)
         for i, msg in enumerate(cal_msgs):
             assert msg.payload["type"] == cython_cals[i]["type"]
@@ -503,10 +507,9 @@ class TestMetadataCrossValidation:
 class TestCDECrossValidation:
     """Verify CDE messages are consistent."""
 
-    @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
-    def test_cde_channel_indices_valid(self, filepath):
+    def test_cde_channel_indices_valid(self, any_parsed):
         """CDE channel_index should reference a valid CHS channel."""
-        result = parse_xrk_file(str(filepath))
+        result = any_parsed
         cde_msgs = result.messages_by_token("CDE")
         for m in cde_msgs:
             if m.payload is not None:
@@ -514,10 +517,9 @@ class TestCDECrossValidation:
                     m.payload.channel_index in result.channels
                 ), f"CDE channel_index {m.payload.channel_index} not in channels"
 
-    @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
-    def test_cde_session_uid_consistent(self, filepath):
+    def test_cde_session_uid_consistent(self, any_parsed):
         """All CDE messages in a file should have the same session_uid."""
-        result = parse_xrk_file(str(filepath))
+        result = any_parsed
         cde_msgs = result.messages_by_token("CDE")
         if not cde_msgs:
             pytest.skip("No CDE messages")
@@ -533,25 +535,25 @@ class TestCDECrossValidation:
 class TestIssue49CrossValidation:
     """Cross-validation tests for the issue49 badGPSdata.xrk file."""
 
-    def test_vet_cross_validation(self, issue49_parsed, issue49_cython):
+    def test_vet_cross_validation(self, issue49_parsed, issue49_backend):
         """VET value should match between spec and Cython parsers."""
         vet_msgs = issue49_parsed.messages_by_token("VET")
         assert len(vet_msgs) > 0
         spec_val = vet_msgs[-1].payload.value
-        cython_val = issue49_cython.metadata["Vehicle Electronics Type"]
+        cython_val = issue49_backend.metadata["Vehicle Electronics Type"]
         assert spec_val == cython_val == "..."
 
-    def test_racm_cross_validation(self, issue49_parsed, issue49_cython):
+    def test_racm_cross_validation(self, issue49_parsed, issue49_backend):
         """RACM string value should match between spec and Cython parsers."""
         racm_msgs = issue49_parsed.messages_by_token("RACM")
         found_string_mode = None
         for m in racm_msgs:
             if m.payload and m.payload["mode"] == "string":
                 found_string_mode = m.payload["value"]
-        cython_val = issue49_cython.metadata.get("Race Mode")
+        cython_val = issue49_backend.metadata.get("Race Mode")
         assert found_string_mode == cython_val == "..."
 
-    def test_logger_identity(self, issue49_parsed, issue49_cython):
+    def test_logger_identity(self, issue49_parsed, issue49_backend):
         """Logger ID and Model ID should match between spec and Cython parsers."""
         src_msgs = issue49_parsed.messages_by_token("SRC")
         idn_msgs = issue49_parsed.messages_by_token("idn")
@@ -561,8 +563,8 @@ class TestIssue49CrossValidation:
         elif idn_msgs:
             found = idn_msgs[-1].payload
         assert found is not None
-        assert found["logger_id"] == issue49_cython.metadata["Logger ID"]
-        assert found["model_id"] == issue49_cython.metadata["Logger Model ID"]
+        assert found["logger_id"] == issue49_backend.metadata["Logger ID"]
+        assert found["model_id"] == issue49_backend.metadata["Logger Model ID"]
 
     def test_new_string_tokens(self, issue49_parsed):
         """New string tokens (+LM, MAN, MOD) should be present with str payloads."""
@@ -686,19 +688,19 @@ class TestDataMessageCrossValidation:
 
         assert checked > 0, "No channels were cross-validated"
 
-    def test_all_channels_first_sample(self, parsed_and_cython):
+    def test_all_channels_first_sample(self, parsed_and_backend):
         """First sample for every channel should match Cython output."""
-        parsed, cython_log = parsed_and_cython
+        parsed, cython_log = parsed_and_backend
         self._check_first_last_samples(parsed, cython_log, "first")
 
-    def test_all_channels_last_sample(self, parsed_and_cython):
+    def test_all_channels_last_sample(self, parsed_and_backend):
         """Last sample for every channel should match Cython output."""
-        parsed, cython_log = parsed_and_cython
+        parsed, cython_log = parsed_and_backend
         self._check_first_last_samples(parsed, cython_log, "last")
 
-    def test_decoder_type_coverage(self, parsed_and_cython):
+    def test_decoder_type_coverage(self, parsed_and_backend):
         """Every decoder type with Cython-exposed channels should be validated."""
-        parsed, cython_log = parsed_and_cython
+        parsed, cython_log = parsed_and_backend
         samples = self._collect_channel_samples(parsed)
         # Only count decoder types that have at least one Cython-exposed channel
         decoder_types_exposed = set()
@@ -720,7 +722,7 @@ class TestDataMessageCrossValidation:
         assert not missing, f"Decoder types not validated: {missing}"
         assert len(decoder_types_validated) >= 3, "Too few decoder types validated"
 
-    def test_86_g_message_group_unpacking(self, file_86_parsed, file_86_cython):
+    def test_86_g_message_group_unpacking(self, file_86_parsed, file_86_backend):
         """G-message data should unpack to match Cython channel values."""
         # Find first G message for each group
         first_g_by_group = {}
@@ -749,7 +751,7 @@ class TestDataMessageCrossValidation:
                 offset += ch_size
 
                 name = ch.name
-                if name not in file_86_cython.channels:
+                if name not in file_86_backend.channels:
                     continue
                 if ch.decoder_type not in DECODER_TABLE:
                     continue
@@ -758,7 +760,7 @@ class TestDataMessageCrossValidation:
                 if value is None:
                     continue
 
-                cython_first = file_86_cython.channels[name].column(name)[0].as_py()
+                cython_first = file_86_backend.channels[name].column(name)[0].as_py()
                 assert abs(value - float(cython_first)) < 0.01, (
                     f"Group {grp_idx}, Ch {name!r}: " f"unpacked {value} != cython {cython_first}"
                 )
@@ -865,22 +867,53 @@ class TestExhaustiveChannelValues:
         return arrays
 
     def _decode_channel_array(self, raw_samples, ch):
-        """Decode a list of raw byte samples into float values."""
-        values = []
-        is_voltage = ch.units == "V"
-        for sample_bytes in raw_samples:
-            raw = _decode_sample(sample_bytes, ch.decoder_type)
-            if raw is None:
-                return None
-            value = _apply_fixup(raw, ch.decoder_type)
-            if is_voltage:
-                value = value / 1000.0
-            values.append(float(value))
+        """Decode a list of raw byte samples into a float64 numpy array.
+
+        Vectorised equivalent of calling _decode_sample + _apply_fixup on
+        every sample (the 86 fixture has ~40M samples, which took ~12 s per
+        backend in pure Python). Returns None if any sample is shorter than
+        the decoder's width, matching the per-sample helper.
+        """
+        import numpy as np
+
+        fmt = DECODER_TABLE[ch.decoder_type][0]
+        size = struct.calcsize(fmt)
+        if not raw_samples:
+            return np.zeros(0, dtype=np.float64)
+        lengths = set(map(len, raw_samples))
+        if min(lengths) < size:
+            return None
+        dtype = np.dtype("<" + fmt)
+        if len(lengths) == 1:
+            # Uniform sample width: one join, then a strided view of the
+            # leading `size` bytes of each sample (data_size may exceed the
+            # decoder width, e.g. Lap Time size=20 with an 'i' decoder).
+            width = lengths.pop()
+            rows = np.frombuffer(b"".join(raw_samples), dtype=np.uint8).reshape(-1, width)
+            raw = np.ascontiguousarray(rows[:, :size]).view(dtype).reshape(-1)
+        else:
+            raw = np.frombuffer(b"".join(sample[:size] for sample in raw_samples), dtype=dtype)
+
+        if ch.decoder_type == 20:
+            # float16 encoded as uint16
+            values = raw.view(np.float16).astype(np.float64)
+        elif ch.decoder_type == 15:
+            # Gear lookup: 'N','1'..'6' -> 0..6, anything else passes through
+            lut = np.arange(65536, dtype=np.float64)
+            lut[ord("N")] = 0
+            for g in "123456":
+                lut[ord(g)] = int(g)
+            values = lut[raw]
+        else:
+            values = raw.astype(np.float64)
+        if ch.units == "V":
+            # Voltage channels are stored as mV, the backends divide by 1000
+            values = values / 1000.0
         return values
 
     def _compare_all_values(self, result, cython_log):
         """Compare every sample of every channel. Returns (checked_channels, errors)."""
-        import math
+        import numpy as np
 
         arrays = self._build_channel_arrays(result)
         checked = 0
@@ -900,7 +933,7 @@ class TestExhaustiveChannelValues:
                 continue
 
             cython_col = cython_log.channels[name].column(name)
-            cython_values = cython_col.to_pylist()
+            cython_values = cython_col.to_numpy(zero_copy_only=False).astype(np.float64)
 
             if len(spec_values) != len(cython_values):
                 errors.append(
@@ -909,40 +942,45 @@ class TestExhaustiveChannelValues:
                 )
                 continue
 
-            for i, (sv, cv) in enumerate(zip(spec_values, cython_values)):
-                cv = float(cv)
-                # Handle NaN
-                if math.isnan(sv) and math.isnan(cv):
-                    continue
-                if math.isnan(sv) or math.isnan(cv):
-                    errors.append(f"Ch {name!r} sample {i}: NaN mismatch " f"spec={sv} cython={cv}")
-                    break
-                if abs(sv - cv) >= 0.01:
+            # Same rules as the per-sample loop this replaces: both NaN is a
+            # match, one NaN is a mismatch, otherwise |diff| must be < 0.01.
+            # Report the first offending sample only.
+            spec_nan = np.isnan(spec_values)
+            cy_nan = np.isnan(cython_values)
+            nan_mismatch = spec_nan ^ cy_nan
+            with np.errstate(invalid="ignore"):
+                value_mismatch = np.abs(spec_values - cython_values) >= 0.01
+            bad = np.flatnonzero(nan_mismatch | value_mismatch)
+            if len(bad):
+                i = int(bad[0])
+                sv, cv = float(spec_values[i]), float(cython_values[i])
+                if nan_mismatch[i]:
+                    errors.append(f"Ch {name!r} sample {i}: NaN mismatch spec={sv} cython={cv}")
+                else:
                     errors.append(
                         f"Ch {name!r} sample {i}/{len(spec_values)}: "
                         f"spec={sv} cython={cv} diff={abs(sv - cv)}"
                     )
-                    break  # One error per channel is enough for diagnostics
 
             checked += 1
 
         return checked, errors
 
-    def test_aim_official_every_value(self, aim_official_parsed, aim_official_cython):
+    def test_aim_official_every_value(self, aim_official_parsed, aim_official_backend):
         """Every sample of every AIM official channel must match Cython (3.1M)."""
-        checked, errors = self._compare_all_values(aim_official_parsed, aim_official_cython)
+        checked, errors = self._compare_all_values(aim_official_parsed, aim_official_backend)
         assert checked > 0, "No channels were cross-validated"
         assert not errors, f"Value mismatches:\n" + "\n".join(errors)
 
-    def test_sfj_every_value(self, sfj_parsed, sfj_cython):
+    def test_sfj_every_value(self, sfj_parsed, sfj_backend):
         """Every sample of every SFJ channel must match Cython (7.9M)."""
-        checked, errors = self._compare_all_values(sfj_parsed, sfj_cython)
+        checked, errors = self._compare_all_values(sfj_parsed, sfj_backend)
         assert checked > 0, "No channels were cross-validated"
         assert not errors, f"Value mismatches:\n" + "\n".join(errors)
 
-    def test_86_every_value(self, file_86_parsed, file_86_cython):
+    def test_86_every_value(self, file_86_parsed, file_86_backend):
         """Every sample of every 86 channel must match Cython (40M)."""
-        checked, errors = self._compare_all_values(file_86_parsed, file_86_cython)
+        checked, errors = self._compare_all_values(file_86_parsed, file_86_backend)
         assert checked > 0, "No channels were cross-validated"
         assert not errors, f"Value mismatches:\n" + "\n".join(errors)
 
@@ -1046,16 +1084,16 @@ class TestDLLCrossValidation:
         unique = _unique_seg0_laps(parsed)
         assert len(unique) == dll_lap_count, f"Lap count: spec={len(unique)} dll={dll_lap_count}"
 
-    def test_aim_official_v2_lap_times(self, aim_official_dll, aim_official_cython):
+    def test_aim_official_v2_lap_times(self, aim_official_dll, aim_official_backend):
         """The v2 LAP interpretation (absolute end time at [28:32]) must
         reproduce the official DLL's lap table exactly, to the millisecond."""
         dll_laps = aim_official_dll["laps"]
-        laps = aim_official_cython.laps
+        laps = aim_official_backend.laps
         assert len(dll_laps) == laps.num_rows
         assert [lap["start_ms"] for lap in dll_laps] == laps.column("start_time").to_pylist()
         assert [lap["end_ms"] for lap in dll_laps] == laps.column("end_time").to_pylist()
 
-    def test_aim_official_renamed_channels_match_dll(self, aim_official_dll, aim_official_cython):
+    def test_aim_official_renamed_channels_match_dll(self, aim_official_dll, aim_official_backend):
         """Last-write-wins channel renames must match the DLL: test.xrk's
         final CNFs rename 'Temperature 1'/'Temperature 2' to
         'Exhaust Temp'/'Water Temp', and the DLL exposes the new names
@@ -1063,10 +1101,10 @@ class TestDLLCrossValidation:
         dll_by_name = {ch["name"]: ch["sample_count"] for ch in aim_official_dll["channels"]}
         for name in ("Exhaust Temp", "Water Temp"):
             assert name in dll_by_name
-            assert name in aim_official_cython.channels
-            assert len(aim_official_cython.channels[name]) == dll_by_name[name]
-        assert "Temperature 1" not in aim_official_cython.channels
-        assert "Temperature 2" not in aim_official_cython.channels
+            assert name in aim_official_backend.channels
+            assert len(aim_official_backend.channels[name]) == dll_by_name[name]
+        assert "Temperature 1" not in aim_official_backend.channels
+        assert "Temperature 2" not in aim_official_backend.channels
 
     def test_metadata(self, parsed_and_dll):
         """Metadata should match DLL."""
@@ -1435,7 +1473,11 @@ class TestIssue68SpecVsBackends:
                 if len(spec) != len(backend_v):
                     errors.append(f"{name}: count spec={len(spec)} backend={len(backend_v)}")
                     continue
-                diffs = sum(1 for i in range(len(backend_v)) if abs(spec[i] - backend_v[i]) > 1e-9)
+                # Compare in the backend column's own dtype (float32 for most
+                # channels): the spec's float64 canonical value only has to
+                # round to the value the backend stored.
+                spec_arr = np.asarray(spec, dtype=backend_v.dtype)
+                diffs = int(np.count_nonzero(np.abs(spec_arr - backend_v) > 1e-9))
                 if diffs:
                     errors.append(f"{name}: {diffs} values differ")
             checked += 1

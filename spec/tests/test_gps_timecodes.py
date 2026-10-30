@@ -168,24 +168,17 @@ class TestIssue84CrossImplementation:
     def _gps_timecodes(log):
         return log.channels["GPS Speed"].column("timecodes").to_pylist()
 
-    def test_cython_span_matches_receiver_clock(self, issue84_parsed, issue84_cython):
+    def test_backend_span_matches_receiver_clock(self, issue84_parsed, issue84_backend):
         _, itow = _raw_timecodes_and_itow(issue84_parsed)
         nonzero = [t for t in itow if t > 0]
         truth_span = max(nonzero) - min(nonzero)
-        t = self._gps_timecodes(issue84_cython)
-        assert abs((t[-1] - t[0]) - truth_span) <= 100
-
-    def test_rust_span_matches_receiver_clock(self, issue84_parsed, issue84_rust):
-        _, itow = _raw_timecodes_and_itow(issue84_parsed)
-        nonzero = [t for t in itow if t > 0]
-        truth_span = max(nonzero) - min(nonzero)
-        t = self._gps_timecodes(issue84_rust)
+        t = self._gps_timecodes(issue84_backend)
         assert abs((t[-1] - t[0]) - truth_span) <= 100
 
     def test_backends_agree_on_gps_timecodes(self, issue84_cython, issue84_rust):
         assert self._gps_timecodes(issue84_cython) == self._gps_timecodes(issue84_rust)
 
-    def test_matches_official_aim_dll_exactly(self, issue84_cython, issue84_dll_gps):
+    def test_matches_official_aim_dll_exactly(self, issue84_backend, issue84_dll_gps):
         """Ground truth: AIM's own parser, via `tests/reference_dll`.
 
         The DLL reconstructs this file's timeline the same way — it does NOT
@@ -198,7 +191,7 @@ class TestIssue84CrossImplementation:
         """
         raw = {c["name"]: c for c in issue84_dll_gps["gps_raw"]}
         dll_t = [round(t * 1000.0) for t in raw["ECEF position_X"]["times"]]
-        lx_t = self._gps_timecodes(issue84_cython)
+        lx_t = self._gps_timecodes(issue84_backend)
 
         assert len(dll_t) == len(lx_t), "sample count differs from the AIM DLL"
         offset = dll_t[0] - lx_t[0]
@@ -208,9 +201,9 @@ class TestIssue84CrossImplementation:
         assert sum(1 for i in range(len(dll_t) - 1) if dll_t[i + 1] < dll_t[i]) == 1
         assert len(dll_t) - len(set(dll_t)) == 41
 
-    def test_gps_stays_in_sync_with_non_gps_channels(self, issue84_cython):
+    def test_gps_stays_in_sync_with_non_gps_channels(self, issue84_backend):
         """The user-visible symptom: GPS drifting away from every other channel."""
-        log = issue84_cython
+        log = issue84_backend
         gps = self._gps_timecodes(log)
         others = [
             log.channels[c].column("timecodes").to_pylist()
