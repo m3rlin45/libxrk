@@ -490,7 +490,7 @@ GPSRPayload = Struct(
     "_mid" / Bytes(14),  # [8:22]  unknown
     "channel_index" / Int16ul,  # [22:24] GPS channel index
     "_post" / Bytes(8),  # [24:32] unknown
-    "u32_32" / Int32ul,  # [32:36] expected 410
+    "u32_32" / Int32ul,  # [32:36] 410 in most files, other values seen; not decoded
 )
 
 
