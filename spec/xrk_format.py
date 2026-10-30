@@ -837,6 +837,9 @@ _DISPATCH_TABLE = _dispatch_table(
     ("GPS", _Raw("gps_payloads")),
     ("GPS1", _Raw("gps_payloads")),
     ("GNFI", _Raw("gnfi_payloads")),
+    # SmartyCam syslog chunks (1000-byte text slices, version 0). Only seen in
+    # the telemetry stream embedded in SmartyCam MP4 files; see spec/mp4_format.py.
+    ("XLOG", _Raw("xlog_payloads")),
     # Struct parsing (with optional side-effects and attribute extraction)
     ("CHS", _Parse(CHSPayload, _register_chs)),
     ("GRP", _Parse(GRPPayload, _register_grp)),
@@ -1216,6 +1219,7 @@ class ParseResult:
     channel_mms: dict = field(default_factory=dict)  # {channel_index: Mms value}
     gps_payloads: list = field(default_factory=list)  # List of raw GPS payload bytes (56B each)
     gnfi_payloads: list = field(default_factory=list)  # List of raw GNFI payload bytes (32B each)
+    xlog_payloads: list = field(default_factory=list)  # SmartyCam syslog text chunks (MP4 only)
     leftover_bytes: int = 0  # Non-zero means unparsed trailing data
     # Populated post-parse for V2/V3 c-message resolution. Maps a (c)
     # channel_field observed in a V2 or V3 message to the CHS channel index
