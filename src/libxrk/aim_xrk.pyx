@@ -33,12 +33,9 @@ from . import base
 # Bytes between two progress callbacks. The previous value, 8_000_000, meant no
 # callback fired at all for any file under 8 MB — which is most single-session
 # logs. 256 KB gives ~20 callbacks on a 5 MB file and ~160 on a 42 MB one, for
-# no measurable cost. Overridable without rebuilding through the
-# LIBXRK_PROGRESS_INTERVAL environment variable (same knob as the Rust backend).
-try:
-    _PROGRESS_INTERVAL = max(4096, int(os.environ.get('LIBXRK_PROGRESS_INTERVAL', 262_144)))
-except ValueError:
-    _PROGRESS_INTERVAL = 262_144
+# no measurable cost. Keep in step with DEFAULT_PROGRESS_INTERVAL in
+# crates/libxrk/src/parser.rs so both backends call back at the same positions.
+_PROGRESS_INTERVAL = 262_144
 
 # The parallel path below is only attempted where the platform can start
 # threads. Pyodide/WebAssembly cannot: there, passing a progress callback made

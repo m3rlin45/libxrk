@@ -715,7 +715,12 @@ fn prescan_header_message(msg: &HeaderMessage, state: &mut ParserState, hints: &
     if token == tokens::cnf() {
         // Recursively discover channels from CNF payload.
         let mut sub_state = ParserState::new();
-        scan_stream(&msg.payload, &mut sub_state, None, DEFAULT_PROGRESS_INTERVAL);
+        scan_stream(
+            &msg.payload,
+            &mut sub_state,
+            None,
+            DEFAULT_PROGRESS_INTERVAL,
+        );
         for ch_info in sub_state.channels.values() {
             if !state.channels.contains_key(&ch_info.chs.index) {
                 state.register_chs(&ch_info.chs);
@@ -881,7 +886,12 @@ fn handle_header_message(msg: &HeaderMessage, state: &mut ParserState) {
 
         // Recursively parse the CNF payload
         let mut sub_state = ParserState::new();
-        scan_stream(&msg.payload, &mut sub_state, None, DEFAULT_PROGRESS_INTERVAL);
+        scan_stream(
+            &msg.payload,
+            &mut sub_state,
+            None,
+            DEFAULT_PROGRESS_INTERVAL,
+        );
 
         // Merge CHS and GRP from sub-parse. A later CNF re-definition wins
         // on names (matching the AIM DLL, which exposes the renamed channel
@@ -910,7 +920,12 @@ fn handle_header_message(msg: &HeaderMessage, state: &mut ParserState) {
     // ENF: recursive parse — store sub-messages separately per ENF
     if token == tokens::enf() {
         let mut sub_state = ParserState::new();
-        scan_stream(&msg.payload, &mut sub_state, None, DEFAULT_PROGRESS_INTERVAL);
+        scan_stream(
+            &msg.payload,
+            &mut sub_state,
+            None,
+            DEFAULT_PROGRESS_INTERVAL,
+        );
         // Store each ENF's sub-messages separately for expansion device extraction
         state.enf_sub_messages.push(sub_state.header_messages);
         return;
@@ -2356,8 +2371,45 @@ mod tests {
         let chs_frame = make_header_frame("CHS", 0, &chs_bytes);
         let stream = build_xrk_stream(&[chs_frame], &[]);
         let _ = parse_xrk(&stream, Some(&cb));
-        // Progress callback may or may not fire depending on data size (8MB threshold)
-        // Just verify it doesn't crash
+        // A stream far below DEFAULT_PROGRESS_INTERVAL never reaches a callback.
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_progress_callback_fires_at_the_requested_interval() {
+        use std::sync::Mutex;
+        // 200 sequential LAP frames of 40 bytes each: an 8000-byte stream made
+        // only of header messages, which is where the interval is checked.
+        let frames: Vec<Vec<u8>> = (1..=200u16)
+            .map(|n| make_header_frame("LAP", 0, &make_lap_payload(0, n, 1000, 1000 * n as u32)))
+            .collect();
+        let stream = build_xrk_stream(&frames, &[]);
+        assert!(stream.len() > MIN_PROGRESS_INTERVAL);
+
+        let calls = Mutex::new(Vec::new());
+        let cb = |current: usize, total: usize| calls.lock().unwrap().push((current, total));
+        parse_xrk_with_interval(&stream, Some(&cb), MIN_PROGRESS_INTERVAL).unwrap();
+
+        let calls = calls.into_inner().unwrap();
+        assert!(
+            !calls.is_empty(),
+            "no progress callback on a {}-byte stream",
+            stream.len()
+        );
+        assert!(
+            calls.windows(2).all(|w| w[0].0 < w[1].0),
+            "positions must increase"
+        );
+        assert!(calls
+            .iter()
+            .all(|&(cur, tot)| cur <= tot && tot == stream.len()));
+
+        // Below the floor the interval is clamped, so asking for 1 byte gives
+        // the same schedule as asking for the floor.
+        let clamped = Mutex::new(Vec::new());
+        let cb2 = |current: usize, total: usize| clamped.lock().unwrap().push((current, total));
+        parse_xrk_with_interval(&stream, Some(&cb2), 1).unwrap();
+        assert_eq!(clamped.into_inner().unwrap(), calls);
     }
 
     // ── Header message parsing ─────────────────────────────────────────
