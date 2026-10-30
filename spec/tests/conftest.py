@@ -367,3 +367,48 @@ def file_86_dll():
     if not _dll_available():
         pytest.skip("AIM DLL or Wine not available")
     return _dll_extract(FILE_86_XRK)
+
+
+# ---------------------------------------------------------------------------
+# SmartyCam MP4 fixtures (spec/mp4_format.py)
+# ---------------------------------------------------------------------------
+
+# Telemetry-only, time-trimmed (first 210 s of telemetry media time, 2 laps) copy of
+# SCHD0487.MP4 built by scripts/investigate_mp4/make_fixture.py. Video and audio
+# samples are dropped; the aimd samples, the telemetry trak and the aim_meta_data
+# tail are byte-exact copies of the original.
+SMARTYCAM_MP4 = TEST_DATA_DIR / "smartycam" / "SCHD0487_aimd_trimmed.mp4"
+# The logger session recorded alongside SCHD0487.MP4 (same laps, same GPS fixes).
+# Original name: CMD_KK-F_Tsukuba_Car_レース_a_0385.xrz
+SMARTYCAM_XRZ = TEST_DATA_DIR / "smartycam" / "CMD_KK-F_Tsukuba_Car_Race_a_0385.xrz"
+# Set to the full 1.9 GB SCHD0487.MP4 to run the whole-file tests.
+FULL_MP4_ENV = "LIBXRK_MP4_FIXTURE"
+
+
+@pytest.fixture(scope="session")
+def smartycam_mp4():
+    """Parse the trimmed SmartyCam MP4 fixture once per session."""
+    from spec.mp4_format import parse_mp4_file
+
+    return parse_mp4_file(SMARTYCAM_MP4)
+
+
+@pytest.fixture(scope="session")
+def smartycam_xrz_parsed():
+    """Parse the XRZ recorded alongside the SmartyCam fixture once per session."""
+    from spec.xrk_format import parse_xrk_file
+
+    return parse_xrk_file(str(SMARTYCAM_XRZ))
+
+
+@pytest.fixture(scope="session")
+def smartycam_full_mp4():
+    """Parse the full SCHD0487.MP4 when LIBXRK_MP4_FIXTURE points at it; skip otherwise."""
+    import os
+
+    path = os.environ.get(FULL_MP4_ENV)
+    if not path or not Path(path).exists():
+        pytest.skip(f"{FULL_MP4_ENV} not set or file missing")
+    from spec.mp4_format import parse_mp4_file
+
+    return parse_mp4_file(path)

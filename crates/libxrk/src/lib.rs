@@ -87,11 +87,23 @@ pub fn read_xrk_with_progress(
     data: &[u8],
     progress: Option<&dyn Fn(usize, usize)>,
 ) -> Result<XrkFile> {
+    read_xrk_with_options(data, progress, parser::DEFAULT_PROGRESS_INTERVAL)
+}
+
+/// Parse with an optional progress callback, choosing how often it is called.
+///
+/// `progress_interval` is a number of input bytes, clamped to
+/// [`parser::MIN_PROGRESS_INTERVAL`].
+pub fn read_xrk_with_options(
+    data: &[u8],
+    progress: Option<&dyn Fn(usize, usize)>,
+    progress_interval: usize,
+) -> Result<XrkFile> {
     // Decompress if XRZ (zlib-compressed XRK)
     let data = decompress_if_zlib(data);
 
     // Parse with the Rust streaming parser
-    let mut result = parser::parse_xrk(&data, progress)?;
+    let mut result = parser::parse_xrk_with_interval(&data, progress, progress_interval)?;
 
     // Compute non-GPS max end time before moving channel_data out
     let non_gps_max_end_time: Option<i64> = result
