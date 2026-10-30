@@ -4,15 +4,19 @@
 
 /// Unit type map: unit_type_byte -> (unit_string, decimal_points).
 /// From aim_xrk.pyx:144-169.
+///
+/// Checked against the official AIM `MatLabXRK` DLL over the whole test
+/// corpus (`get_channel_units`, 253 channel observations): every entry the
+/// DLL reports agrees. Code 11 was corrected to "#" on that evidence.
 pub fn unit_map(unit_type: u8) -> (&'static str, u8) {
     match unit_type & 0x7F {
         1 => ("%", 2),
         3 => ("g", 2),
         4 => ("deg", 1),
         5 => ("deg/s", 1),
-        6 => ("", 0),
+        6 => ("", 0), // "number"; never exposed by the AIM DLL on the corpus, so unverified
         9 => ("Hz", 0),
-        11 => ("", 0),
+        11 => ("#", 0), // "number"; the AIM DLL reports "#" (see test below)
         12 => ("mm", 0),
         14 => ("bar", 2),
         15 => ("rpm", 0),
@@ -270,6 +274,18 @@ pub fn logger_model_name(model_id: u16) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Unit code 11 ("number") is "#": the AIM DLL reports "#" for every
+    /// code-11 channel in the corpus (36 observations, including 139 =
+    /// 11 | calibrated). Mirrors `UNIT_MAP` in `spec/xrk_format.py`.
+    #[test]
+    fn unit_code_11_is_hash_not_empty() {
+        assert_eq!(unit_map(11), ("#", 0));
+        assert_eq!(resolve_unit(11), "#");
+        // The calibrated flag must not turn it into something else: that
+        // rewrite exists only for mV -> V.
+        assert_eq!(resolve_unit(139), "#");
+    }
 
     #[test]
     fn test_unit_map_known_types() {
