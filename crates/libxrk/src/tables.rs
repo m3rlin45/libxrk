@@ -15,6 +15,7 @@ pub fn unit_map(unit_type: u8) -> (&'static str, u8) {
         4 => ("deg", 1),
         5 => ("deg/s", 1),
         6 => ("", 0), // "number"; never exposed by the AIM DLL on the corpus, so unverified
+        8 => ("m", 0), // Mileage / Distance Lap; RaceStudio3 exports Mileage as "m"
         9 => ("Hz", 0),
         11 => ("#", 0), // "number"; the AIM DLL reports "#" (see test below)
         12 => ("mm", 0),
@@ -47,6 +48,7 @@ pub fn is_known_unit(unit_type_byte: u8) -> bool {
             | 4
             | 5
             | 6
+            | 8
             | 9
             | 11
             | 12
@@ -281,6 +283,13 @@ mod tests {
     #[test]
     fn unit_code_11_is_hash_not_empty() {
         assert_eq!(unit_map(11), ("#", 0));
+    }
+
+    #[test]
+    fn test_unit_map_code_8_is_metres() {
+        // RaceStudio3 exports "Mileage" (unit code 8) as "m".
+        assert_eq!(unit_map(8), ("m", 0));
+        assert!(is_known_unit(8));
         assert_eq!(resolve_unit(11), "#");
         // The calibrated flag must not turn it into something else: that
         // rewrite exists only for mV -> V.
