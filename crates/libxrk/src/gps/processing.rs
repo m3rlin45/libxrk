@@ -261,6 +261,16 @@ pub fn decode_gps(
     let mut longitude = Vec::with_capacity(n);
     let mut altitude = Vec::with_capacity(n);
     for i in 0..n {
+        // A NAV-SOL record with no fix carries an all-zero ECEF position.
+        // Through ecef2lla that is lat=lon=0 (a real place) and a division
+        // by zero for altitude; report the position as unknown (NaN)
+        // instead. See spec/docs/companion.md section 5 ("No-fix records").
+        if ecef_x_cm[i] == 0 && ecef_y_cm[i] == 0 && ecef_z_cm[i] == 0 {
+            latitude.push(f64::NAN);
+            longitude.push(f64::NAN);
+            altitude.push(f64::NAN);
+            continue;
+        }
         let (lat, lon, alt) = gps_utils::ecef2lla_vermeille2003(
             ecef_x_cm[i] as f64 / 100.0,
             ecef_y_cm[i] as f64 / 100.0,
