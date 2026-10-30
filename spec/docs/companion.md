@@ -119,6 +119,8 @@ From the raw NAV-SOL fields, the following channels are derived:
 - **GPS_pDOP** = `pDOP / 100.0`
 - **GPS_Position_Accuracy** = `pAcc / 100.0` [m]
 - **GPS_Velocity_Accuracy** = `sAcc / 100.0` [m/s]
+- **GPS_ITOW** = `iTOW` [ms], the receiver's GPS time of week, unmodified (wraps every 604,800,000 ms)
+- **GPS_Week** = `week`, the GPS week number
 
 ### Derived Acceleration/Yaw Channels
 

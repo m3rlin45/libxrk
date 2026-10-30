@@ -1,13 +1,13 @@
 //! GPS processing: decode NAV-SOL messages, compute derived channels.
 //!
 //! Port of `_decode_gps()` from aim_xrk.pyx.
-//! Decodes 56-byte GPS NAV-SOL records into 12 GPS channels.
+//! Decodes 56-byte GPS NAV-SOL records into 14 GPS channels.
 
 use std::f64::consts::PI;
 
 use crate::gps::utils as gps_utils;
 
-/// Result of GPS decoding: 12 GPS channels with shared timecodes.
+/// Result of GPS decoding: 14 GPS channels with shared timecodes.
 #[derive(Debug)]
 pub struct GpsDecodeResult {
     pub timecodes: Vec<i64>,
@@ -16,6 +16,8 @@ pub struct GpsDecodeResult {
     pub latitude: Vec<f64>,
     pub longitude: Vec<f64>,
     pub altitude: Vec<f64>,
+    /// GPS time of week [ms], raw from the receiver (uint32, wraps weekly).
+    pub itow: Vec<f64>,
     // Float32 channels (NAV-SOL raw fields + derived)
     pub satellites: Vec<f32>,
     pub fix: Vec<f32>,
@@ -25,6 +27,8 @@ pub struct GpsDecodeResult {
     pub inline_acc: Vec<f32>,
     pub lateral_acc: Vec<f32>,
     pub yaw_rate: Vec<f32>,
+    /// GPS week number, raw from the receiver.
+    pub week: Vec<f32>,
 }
 
 /// GPS channel definition for Arrow table metadata.
@@ -36,7 +40,7 @@ pub struct GpsChannelDef {
     pub is_f64: bool,
 }
 
-/// All 12 GPS channel definitions in order.
+/// All 14 GPS channel definitions in order.
 pub const GPS_CHANNEL_DEFS: &[GpsChannelDef] = &[
     GpsChannelDef {
         name: "GPS Speed",
@@ -122,9 +126,23 @@ pub const GPS_CHANNEL_DEFS: &[GpsChannelDef] = &[
         interpolate: true,
         is_f64: false,
     },
+    GpsChannelDef {
+        name: "GPS_ITOW",
+        units: "ms",
+        dec_pts: 0,
+        interpolate: false,
+        is_f64: true,
+    },
+    GpsChannelDef {
+        name: "GPS_Week",
+        units: "",
+        dec_pts: 0,
+        interpolate: false,
+        is_f64: false,
+    },
 ];
 
-/// Decode GPS NAV-SOL messages into 12 GPS channels.
+/// Decode GPS NAV-SOL messages into 14 GPS channels.
 ///
 /// Each GPS message is 56 bytes:
 ///   - Bytes 0-3: AIM logger timecode (int32)
@@ -147,6 +165,8 @@ pub fn decode_gps(
 
     // Extract raw fields from 56-byte records
     let mut raw_timecodes = Vec::with_capacity(n);
+    let mut itow_ms = Vec::with_capacity(n);
+    let mut week_raw = Vec::with_capacity(n);
     let mut ecef_x_cm = Vec::with_capacity(n);
     let mut ecef_y_cm = Vec::with_capacity(n);
     let mut ecef_z_cm = Vec::with_capacity(n);
@@ -167,6 +187,13 @@ pub fn decode_gps(
             gps_data[off + 2],
             gps_data[off + 3],
         ]));
+        itow_ms.push(u32::from_le_bytes([
+            gps_data[off + 4],
+            gps_data[off + 5],
+            gps_data[off + 6],
+            gps_data[off + 7],
+        ]));
+        week_raw.push(u16::from_le_bytes([gps_data[off + 12], gps_data[off + 13]]));
         ecef_x_cm.push(i32::from_le_bytes([
             gps_data[off + 16],
             gps_data[off + 17],
@@ -321,12 +348,16 @@ pub fn decode_gps(
     let position_accuracy: Vec<f32> = posacc_cm.iter().map(|&v| v as f32 / 100.0).collect();
     let velocity_accuracy: Vec<f32> = velacc_cms.iter().map(|&v| v as f32 / 100.0).collect();
 
+    let itow: Vec<f64> = itow_ms.iter().map(|&v| v as f64).collect();
+    let week: Vec<f32> = week_raw.iter().map(|&v| v as f32).collect();
+
     Ok(Some(GpsDecodeResult {
         timecodes,
         speed,
         latitude,
         longitude,
         altitude,
+        itow,
         satellites,
         fix,
         pdop,
@@ -335,6 +366,7 @@ pub fn decode_gps(
         inline_acc,
         lateral_acc,
         yaw_rate,
+        week,
     }))
 }
 
