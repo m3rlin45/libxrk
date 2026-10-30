@@ -316,3 +316,50 @@ For libxrk users, the practical impact is: ≤0.02% of shock-pot samples
 may differ from RaceStudio's displayed values by small amounts, and ≤0.01%
 of spec-emitted samples may not appear in RaceStudio at all. Both are
 below AIM's own sample-rate jitter (occasional 3ms gaps in 2ms streams).
+
+## aimd sample header (SmartyCam MP4, 66 bytes)
+
+Per-sample header of the `aimd` telemetry track in SmartyCam MP4 files
+(`spec/mp4_format.py`, `AimdSampleHeader`). All 14 850 samples of the reference
+recording SCHD0487.MP4 were checked.
+
+### [2:6] `_flags` (4 bytes)
+- **Observed**: Always `40 00 00 00`
+- **Hypothesis**: Flags or a format version for the sample
+- **Status**: Constant; asserted with `Const`
+
+### [18:26] `media_time_us` of sample 0 (uint64 LE)
+- **Observed**: 11 393 646 µs on sample 0 (DTS 0); sample 1 reads 112 022 µs and
+  every later sample follows DTS + 11–12 ms
+- **Hypothesis**: Time since camera boot at which the `CNF` payload was generated,
+  written before the media clock was anchored
+- **Status**: Excluded from the clock mapping table; sample 0's `logger_time_us`
+  is consistent with the rest
+
+### [26:62] Padding (36 bytes)
+- **Observed**: Always zero
+- **Status**: Validated as zero in all samples
+
+### [0:2] `length_minus_2` (uint16 BE)
+- **Observed**: `(sample length − 2) mod 65536`; the single 71 818-byte sample
+  stores 0x1888
+- **Hypothesis**: Legacy 16-bit length kept for compatibility; `[62:66]` is the
+  authoritative length
+- **Status**: Understood (truncating)
+
+## aim_meta_data tail (SmartyCam MP4, 8 + XML bytes)
+
+### [0:4] Box size field
+- **Observed**: ASCII `4096` (0x34303936) instead of a uint32 BE size; the XML that
+  follows is 1 017 bytes, so the file ends 875 574 581 bytes before the declared
+  box end
+- **Hypothesis**: Writer bug (printf of the intended 4 KiB reservation into the
+  size field)
+- **Status**: Documented quirk; `iter_boxes` stops here and `AimMetaDataTail`
+  asserts the literal
+
+### `nlap_rec` (generic_info)
+- **Observed**: `0`
+- **Hypothesis**: Lap number at which recording started, or number of laps while
+  recording with a different criterion than `nlap`
+- **Status**: Unknown
