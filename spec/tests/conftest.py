@@ -38,20 +38,76 @@ ALL_XRZ_FILES = [SFJ_XRZ, SFJ_0101_XRZ, FILE_86_XRZ, ISSUE68_XRZ]
 ALL_FILES = ALL_XRK_FILES + ALL_XRZ_FILES
 
 
+def _spec_parse(path):
+    """Parse one fixture with the Construct spec (pure Python, 1-14 s)."""
+    from spec.xrk_format import parse_xrk_file
+
+    return parse_xrk_file(str(path))
+
+
+# Session-scoped parse fixtures, one per distinct file. The three XRZ files
+# that are zlib twins of an XRK in this list get no fixture of their own:
+# TestParseAllFiles.test_xrk_xrz_equivalence proves they decompress to the
+# identical bytes, so everything proven on the XRK parse holds for them.
+ALL_PARSED_FIXTURES = [
+    "sfj_parsed",
+    "sfj_0101_parsed",
+    "sfj_suzuka_parsed",
+    "file_86_parsed",
+    "aim_official_parsed",
+    "issue49_parsed",
+    "issue68_parsed",
+    "issue84_parsed",
+]
+
+
+@pytest.fixture(scope="session", params=ALL_PARSED_FIXTURES, ids=ALL_PARSED_FIXTURES)
+def any_parsed(
+    request,
+    sfj_parsed,
+    sfj_0101_parsed,
+    sfj_suzuka_parsed,
+    file_86_parsed,
+    aim_official_parsed,
+    issue49_parsed,
+    issue68_parsed,
+    issue84_parsed,
+):
+    """Each distinct fixture file's parse, for tests that run over all files."""
+    return {
+        "sfj_parsed": sfj_parsed,
+        "sfj_0101_parsed": sfj_0101_parsed,
+        "sfj_suzuka_parsed": sfj_suzuka_parsed,
+        "file_86_parsed": file_86_parsed,
+        "aim_official_parsed": aim_official_parsed,
+        "issue49_parsed": issue49_parsed,
+        "issue68_parsed": issue68_parsed,
+        "issue84_parsed": issue84_parsed,
+    }[request.param]
+
+
+@pytest.fixture(scope="session")
+def sfj_0101_parsed():
+    """Parse the SFJ 0101 XRK file once per session."""
+    return _spec_parse(SFJ_0101_XRK)
+
+
+@pytest.fixture(scope="session")
+def sfj_suzuka_parsed():
+    """Parse the SFJ Suzuka XRK file once per session."""
+    return _spec_parse(SFJ_SUZUKA_XRK)
+
+
 @pytest.fixture(scope="session")
 def sfj_parsed():
     """Parse the SFJ XRK file once per session."""
-    from spec.xrk_format import parse_xrk_file
-
-    return parse_xrk_file(str(SFJ_XRK))
+    return _spec_parse(SFJ_XRK)
 
 
 @pytest.fixture(scope="session")
 def file_86_parsed():
     """Parse the 86 XRK file once per session."""
-    from spec.xrk_format import parse_xrk_file
-
-    return parse_xrk_file(str(FILE_86_XRK))
+    return _spec_parse(FILE_86_XRK)
 
 
 @pytest.fixture(scope="session")
@@ -73,9 +129,7 @@ def file_86_cython():
 @pytest.fixture(scope="session")
 def issue49_parsed():
     """Parse the issue49 XRK file once per session (spec parser)."""
-    from spec.xrk_format import parse_xrk_file
-
-    return parse_xrk_file(str(ISSUE49_XRK))
+    return _spec_parse(ISSUE49_XRK)
 
 
 @pytest.fixture(scope="session")
@@ -89,9 +143,7 @@ def issue49_cython():
 @pytest.fixture(scope="session")
 def aim_official_parsed():
     """Parse the AIM official XRK file once per session."""
-    from spec.xrk_format import parse_xrk_file
-
-    return parse_xrk_file(str(AIM_OFFICIAL_XRK))
+    return _spec_parse(AIM_OFFICIAL_XRK)
 
 
 @pytest.fixture(scope="session")
@@ -105,9 +157,7 @@ def aim_official_cython():
 @pytest.fixture(scope="session")
 def issue68_parsed():
     """Parse the issue68 XRZ file once per session (spec parser)."""
-    from spec.xrk_format import parse_xrk_file
-
-    return parse_xrk_file(str(ISSUE68_XRZ))
+    return _spec_parse(ISSUE68_XRZ)
 
 
 @pytest.fixture(scope="session")
@@ -131,9 +181,7 @@ def issue68_rust():
 @pytest.fixture(scope="session")
 def issue84_parsed():
     """Parse the issue84 XRZ file once per session (spec parser)."""
-    from spec.xrk_format import parse_xrk_file
-
-    return parse_xrk_file(str(ISSUE84_XRZ))
+    return _spec_parse(ISSUE84_XRZ)
 
 
 @pytest.fixture(scope="session")

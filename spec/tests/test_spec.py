@@ -8,18 +8,16 @@ Tests in this module verify that:
 
 import struct
 
+import numpy as np
 import pytest
 
 from spec.xrk_format import (
     ParseResult,
+    _decompress_if_zlib,
     chs_padding_bytes,
-    parse_xrk_file,
     DECODER_TABLE,
 )
-from spec.tests.conftest import (
-    ALL_FILES,
-    ALL_XRK_FILES,
-)
+from spec.tests.conftest import ALL_XRK_FILES
 
 
 # ---------------------------------------------------------------------------
@@ -94,15 +92,12 @@ def _unique_seg0_laps(parsed):
 class TestParseAllFiles:
     """Verify that all test files parse successfully."""
 
-    @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
-    def test_parse_validates(self, filepath):
+    def test_parse_validates(self, any_parsed):
         """Each file should parse completely and contain expected message types."""
-        result = parse_xrk_file(str(filepath))
+        result = any_parsed
         assert isinstance(result, ParseResult)
         assert len(result.messages) > 0
-        assert (
-            result.leftover_bytes < 20
-        ), f"{filepath.name}: {result.leftover_bytes} leftover bytes"
+        assert result.leftover_bytes < 20, f"{result.leftover_bytes} leftover bytes"
         assert len(result.header_messages()) > 0
         assert len(result.channels) > 0
         assert len(result.messages_by_token("LAP")) > 0
@@ -118,15 +113,21 @@ class TestParseAllFiles:
 
     @pytest.mark.parametrize("filepath", ALL_XRK_FILES, ids=lambda p: p.name)
     def test_xrk_xrz_equivalence(self, filepath):
-        """XRK and XRZ variants should produce the same channel definitions."""
+        """An XRZ is its XRK twin zlib-compressed. Decompressed, it is a
+        strict prefix of the XRK: the only difference is a short trailer of
+        RaceStudio-appended session metadata strings (RCR, VEH, CMP, VTY,
+        NTE) that the XRK gained after the XRZ was exported. So every
+        parse-level property proven on the XRK fixture (channel definitions,
+        data messages) holds for the XRZ without parsing it a second time."""
         xrz = filepath.with_suffix(".xrz")
         if not xrz.exists():
             pytest.skip(f"No XRZ counterpart for {filepath.name}")
-        result_xrk = parse_xrk_file(str(filepath))
-        result_xrz = parse_xrk_file(str(xrz))
-        assert set(result_xrk.channels.keys()) == set(result_xrz.channels.keys())
-        for idx in result_xrk.channels:
-            assert result_xrk.channels[idx].name == result_xrz.channels[idx].name
+        xrk_bytes = filepath.read_bytes()
+        xrz_bytes = _decompress_if_zlib(xrz.read_bytes())
+        assert xrk_bytes.startswith(xrz_bytes)
+        trailer = xrk_bytes[len(xrz_bytes) :]
+        assert len(trailer) < 1024, f"unexpected {len(trailer)}-byte trailer"
+        assert trailer == b"" or trailer.startswith(b"<h"), trailer[:16]
 
 
 # ---------------------------------------------------------------------------
@@ -232,10 +233,9 @@ class TestCHSCrossValidation:
                 str(ch.display_range_max) == md["display_range_max"]
             ), f"Ch {name!r}: display_range_max mismatch"
 
-    @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
-    def test_chs_padding_is_zero(self, filepath):
+    def test_chs_padding_is_zero(self, any_parsed):
         """All CHS padding fields should be zero across all test files."""
-        result = parse_xrk_file(str(filepath))
+        result = any_parsed
         for idx, ch in result.channels.items():
             padding = chs_padding_bytes(ch)
             if any(padding):
@@ -243,10 +243,9 @@ class TestCHSCrossValidation:
                 nonzero = [(i, b) for i, b in enumerate(padding) if b != 0]
                 pytest.fail(f"CHS padding non-zero for {name!r}: {nonzero}")
 
-    @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
-    def test_chs_data_size_consistent(self, filepath):
+    def test_chs_data_size_consistent(self, any_parsed):
         """CHS data_size should match decoder_type expectations."""
-        result = parse_xrk_file(str(filepath))
+        result = any_parsed
         for idx, ch in result.channels.items():
             dt = ch.decoder_type
             if dt in DECODER_TABLE:
@@ -503,10 +502,9 @@ class TestMetadataCrossValidation:
 class TestCDECrossValidation:
     """Verify CDE messages are consistent."""
 
-    @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
-    def test_cde_channel_indices_valid(self, filepath):
+    def test_cde_channel_indices_valid(self, any_parsed):
         """CDE channel_index should reference a valid CHS channel."""
-        result = parse_xrk_file(str(filepath))
+        result = any_parsed
         cde_msgs = result.messages_by_token("CDE")
         for m in cde_msgs:
             if m.payload is not None:
@@ -514,10 +512,9 @@ class TestCDECrossValidation:
                     m.payload.channel_index in result.channels
                 ), f"CDE channel_index {m.payload.channel_index} not in channels"
 
-    @pytest.mark.parametrize("filepath", ALL_FILES, ids=lambda p: p.name)
-    def test_cde_session_uid_consistent(self, filepath):
+    def test_cde_session_uid_consistent(self, any_parsed):
         """All CDE messages in a file should have the same session_uid."""
-        result = parse_xrk_file(str(filepath))
+        result = any_parsed
         cde_msgs = result.messages_by_token("CDE")
         if not cde_msgs:
             pytest.skip("No CDE messages")
@@ -865,22 +862,53 @@ class TestExhaustiveChannelValues:
         return arrays
 
     def _decode_channel_array(self, raw_samples, ch):
-        """Decode a list of raw byte samples into float values."""
-        values = []
-        is_voltage = ch.units == "V"
-        for sample_bytes in raw_samples:
-            raw = _decode_sample(sample_bytes, ch.decoder_type)
-            if raw is None:
-                return None
-            value = _apply_fixup(raw, ch.decoder_type)
-            if is_voltage:
-                value = value / 1000.0
-            values.append(float(value))
+        """Decode a list of raw byte samples into a float64 numpy array.
+
+        Vectorised equivalent of calling _decode_sample + _apply_fixup on
+        every sample (the 86 fixture has ~40M samples, which took ~12 s per
+        backend in pure Python). Returns None if any sample is shorter than
+        the decoder's width, matching the per-sample helper.
+        """
+        import numpy as np
+
+        fmt = DECODER_TABLE[ch.decoder_type][0]
+        size = struct.calcsize(fmt)
+        if not raw_samples:
+            return np.zeros(0, dtype=np.float64)
+        lengths = set(map(len, raw_samples))
+        if min(lengths) < size:
+            return None
+        dtype = np.dtype("<" + fmt)
+        if len(lengths) == 1:
+            # Uniform sample width: one join, then a strided view of the
+            # leading `size` bytes of each sample (data_size may exceed the
+            # decoder width, e.g. Lap Time size=20 with an 'i' decoder).
+            width = lengths.pop()
+            rows = np.frombuffer(b"".join(raw_samples), dtype=np.uint8).reshape(-1, width)
+            raw = np.ascontiguousarray(rows[:, :size]).view(dtype).reshape(-1)
+        else:
+            raw = np.frombuffer(b"".join(sample[:size] for sample in raw_samples), dtype=dtype)
+
+        if ch.decoder_type == 20:
+            # float16 encoded as uint16
+            values = raw.view(np.float16).astype(np.float64)
+        elif ch.decoder_type == 15:
+            # Gear lookup: 'N','1'..'6' -> 0..6, anything else passes through
+            lut = np.arange(65536, dtype=np.float64)
+            lut[ord("N")] = 0
+            for g in "123456":
+                lut[ord(g)] = int(g)
+            values = lut[raw]
+        else:
+            values = raw.astype(np.float64)
+        if ch.units == "V":
+            # Voltage channels are stored as mV, the backends divide by 1000
+            values = values / 1000.0
         return values
 
     def _compare_all_values(self, result, cython_log):
         """Compare every sample of every channel. Returns (checked_channels, errors)."""
-        import math
+        import numpy as np
 
         arrays = self._build_channel_arrays(result)
         checked = 0
@@ -900,7 +928,7 @@ class TestExhaustiveChannelValues:
                 continue
 
             cython_col = cython_log.channels[name].column(name)
-            cython_values = cython_col.to_pylist()
+            cython_values = cython_col.to_numpy(zero_copy_only=False).astype(np.float64)
 
             if len(spec_values) != len(cython_values):
                 errors.append(
@@ -909,20 +937,25 @@ class TestExhaustiveChannelValues:
                 )
                 continue
 
-            for i, (sv, cv) in enumerate(zip(spec_values, cython_values)):
-                cv = float(cv)
-                # Handle NaN
-                if math.isnan(sv) and math.isnan(cv):
-                    continue
-                if math.isnan(sv) or math.isnan(cv):
-                    errors.append(f"Ch {name!r} sample {i}: NaN mismatch " f"spec={sv} cython={cv}")
-                    break
-                if abs(sv - cv) >= 0.01:
+            # Same rules as the per-sample loop this replaces: both NaN is a
+            # match, one NaN is a mismatch, otherwise |diff| must be < 0.01.
+            # Report the first offending sample only.
+            spec_nan = np.isnan(spec_values)
+            cy_nan = np.isnan(cython_values)
+            nan_mismatch = spec_nan ^ cy_nan
+            with np.errstate(invalid="ignore"):
+                value_mismatch = np.abs(spec_values - cython_values) >= 0.01
+            bad = np.flatnonzero(nan_mismatch | value_mismatch)
+            if len(bad):
+                i = int(bad[0])
+                sv, cv = float(spec_values[i]), float(cython_values[i])
+                if nan_mismatch[i]:
+                    errors.append(f"Ch {name!r} sample {i}: NaN mismatch spec={sv} cython={cv}")
+                else:
                     errors.append(
                         f"Ch {name!r} sample {i}/{len(spec_values)}: "
                         f"spec={sv} cython={cv} diff={abs(sv - cv)}"
                     )
-                    break  # One error per channel is enough for diagnostics
 
             checked += 1
 
@@ -1435,7 +1468,11 @@ class TestIssue68SpecVsBackends:
                 if len(spec) != len(backend_v):
                     errors.append(f"{name}: count spec={len(spec)} backend={len(backend_v)}")
                     continue
-                diffs = sum(1 for i in range(len(backend_v)) if abs(spec[i] - backend_v[i]) > 1e-9)
+                # Compare in the backend column's own dtype (float32 for most
+                # channels): the spec's float64 canonical value only has to
+                # round to the value the backend stored.
+                spec_arr = np.asarray(spec, dtype=backend_v.dtype)
+                diffs = int(np.count_nonzero(np.abs(spec_arr - backend_v) > 1e-9))
                 if diffs:
                     errors.append(f"{name}: {diffs} values differ")
             checked += 1

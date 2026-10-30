@@ -73,6 +73,11 @@ uv run pytest tests/test_sfj_xrk.py -k name      # Specific test
 
 Test data: `tests/test_data/` contains real XRK/XRZ files (SFJ and 86 vehicles).
 
+The spec suite (`just spec-test`) parses each fixture once into session-scoped
+fixtures in `spec/tests/conftest.py` and holds them all (~3 GB peak). Run it
+single-process: under `pytest -n` every worker holds its own copy of every
+fixture. Tests that need every file take the `any_parsed` fixture.
+
 ## Pyodide (WebAssembly) Builds
 
 The library supports running in the browser via Pyodide. One runtime:
