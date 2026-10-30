@@ -30,13 +30,17 @@ When you find data parsing differs from AIM's RaceStudio output, start by readin
 - `spec/tests/` - spec tests: round-trip + cross-impl vs Cython and the AIM DLL
 - `spec/docs/companion.md` - application-level algorithms (GPS timing, lap detection, decoder dispatch)
 - `spec/docs/unknown_regions.md` - catalog of under-reverse-engineered byte ranges per message type
+- `spec/isobmff.py` - generic, AIM-agnostic ISO BMFF (MP4) layer: lazy box walker, box structs, sample-table resolution
+- `spec/mp4_format.py` - AIM-specific executable spec for SmartyCam MP4 telemetry (`aimd` sample header, XML tail, time mapping, XRK linking); consumes a `TrackSamples` adapter so another MP4 parser can replace `isobmff`
+- `spec/docs/mp4_format.md` - prose spec for the MP4 container, sample header, XML tail, video↔logger time mapping, and MP4↔XRK linking
+- `scripts/investigate_mp4/` - reproducible analysis scripts and report behind the MP4 spec; `make_fixture.py` builds the trimmed test fixture
 - `src/libxrk/aim_xrk.pyx` - Cython binary parser (default backend, conforms to spec)
 - `src/libxrk/aim_xrk.pyi` - Type stubs for Cython module
 - `crates/` - Rust+PyO3 parser (~2x faster, conforms to spec)
 - `src/libxrk/_aim_xrk_rs.pyi` - Type stubs for Rust module
 - `src/libxrk/base.py` - LogFile dataclass, channel merging
 - `src/libxrk/gps.py` - GPS utilities, lap detection, timing fix
-- `tests/` - pytest tests with real XRK data in `tests/test_data/`
+- `tests/` - pytest tests with real XRK data in `tests/test_data/` (`tests/test_data/smartycam/` holds the trimmed SmartyCam MP4 and its matching XRZ)
 - `tests/reference_dll/` - official AIM parser (via Wine) used as ground truth for spec cross-checks
 
 ## Parser Backends

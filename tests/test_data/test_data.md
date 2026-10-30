@@ -2,6 +2,13 @@
 
 Contains AIM run sessions from multiple cars and tracks plus targeted fixtures for specific issues.
 
+## smartycam
+
+Fixtures for the SmartyCam MP4 telemetry spec (`spec/mp4_format.py`, `spec/docs/mp4_format.md`).
+
+- `SCHD0487_aimd_trimmed.mp4` (3.5 MB) — derived from the 1.9 GB `CMD_KK-F_Tsukuba_Car_レース_SCHD0487.MP4` recorded by a SmartyCam 3 GP (serial 4118157, firmware 01.17.08) at Tsukuba on 2026-10-25. Built by `scripts/investigate_mp4/make_fixture.py --seconds 210`: the video and audio tracks are dropped; the first 2 094 `aimd` telemetry samples (210 s of media time: the camera `CNF`, the syslog burst, laps 1–2), the telemetry `trak` (sample tables rewritten, everything else copied), and the exact 1 025-byte `aim_meta_data` tail are byte-exact copies of the original. Set `LIBXRK_MP4_FIXTURE=<path to the original MP4>` to run the whole-file tests.
+- `CMD_KK-F_Tsukuba_Car_Race_a_0385.xrz` (17 MB) — the logger session recorded alongside the MP4 (original name `CMD_KK-F_Tsukuba_Car_レース_a_0385.xrz`; renamed to ASCII). 20 laps, best 59.218 s (lap 16). Its 20 LAP messages and 36 549 GPS fixes are identical to the ones in the MP4, which is what the linking tests check. The `.xrk` RaceStudio produced from it is this stream plus a 176-byte tail of driver/vehicle/championship/session/note strings; it is not committed.
+
 ## issue68
 
 `CMD_KK-SII_Tsukuba_Car_Generic testing_a_0101.xrz` — KK-SII session at Tsukuba, recorded 2026-04-17. Selected because its logger emits the new `(c)` expansion-channel message variants (V2 long, V3 short) that weren't in the older corpus; referenced by tests verifying issue #68 shock-pot and accelerometer parsing.
