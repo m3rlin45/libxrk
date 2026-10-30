@@ -20,7 +20,8 @@ from spec.tests.conftest import (
     FILE_86_XRK,
     SFJ_XRK,
 )
-from spec.tests.test_spec import TestExhaustiveChannelValues, _unique_seg0_laps
+from spec.tests.test_spec import _unique_seg0_laps
+from spec.tests.test_spec import TestExhaustiveChannelValues as _ExhaustiveChannelValues
 
 
 def _rust_load(path):
@@ -50,19 +51,19 @@ class TestExhaustiveChannelValuesVsRust:
     """Every decoded channel value must match the spec's canonical decode."""
 
     def test_sfj_every_value(self, sfj_parsed, sfj_rust):
-        checked, errors = TestExhaustiveChannelValues()._compare_all_values(sfj_parsed, sfj_rust)
+        checked, errors = _ExhaustiveChannelValues()._compare_all_values(sfj_parsed, sfj_rust)
         assert checked > 0, "No channels were cross-validated"
         assert not errors, "Value mismatches:\n" + "\n".join(errors)
 
     def test_86_every_value(self, file_86_parsed, file_86_rust):
-        checked, errors = TestExhaustiveChannelValues()._compare_all_values(
+        checked, errors = _ExhaustiveChannelValues()._compare_all_values(
             file_86_parsed, file_86_rust
         )
         assert checked > 0, "No channels were cross-validated"
         assert not errors, "Value mismatches:\n" + "\n".join(errors)
 
     def test_aim_official_every_value(self, aim_official_parsed, aim_official_rust):
-        checked, errors = TestExhaustiveChannelValues()._compare_all_values(
+        checked, errors = _ExhaustiveChannelValues()._compare_all_values(
             aim_official_parsed, aim_official_rust
         )
         assert checked > 0, "No channels were cross-validated"

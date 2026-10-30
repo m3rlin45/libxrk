@@ -1,5 +1,6 @@
 """Shared fixtures and path constants for spec tests."""
 
+import functools
 import json
 import shutil
 import subprocess
@@ -38,20 +39,31 @@ ALL_XRZ_FILES = [SFJ_XRZ, SFJ_0101_XRZ, FILE_86_XRZ, ISSUE68_XRZ]
 ALL_FILES = ALL_XRK_FILES + ALL_XRZ_FILES
 
 
+@functools.lru_cache(maxsize=None)
+def spec_parse(path):
+    """Parse a fixture with the Construct spec, once per process.
+
+    The spec parser is pure Python and takes 1-14 s per fixture (the 42 MB
+    86 file is the slow one), so every parse of the same file must be
+    shared. Session fixtures and the tests parametrized over ALL_FILES all
+    go through here; before this cache the parametrized tests re-parsed
+    every file per test and the suite spent ~75% of its time parsing.
+    """
+    from spec.xrk_format import parse_xrk_file
+
+    return parse_xrk_file(str(path))
+
+
 @pytest.fixture(scope="session")
 def sfj_parsed():
     """Parse the SFJ XRK file once per session."""
-    from spec.xrk_format import parse_xrk_file
-
-    return parse_xrk_file(str(SFJ_XRK))
+    return spec_parse(SFJ_XRK)
 
 
 @pytest.fixture(scope="session")
 def file_86_parsed():
     """Parse the 86 XRK file once per session."""
-    from spec.xrk_format import parse_xrk_file
-
-    return parse_xrk_file(str(FILE_86_XRK))
+    return spec_parse(FILE_86_XRK)
 
 
 @pytest.fixture(scope="session")
@@ -73,9 +85,7 @@ def file_86_cython():
 @pytest.fixture(scope="session")
 def issue49_parsed():
     """Parse the issue49 XRK file once per session (spec parser)."""
-    from spec.xrk_format import parse_xrk_file
-
-    return parse_xrk_file(str(ISSUE49_XRK))
+    return spec_parse(ISSUE49_XRK)
 
 
 @pytest.fixture(scope="session")
@@ -89,9 +99,7 @@ def issue49_cython():
 @pytest.fixture(scope="session")
 def aim_official_parsed():
     """Parse the AIM official XRK file once per session."""
-    from spec.xrk_format import parse_xrk_file
-
-    return parse_xrk_file(str(AIM_OFFICIAL_XRK))
+    return spec_parse(AIM_OFFICIAL_XRK)
 
 
 @pytest.fixture(scope="session")
@@ -105,9 +113,7 @@ def aim_official_cython():
 @pytest.fixture(scope="session")
 def issue68_parsed():
     """Parse the issue68 XRZ file once per session (spec parser)."""
-    from spec.xrk_format import parse_xrk_file
-
-    return parse_xrk_file(str(ISSUE68_XRZ))
+    return spec_parse(ISSUE68_XRZ)
 
 
 @pytest.fixture(scope="session")
@@ -131,9 +137,7 @@ def issue68_rust():
 @pytest.fixture(scope="session")
 def issue84_parsed():
     """Parse the issue84 XRZ file once per session (spec parser)."""
-    from spec.xrk_format import parse_xrk_file
-
-    return parse_xrk_file(str(ISSUE84_XRZ))
+    return spec_parse(ISSUE84_XRZ)
 
 
 @pytest.fixture(scope="session")
