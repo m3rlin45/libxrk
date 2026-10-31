@@ -66,7 +66,7 @@ The laps table has columns:
     crossing (`start_time <= 0`)
   - `"in"` — last lap, where GPS puts the car more than 30 m from the start/finish
     line at the lap's end time — i.e. the session ended on the way back to the pits
-    rather than at the line. The 30 m threshold is the same one `find_laps()` uses.
+    rather than at the line. The 30 m threshold is the same one GPS lap detection uses.
     On the GPS-fallback detection path (files with no LAP messages) the last lap is
     always `"in"`, because its end is synthesized at session end rather than at a
     detected crossing.
@@ -92,9 +92,10 @@ Channels have different sample rates. Use `get_channels_as_table()` to merge.
 bus dropout). libxrk reports those samples as `NaN` on both backends; the
 official AIM DLL returns `0.0` instead. Integer channels are never affected.
 
-**GPS-derived channels:** the parser synthesizes 14 channels from the GPS
-receiver's NAV-SOL records (all listed in `libxrk.GPS_CHANNEL_NAMES`, all on
-the GPS fix timebase):
+**GPS-derived channels:** 14 channels are synthesized from the GPS receiver's
+NAV-SOL records by the GPS pipeline shared by both backends (`libxrk._gps_rs`,
+crate `crates/libxrk-gps`), so they are identical whichever backend parsed the
+file (all listed in `libxrk.GPS_CHANNEL_NAMES`, all on the GPS fix timebase):
 
 | Channel | Units | Notes |
 |---------|-------|-------|
@@ -212,9 +213,9 @@ df = (log
 
 ## GPS Timing Fix
 
-Some AIM loggers have a firmware bug causing 65533ms timestamp gaps in GPS data (16-bit overflow). This is automatically corrected when loading files - no action needed.
+Some AIM loggers have a firmware bug causing 65533ms timestamp gaps in GPS data (16-bit overflow). This is automatically corrected when loading files - no action needed. The detection (GNFI reference clock, a direct 60-70 s gap, or GPS outliving the other channels by 60-70 s) and correction are part of the shared GPS pipeline, `libxrk._gps_rs` (`detect_gap_corrections`).
 
-Affected channels: every GPS-derived channel in `GPS_CHANNEL_NAMES` (see Channel Tables above).
+Affected channels: every GPS-derived channel in `GPS_CHANNEL_NAMES` (see Channel Tables above). Laps from LAP messages are never shifted (they run on the logger clock); laps detected from GPS are computed on the corrected timecodes.
 
 ## Common Patterns
 

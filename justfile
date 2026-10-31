@@ -27,8 +27,13 @@ test:
 spec-test:
     uv run pytest spec/tests/ -v
 
-# Run all checks (lint, clippy, typecheck, test, spec-test)
-check: lint clippy typecheck test spec-test
+# Rust unit tests (the parser crate and the shared GPS crate; the PyO3
+# wrappers are extension modules and cannot be run as cargo tests)
+rust-test:
+    cargo test -p libxrk -p libxrk-gps
+
+# Run all checks (lint, clippy, rust-test, typecheck, test, spec-test)
+check: lint clippy rust-test typecheck test spec-test
 
 # Generate spec test vectors
 spec-vectors:
@@ -42,15 +47,15 @@ benchmark: rust-build
 repl:
     uv run python -i -c "from libxrk import aim_xrk; log = aim_xrk('tests/test_data/SFJ/CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrk'); print('XRK file loaded as: log'); print(f'Channels: {len(log.channels)}'); print(f'Laps: {len(log.laps)}'); print(f'Metadata keys: {list(log.metadata.keys())}')"
 
-# Build Rust extension module (release)
+# Build the Rust extension modules (_aim_xrk_rs and _gps_rs, release) into src/libxrk
 rust-build:
     #!/usr/bin/env bash
-    source $HOME/.cargo/env && uv run maturin develop --release
+    source $HOME/.cargo/env && uv run python -c "import setup; setup.build_rust_extensions()"
 
-# Build Rust extension module (debug, faster compile)
+# Build the Rust extension modules (debug, faster compile)
 rust-build-debug:
     #!/usr/bin/env bash
-    source $HOME/.cargo/env && uv run maturin develop
+    source $HOME/.cargo/env && LIBXRK_CARGO_PROFILE=debug uv run python -c "import setup; setup.build_rust_extensions()"
 
 # --- Pyodide (runtime 314 = Python 3.14, PEP 783 pyemscripten_2026_0 -> PyPI) ---
 # Builds on STABLE Rust with the rustflags the xbuildenv reports, using plain

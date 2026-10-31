@@ -1,7 +1,10 @@
 //! Pure Rust library for reading AIM XRK/XRZ motorsports telemetry files.
 //!
 //! This crate provides a standalone parser with no Python dependencies.
-//! Arrow support is behind the `arrow` feature flag.
+//! Arrow support is behind the `arrow` feature flag. GPS processing (the 14
+//! GPS channels, the timing fix, GPS lap detection) is the separate
+//! `libxrk-gps` crate, shared with the Cython backend and the spec; this
+//! crate only collects the raw material and hands it over ([`process_gps`]).
 //!
 //! # Example
 //! ```no_run
@@ -15,7 +18,6 @@
 
 pub mod decoders;
 pub mod error;
-pub mod gps;
 pub mod messages;
 pub mod metadata;
 pub mod parser;
@@ -28,7 +30,7 @@ pub mod arrow;
 use std::path::Path;
 
 pub use error::Error;
-pub use gps::GpsDecodeResult;
+pub use libxrk_gps::{self as gps, GpsChannels};
 pub use metadata::Metadata;
 pub use parser::{ChannelData, ChannelInfo, ChannelValues, ParseResult, ProcessedLap};
 
@@ -45,8 +47,8 @@ pub struct XrkFile {
     pub metadata: Metadata,
     /// Raw parse result for advanced use.
     pub raw: ParseResult,
-    /// GPS decode result (if GPS data was present).
-    pub gps: Option<GpsDecodeResult>,
+    /// The GPS channels (if GPS data was present).
+    pub gps: Option<GpsChannels>,
 }
 
 /// A decoded telemetry channel with metadata.
@@ -105,12 +107,10 @@ pub fn read_xrk_with_options(
     // Parse with the Rust streaming parser
     let mut result = parser::parse_xrk_with_interval(&data, progress, progress_interval)?;
 
-    // Compute non-GPS max end time before moving channel_data out
-    let non_gps_max_end_time: Option<i64> = result
-        .channel_data
-        .values()
-        .filter_map(|ch| ch.timecodes.last().copied())
-        .max();
+    // GPS channels and the finished lap table, from the raw material the
+    // parser collected. Needs channel_data for the timing fix's indirect
+    // method, so it runs before channel_data is moved out below.
+    let gps_out = process_gps(&result)?;
 
     // Build metadata while channel_data is still populated (calibration
     // attribution only considers channels that carry data, like Cython).
@@ -122,14 +122,10 @@ pub fn read_xrk_with_options(
     // Build Channel structs from channel_data + channel info, in ascending
     // channel-index order. Duplicate long_names are exposed with the AIM
     // DLL's "<name> dup <k>" convention (parser::channel_display_names);
-    // when the file carries GPS data, the 12 synthesized GPS channel names
+    // when the file carries GPS data, the synthesized GPS channel names
     // are reserved so CHS channels colliding with them get the suffix.
-    let gps_reserved: Vec<&str> = if result.gps_data.is_empty() {
-        Vec::new()
-    } else {
-        gps::GPS_CHANNEL_DEFS.iter().map(|d| d.name).collect()
-    };
-    let display_names = parser::channel_display_names(&result.channels, &gps_reserved);
+    let display_names =
+        parser::channel_display_names(&result.channels, &gps_reserved_names(&result));
     let mut channel_data: Vec<(u16, ChannelData)> = channel_data.into_iter().collect();
     channel_data.sort_by_key(|(idx, _)| *idx);
     let channels: Vec<Channel> = channel_data
@@ -165,129 +161,64 @@ pub fn read_xrk_with_options(
         })
         .collect();
 
-    // Decode GPS channels
-    let mut gps_result = gps::decode_gps(&result.gps_data, result.time_offset)?;
-
-    // Apply GPS timing fix
-    if let Some(ref mut gps) = gps_result {
-        let gnfi_timecodes: Vec<i64> =
-            if !result.gnfi_data.is_empty() && result.gnfi_data.len().is_multiple_of(32) {
-                let n_records = result.gnfi_data.len() / 32;
-                (0..n_records)
-                    .map(|i| {
-                        let offset = i * 32;
-                        i32::from_le_bytes([
-                            result.gnfi_data[offset],
-                            result.gnfi_data[offset + 1],
-                            result.gnfi_data[offset + 2],
-                            result.gnfi_data[offset + 3],
-                        ]) as i64
-                            - result.time_offset
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-
-        let corrections = gps::timing::detect_gap_corrections(
-            &gps.timecodes,
-            &gnfi_timecodes,
-            non_gps_max_end_time,
-            40.0,
-        );
-        if !corrections.is_empty() {
-            gps::timing::apply_corrections(&mut gps.timecodes, &corrections);
-        }
-    }
-
-    // Build laps — GPS timing fix was applied above
-    let mut processed_laps = parser::get_processed_laps(&result)?;
-
-    // Validate LAP-message-based laps
-    if processed_laps
-        .iter()
-        .any(|l| l.start_time < 0 || l.end_time <= l.start_time)
-    {
-        processed_laps.clear();
-    }
-
-    // Classify last lap as "in" if GPS shows car is not near S/F at end
-    if !processed_laps.is_empty() && processed_laps.last().unwrap().lap_type != "out" {
-        if let (Some(trk_marker), Some(ref gps)) = (get_trk_marker(&result), &gps_result) {
-            if !gps.timecodes.is_empty() {
-                let (sf_lat, sf_lon) = trk_marker;
-                let (sf_x, sf_y, sf_z) = gps::utils::lla2ecef(sf_lat, sf_lon, 0.0);
-
-                let end_time = processed_laps.last().unwrap().end_time;
-                let idx = gps
-                    .timecodes
-                    .partition_point(|&t| t < end_time)
-                    .min(gps.timecodes.len() - 1);
-                let (ex, ey, ez) = gps::utils::lla2ecef(gps.latitude[idx], gps.longitude[idx], 0.0);
-
-                let dist = ((sf_x - ex).powi(2) + (sf_y - ey).powi(2) + (sf_z - ez).powi(2)).sqrt();
-                if dist > 30.0 {
-                    let last_idx = processed_laps.len() - 1;
-                    processed_laps[last_idx].lap_type = "in".to_string();
-                }
-            }
-        }
-    }
-
-    if processed_laps.is_empty() {
-        // GPS-based lap detection
-        if let Some(trk_marker) = get_trk_marker(&result) {
-            if let Some(ref gps) = gps_result {
-                let xyz: Vec<[f64; 3]> = gps
-                    .latitude
-                    .iter()
-                    .zip(gps.longitude.iter())
-                    .map(|(&lat, &lon)| {
-                        let (x, y, z) = gps::utils::lla2ecef(lat, lon, 0.0);
-                        [x, y, z]
-                    })
-                    .collect();
-
-                let lap_markers = gps::utils::find_laps(&xyz, &gps.timecodes, trk_marker);
-
-                if !lap_markers.is_empty() {
-                    let session_end = *gps.timecodes.last().unwrap_or(&0);
-                    let mut all_markers = lap_markers.clone();
-                    all_markers.push(session_end as f64);
-
-                    let lap_count = all_markers.windows(2).len();
-                    for (i, window) in all_markers.windows(2).enumerate() {
-                        processed_laps.push(ProcessedLap {
-                            num: i as i32,
-                            start_time: window[0] as i64,
-                            end_time: window[1] as i64,
-                            lap_type: if i == lap_count - 1 {
-                                "in".to_string()
-                            } else {
-                                "full".to_string()
-                            },
-                        });
-                    }
-                }
-            }
-        }
-    }
-
     Ok(XrkFile {
         channels,
-        laps: processed_laps,
+        laps: gps_out.laps,
         metadata,
         raw: result,
-        gps: gps_result,
+        gps: gps_out.channels,
     })
 }
 
-/// Extract TRK start/finish marker coordinates from a ParseResult.
-fn get_trk_marker(result: &ParseResult) -> Option<(f64, f64)> {
+/// Names reserved for the synthesized GPS channels when the file carries GPS
+/// data, so a CHS channel with the same name is exposed as "<name> dup 2".
+pub fn gps_reserved_names(result: &ParseResult) -> Vec<&'static str> {
+    if result.gps_data.is_empty() {
+        Vec::new()
+    } else {
+        gps::GPS_CHANNEL_DEFS.iter().map(|d| d.name).collect()
+    }
+}
+
+/// Run the shared GPS pipeline (`libxrk_gps::process`) on a parse result.
+///
+/// Hands over the raw GPS and GNFI records, the time offset, the last
+/// timecode of the non-GPS channels, the TRK start/finish marker and the
+/// lap table built from LAP messages, and gets back the GPS channels and the
+/// finished lap table. The parser's lap table is discarded (so laps are
+/// detected from GPS instead) when it is inconsistent: a negative start or
+/// a lap that does not end after it starts.
+pub fn process_gps(result: &ParseResult) -> Result<gps::Output> {
+    let non_gps_max_end_time: Option<i64> = result
+        .channel_data
+        .values()
+        .filter_map(|ch| ch.timecodes.last().copied())
+        .max();
+
+    let mut laps = parser::get_processed_laps(result)?;
+    if laps
+        .iter()
+        .any(|l| l.start_time < 0 || l.end_time <= l.start_time)
+    {
+        laps.clear();
+    }
+
+    Ok(gps::process(gps::Input {
+        gps_data: &result.gps_data,
+        gnfi_data: &result.gnfi_data,
+        time_offset: result.time_offset,
+        non_gps_max_end_time,
+        start_finish: start_finish(result),
+        laps,
+        expected_dt_ms: gps::DEFAULT_EXPECTED_DT_MS,
+    })?)
+}
+
+/// Start/finish (latitude, longitude) in degrees from the last TRK message.
+pub fn start_finish(result: &ParseResult) -> Option<(f64, f64)> {
     let trk_msgs = result.header_messages.get(&messages::tokens::trk())?;
     let last_msg = trk_msgs.last()?;
-    let payload = messages::dispatch_payload(last_msg);
-    if let messages::Payload::Trk(trk) = payload {
+    if let messages::Payload::Trk(trk) = messages::dispatch_payload(last_msg) {
         Some((trk.sf_lat, trk.sf_long))
     } else {
         None

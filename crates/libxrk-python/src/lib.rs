@@ -1,6 +1,7 @@
 //! PyO3 bindings for the libxrk crate.
 //!
-//! Thin wrapper that reads data from Python sources, calls `libxrk::read_xrk()`,
+//! Thin wrapper that reads data from Python sources, runs the Rust parser,
+//! hands the GPS material to the shared GPS crate (`libxrk::process_gps`),
 //! and converts the results to PyArrow tables and Python dicts.
 
 use pyo3::prelude::*;
@@ -82,12 +83,11 @@ fn aim_xrk(py: Python<'_>, fname: Py<PyAny>, progress: Option<Py<PyAny>>) -> PyR
     let mut result = libxrk::parser::parse_xrk(&data, progress_cb.as_ref().map(|cb| cb.as_ref()))
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
-    // Compute non-GPS max end time before moving channel_data out
-    let non_gps_max_end_time: Option<i64> = result
-        .channel_data
-        .values()
-        .filter_map(|ch| ch.timecodes.last().copied())
-        .max();
+    // GPS channels and the finished lap table from the shared GPS crate.
+    // Needs channel_data (for the timing fix's indirect method), so it runs
+    // before channel_data is moved out.
+    let gps_out = libxrk::process_gps(&result)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
     // Build metadata while channel_data is still populated (calibration
     // attribution only considers channels that carry data, like Cython).
@@ -97,21 +97,13 @@ fn aim_xrk(py: Python<'_>, fname: Py<PyAny>, progress: Option<Py<PyAny>>) -> PyR
     let channel_data = std::mem::take(&mut result.channel_data);
 
     // Build Arrow RecordBatches using the core crate's arrow module.
-    // When the file carries GPS data, the 12 synthesized GPS channel names
+    // When the file carries GPS data, the synthesized GPS channel names
     // are reserved so a CHS channel colliding with one is exposed as
     // "<name> dup 2" instead of being shadowed by the GPS channel.
-    let gps_reserved: Vec<&str> = if result.gps_data.is_empty() {
-        Vec::new()
-    } else {
-        libxrk::gps::GPS_CHANNEL_DEFS
-            .iter()
-            .map(|d| d.name)
-            .collect()
-    };
     let channel_batches = libxrk::arrow::build_all_channel_batches(
         channel_data,
         &result.channels,
-        &gps_reserved,
+        &libxrk::gps_reserved_names(&result),
         arrow_bridge::format_float,
     )
     .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
@@ -127,39 +119,13 @@ fn aim_xrk(py: Python<'_>, fname: Py<PyAny>, progress: Option<Py<PyAny>>) -> PyR
         channels_dict.set_item(name, table)?;
     }
 
-    // Decode GPS channels
-    let mut gps_result = libxrk::gps::decode_gps(&result.gps_data, result.time_offset)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-
-    // Apply GPS timing fix
-    if let Some(ref mut gps) = gps_result {
-        let gnfi_timecodes: Vec<i64> =
-            if !result.gnfi_data.is_empty() && result.gnfi_data.len().is_multiple_of(32) {
-                let n_records = result.gnfi_data.len() / 32;
-                (0..n_records)
-                    .map(|i| {
-                        let offset = i * 32;
-                        i32::from_le_bytes([
-                            result.gnfi_data[offset],
-                            result.gnfi_data[offset + 1],
-                            result.gnfi_data[offset + 2],
-                            result.gnfi_data[offset + 3],
-                        ]) as i64
-                            - result.time_offset
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-
-        let corrections = libxrk::gps::timing::detect_gap_corrections(
-            &gps.timecodes,
-            &gnfi_timecodes,
-            non_gps_max_end_time,
-            40.0,
-        );
-        if !corrections.is_empty() {
-            libxrk::gps::timing::apply_corrections(&mut gps.timecodes, &corrections);
+    if let Some(gps) = gps_out.channels {
+        let gps_batches = libxrk::arrow::build_gps_channel_batches(gps)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        for (name, batch) in gps_batches {
+            let py_batch = arrow_bridge::batch_to_pyarrow(py, batch)?;
+            let table = pa_table_class.call_method1("from_batches", (vec![py_batch.bind(py)],))?;
+            channels_dict.set_item(name, table)?;
         }
     }
 
@@ -183,93 +149,7 @@ fn aim_xrk(py: Python<'_>, fname: Py<PyAny>, progress: Option<Py<PyAny>>) -> PyR
         "<unknown>".to_string()
     };
 
-    // Build laps
-    let mut processed_laps = libxrk::parser::get_processed_laps(&result)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-
-    // Validate LAP-message-based laps
-    if processed_laps
-        .iter()
-        .any(|l| l.start_time < 0 || l.end_time <= l.start_time)
-    {
-        processed_laps.clear();
-    }
-
-    // Classify last lap as "in" if GPS shows car is not near S/F at end
-    if !processed_laps.is_empty() && processed_laps.last().unwrap().lap_type != "out" {
-        if let (Some(trk_marker), Some(ref gps)) = (get_trk_marker(&result), &gps_result) {
-            if !gps.timecodes.is_empty() {
-                let (sf_lat, sf_lon) = trk_marker;
-                let (sf_x, sf_y, sf_z) = libxrk::gps::utils::lla2ecef(sf_lat, sf_lon, 0.0);
-
-                let end_time = processed_laps.last().unwrap().end_time;
-                let idx = gps
-                    .timecodes
-                    .partition_point(|&t| t < end_time)
-                    .min(gps.timecodes.len() - 1);
-                let (ex, ey, ez) =
-                    libxrk::gps::utils::lla2ecef(gps.latitude[idx], gps.longitude[idx], 0.0);
-
-                let dist = ((sf_x - ex).powi(2) + (sf_y - ey).powi(2) + (sf_z - ez).powi(2)).sqrt();
-                if dist > 30.0 {
-                    let last_idx = processed_laps.len() - 1;
-                    processed_laps[last_idx].lap_type = "in".to_string();
-                }
-            }
-        }
-    }
-
-    if processed_laps.is_empty() {
-        // GPS-based lap detection
-        if let Some(trk_marker) = get_trk_marker(&result) {
-            if let Some(ref gps) = gps_result {
-                let xyz: Vec<[f64; 3]> = gps
-                    .latitude
-                    .iter()
-                    .zip(gps.longitude.iter())
-                    .map(|(&lat, &lon)| {
-                        let (x, y, z) = libxrk::gps::utils::lla2ecef(lat, lon, 0.0);
-                        [x, y, z]
-                    })
-                    .collect();
-
-                let lap_markers = libxrk::gps::utils::find_laps(&xyz, &gps.timecodes, trk_marker);
-
-                if !lap_markers.is_empty() {
-                    let session_end = *gps.timecodes.last().unwrap_or(&0);
-                    let mut all_markers = lap_markers.clone();
-                    all_markers.push(session_end as f64);
-
-                    let lap_count = all_markers.windows(2).len();
-                    for (i, window) in all_markers.windows(2).enumerate() {
-                        processed_laps.push(libxrk::ProcessedLap {
-                            num: i as i32,
-                            start_time: window[0] as i64,
-                            end_time: window[1] as i64,
-                            lap_type: if i == lap_count - 1 {
-                                "in".to_string()
-                            } else {
-                                "full".to_string()
-                            },
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    // Build GPS Arrow tables after lap detection (consumes gps_result by value)
-    if let Some(gps) = gps_result {
-        let gps_batches = libxrk::arrow::build_gps_channel_batches(gps, arrow_bridge::format_float)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-        for (name, batch) in gps_batches {
-            let py_batch = arrow_bridge::batch_to_pyarrow(py, batch)?;
-            let table = pa_table_class.call_method1("from_batches", (vec![py_batch.bind(py)],))?;
-            channels_dict.set_item(name, table)?;
-        }
-    }
-
-    let laps_batch = libxrk::arrow::build_laps_batch(&processed_laps)
+    let laps_batch = libxrk::arrow::build_laps_batch(&gps_out.laps)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
     let laps_py = arrow_bridge::batch_to_pyarrow(py, laps_batch)?;
     let laps_table = pa_table_class.call_method1("from_batches", (vec![laps_py.bind(py)],))?;
@@ -305,20 +185,6 @@ fn aim_track_dbg(py: Python<'_>, fname: Py<PyAny>) -> PyResult<Py<PyAny>> {
     }
 
     Ok(dict.into_any().unbind())
-}
-
-/// Extract TRK start/finish marker coordinates from a ParseResult.
-fn get_trk_marker(result: &libxrk::ParseResult) -> Option<(f64, f64)> {
-    let trk_msgs = result
-        .header_messages
-        .get(&libxrk::messages::tokens::trk())?;
-    let last_msg = trk_msgs.last()?;
-    let payload = libxrk::messages::dispatch_payload(last_msg);
-    if let libxrk::messages::Payload::Trk(trk) = payload {
-        Some((trk.sf_lat, trk.sf_long))
-    } else {
-        None
-    }
 }
 
 /// Convert a Payload to a Python object for aim_track_dbg.

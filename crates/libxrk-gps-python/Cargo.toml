@@ -1,0 +1,14 @@
+[package]
+name = "libxrk-gps-python"
+version = "0.13.1"
+edition = "2021"
+publish = false
+
+[lib]
+name = "_gps_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+libxrk-gps = { path = "../libxrk-gps", features = ["arrow"] }
+pyo3 = { version = "0.26", features = ["extension-module"] }
+arrow = { workspace = true, features = ["pyarrow"] }

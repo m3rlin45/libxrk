@@ -1,35 +1,135 @@
 # Copyright 2024, Scott Smith.  MIT License (see LICENSE).
 
+"""GPS: the hand-over to the shared GPS pipeline, plus coordinate utilities.
+
+The parsers (Cython and Rust) only *collect* GPS material: the raw 56-byte
+GPS records, the raw 32-byte GNFI records, the session time offset, the lap
+table built from LAP messages and the TRK start/finish marker. Everything
+derived from that material -- the 14 GPS channels, the 65533 ms timing fix,
+the GPS in-lap classification and GPS lap detection -- is implemented once,
+in the Rust crate ``crates/libxrk-gps``, and exposed to Python as the
+extension module ``libxrk._gps_rs``. :func:`process` runs it over a parser's
+output; the Cython backend and the Construct spec both go through it, and
+the Rust backend links the same crate directly.
+
+The numpy helpers below (Web Mercator, WGS-84 conversions, crossing lookup)
+are vectorised utilities for callers working with arrays of coordinates;
+the parsers do not use them.
+"""
+
 from collections import namedtuple
-from typing import TYPE_CHECKING
+from typing import Optional, Sequence
 
 import numpy as np
 import pyarrow as pa
 
-from .base import ChannelMetadata
+from . import _gps_rs
 
-if TYPE_CHECKING:
-    from .base import LogFile
-
-# GPS channel names that share a common timebase and may need timing correction
-GPS_CHANNEL_NAMES = (
-    "GPS Speed",
-    "GPS Latitude",
-    "GPS Longitude",
-    "GPS Altitude",
-    "GPS_Satellites",
-    "GPS_Fix",
-    "GPS_pDOP",
-    "GPS_Position_Accuracy",
-    "GPS_Velocity_Accuracy",
-    "GPS_InlineAcc",
-    "GPS_LateralAcc",
-    "GPS_Yaw_Rate",
-    "GPS_ITOW",
-    "GPS_Week",
-)
+# The 14 channels gps.process() synthesizes from the GPS records. They share
+# one timebase (the GPS fix rate) and are the channels the timing fix moves.
+GPS_CHANNEL_NAMES: tuple[str, ...] = tuple(_gps_rs.GPS_CHANNEL_NAMES)
 
 GPS = namedtuple("GPS", ["lat", "long", "alt"])
+
+_LAP_SCHEMA = pa.schema(
+    [
+        pa.field("num", pa.int32()),
+        pa.field("start_time", pa.int64()),
+        pa.field("end_time", pa.int64()),
+        pa.field("lap_type", pa.utf8()),
+    ]
+)
+
+
+def laps_table(
+    nums: Sequence[int], starts: Sequence[int], ends: Sequence[int], types: Sequence[str]
+) -> pa.Table:
+    """Build the laps table both backends expose (num, start_time, end_time, lap_type)."""
+    return pa.table(
+        {
+            "num": pa.array(nums, type=pa.int32()),
+            "start_time": pa.array(starts, type=pa.int64()),
+            "end_time": pa.array(ends, type=pa.int64()),
+            "lap_type": pa.array(types, type=pa.utf8()),
+        },
+        schema=_LAP_SCHEMA,
+    )
+
+
+def _lap_rows(laps: pa.Table) -> list[tuple[int, int, int, str]]:
+    return list(
+        zip(
+            laps.column("num").to_pylist(),
+            laps.column("start_time").to_pylist(),
+            laps.column("end_time").to_pylist(),
+            laps.column("lap_type").to_pylist(),
+        )
+    )
+
+
+def process(
+    channels: dict[str, pa.Table],
+    laps: pa.Table,
+    *,
+    gps_data: bytes,
+    gnfi_data: bytes,
+    time_offset: int,
+    start_finish: Optional[tuple[float, float]],
+    non_gps_max_end_time: Optional[int] = None,
+    expected_dt_ms: float = 40.0,
+) -> tuple[dict[str, pa.Table], pa.Table]:
+    """Run the shared GPS pipeline over a parser's raw output.
+
+    Decodes the GPS records into the 14 GPS channels (reconstructing
+    corrupted timecodes), detects and removes the 65533 ms firmware gap
+    (using GNFI as the reference clock when present, the last timecode of
+    the non-GPS channels otherwise), and finishes the lap table: the last
+    lap becomes ``"in"`` when the car is more than 30 m from start/finish at
+    its end, or, when ``laps`` is empty, laps are detected from the GPS
+    track. See ``spec/docs/companion.md`` sections 5-7.
+
+    Args:
+        channels: The parser's channel tables (CHS channels only, no GPS
+            channels yet), each with a ``timecodes`` column.
+        laps: The lap table built from LAP messages (see
+            :func:`laps_table`); empty when the file has none.
+        gps_data: Concatenated 56-byte GPS records in file order.
+        gnfi_data: Concatenated 32-byte GNFI records in file order.
+        time_offset: Session start in logger time, subtracted from every
+            GPS timecode.
+        start_finish: ``(latitude, longitude)`` in degrees from the TRK
+            message, or None.
+        non_gps_max_end_time: Last timecode over the non-GPS channels, for
+            the timing fix's indirect method; taken from ``channels`` when
+            None.
+        expected_dt_ms: GPS sample period assumed by the timing fix.
+
+    Returns:
+        ``(channels, laps)``: ``channels`` extended with the GPS channels,
+        and the finished lap table.
+
+    Raises:
+        ValueError: ``gps_data`` is not a whole number of 56-byte records.
+    """
+    if non_gps_max_end_time is None:
+        ends = [t.column("timecodes")[-1].as_py() for t in channels.values() if t.num_rows > 0]
+        non_gps_max_end_time = max(ends) if ends else None
+    gps_tables, lap_rows = _gps_rs.process(
+        gps_data,
+        gnfi_data,
+        time_offset,
+        non_gps_max_end_time,
+        start_finish,
+        _lap_rows(laps),
+        expected_dt_ms,
+    )
+    out = dict(channels)
+    out.update(gps_tables)
+    cols: tuple[list, list, list, list] = ([], [], [], [])
+    for row in lap_rows:
+        for col, v in zip(cols, row):
+            col.append(v)
+    return out, laps_table(*cols)
 
 
 # convert lat/long/zoom to web mercator. lat/long are degrees
@@ -77,6 +177,7 @@ def lla2ecef(lat, lon, alt):
 # Computing geodetic coordinates from geocentric coordinates
 # H. Vermeille, 2003/2004
 # http://users.auth.gr/kvek/78_Vermeille.pdf
+# Vectorised twin of libxrk-gps's geo::ecef2lla (same operation order).
 def ecef2lla_vermeille2003(x, y, z):
     a = 6378137.0
     e = 8.181919084261345e-2
@@ -156,349 +257,4 @@ def find_crossing_dist(
     return XYZD[int(idx), 3] + scale * (XYZD[int(idx) + 1, 3] - XYZD[int(idx), 3])
 
 
-def find_laps(
-    XYZ: np.ndarray,  # coordinates to look up in (X, Y, Z), meters
-    timecodes: np.ndarray,  # time for above coordinates, ms
-    marker: tuple[float, float],
-):  # (lat, long) tuple, degrees
-    # gps lap insert.  We assume the start finish "line" is a
-    # plane containing the vector that goes through the GPS
-    # coordinates sf lat/long from altitude 0 to 1000.  The normal
-    # of the plane is generally in line with the direction of
-    # travel, given the above constraint.
-
-    # O, D = vehicle vector (O=origin, D=direction, [0]=O, [1]=O+D)
-    # SO, SD = start finish origin, direction (plane must contain SO and SO+SD poitns)
-    # SN = start finish plane normal
-
-    # D = a*SD + SN
-    # 0 = SD . SN
-    # combine to get: 0 = SD . (D - a*SD)
-    #                  a * (SD . SD) = SD . D
-    # plug back into first eq:
-    # SN = D - (SD . D) / (SD . SD) * SD
-    # or to avoid division, and because length doesn't matter:
-    # SN = (SD . SD) * D - (SD. D) * SD
-
-    # now determine intersection with plane SO,SN from vector O,O+D:
-    # SN . (O + tD - SO) = 0
-    # t * (D . SN) + SN . (O - SO) = 0
-    # t = -SN.(O-SO) / D.SN
-
-    SO = np.array(lla2ecef(*marker, 0.0)).reshape((1, 3))
-    SD = np.array(lla2ecef(*marker, 1000)).reshape((1, 3)) - SO
-
-    O = XYZ - SO
-
-    D = O[1:] - O[:-1]
-    O = O[:-1]
-
-    # VBox seems to need 30, maybe my friend is using an old map description
-    marker_size = 30  # meters, how far you can be from the marker to count as a lap
-
-    # Precalculate in which time periods we were traveling at least 4 m/s (~10mph)
-    minspeed = np.sum(D * D, axis=1) > np.square((timecodes[1:] - timecodes[:-1]) * (4 / 1000))
-
-    SN = (
-        np.sum(SD * SD, axis=1).reshape((len(SD), 1)) * D
-        - np.sum(SD * D, axis=1).reshape((len(D), 1)) * SD
-    )
-    t = np.maximum(-np.sum(SN * O, axis=1) / np.sum(SN * D, axis=1), 0)
-    # This only works because the track is considered at altitude 0
-    dist = np.sum(np.square(O + t.reshape((len(t), 1)) * D), axis=1)
-    pick = (t[1:] <= 1) & (t[:-1] > 1) & (dist[1:] < marker_size**2)
-
-    # Now that we have a decent candidate selection of lap
-    # crossings, generate a single normal vector for the
-    # start/finish line to use for all lap crossings, to make the
-    # lap times more accurate/consistent.  Weight the crossings by
-    # velocity and add them together.  As it happens, SN is
-    # already weighted by velocity...
-    SN = np.sum(SN[1:][pick & minspeed[1:]], axis=0).reshape((1, 3))
-    # recompute t, dist, pick
-    t = np.maximum(-np.sum(SN * O, axis=1) / np.sum(SN * D, axis=1), 0)
-    dist = np.sum(np.square(O + t.reshape((len(t), 1)) * D), axis=1)
-    pick = (t[1:] <= 1) & (t[:-1] > 1) & (dist[1:] < marker_size**2)
-
-    lap_markers = [0]
-    for idx in np.nonzero(pick)[0] + 1:
-        if timecodes[idx] <= lap_markers[-1]:
-            continue
-        if not minspeed[idx]:
-            idx = np.argmax(minspeed[idx:]) + idx
-        lap_markers.append(timecodes[idx] + t[idx] * (timecodes[idx + 1] - timecodes[idx]))
-    return lap_markers[1:]
-
-
 ecef2lla = ecef2lla_vermeille2003
-
-
-def ecef_velocity_to_enu(dX, dY, dZ, lat_rad, lon_rad):
-    """Convert ECEF velocity to ENU (East-North-Up) frame.
-
-    Args:
-        dX, dY, dZ: Velocity components in ECEF frame (e.g., cm/s)
-        lat_rad: Latitude in radians
-        lon_rad: Longitude in radians
-
-    Returns:
-        V_east, V_north: Velocity components in local ENU frame (same units as input)
-    """
-    sin_lat, cos_lat = np.sin(lat_rad), np.cos(lat_rad)
-    sin_lon, cos_lon = np.sin(lon_rad), np.cos(lon_rad)
-
-    V_east = -sin_lon * dX + cos_lon * dY
-    V_north = -sin_lat * cos_lon * dX - sin_lat * sin_lon * dY + cos_lat * dZ
-    return V_east, V_north
-
-
-def detect_gps_timing_offset_from_gnfi(
-    gps_timecodes: np.ndarray,
-    gnfi_timecodes: np.ndarray,
-    expected_dt_ms: float = 40.0,
-) -> list[tuple[int, int]]:
-    """Detect GPS timing offset using GNFI as reference clock.
-
-    GNFI messages run on the logger's internal clock (NOT the buggy GPS timecode
-    stream). They are continuous with no gaps and end at the true session end time.
-    By comparing the GPS end time to GNFI end time, we can detect if the GPS
-    firmware bug added ~65533ms to GPS timecodes.
-
-    Args:
-        gps_timecodes: GPS channel timecodes array
-        gnfi_timecodes: GNFI timecodes array (logger internal clock)
-        expected_dt_ms: Expected time delta between GPS samples (default 40ms = 25Hz)
-
-    Returns:
-        List of (gap_time, correction) tuples, or empty list if no bug detected
-    """
-    if gnfi_timecodes is None or len(gnfi_timecodes) < 2:
-        return []
-
-    if len(gps_timecodes) < 2:
-        return []
-
-    OVERFLOW_BUG_MS = 65533
-    TOLERANCE = 5000  # Allow 5 second tolerance for end-time comparison
-
-    gps_end = int(gps_timecodes[-1])
-    gnfi_end = int(gnfi_timecodes[-1])
-    offset = gps_end - gnfi_end
-
-    # Check if GPS extends ~65533ms beyond GNFI (the bug signature)
-    if not (OVERFLOW_BUG_MS - TOLERANCE <= offset <= OVERFLOW_BUG_MS + TOLERANCE):
-        return []
-
-    # Bug detected! Find the gap where it likely occurred
-    # Look for the largest gap in GPS timecodes
-    dt = np.diff(gps_timecodes)
-    gap_threshold = expected_dt_ms * 10  # 400ms default
-
-    gap_indices = np.where(dt > gap_threshold)[0]
-    if len(gap_indices) == 0:
-        return []
-
-    # Find the largest gap
-    largest_gap_idx = gap_indices[np.argmax(dt[gap_indices])]
-    gap_time = int(gps_timecodes[largest_gap_idx])
-    gap_size = dt[largest_gap_idx]
-
-    # For direct gaps (60000-70000ms), use gap_size - expected_dt as correction
-    # For hidden bugs (detected via GNFI), use OVERFLOW_BUG_MS as correction
-    # because the gap_size might be smaller due to signal loss masking the bug
-    if OVERFLOW_BUG_MS - TOLERANCE <= gap_size <= OVERFLOW_BUG_MS + TOLERANCE:
-        # Direct gap - correction is the excess time
-        correction = gap_size - expected_dt_ms
-    else:
-        # Hidden bug - correction is the full overflow amount
-        correction = OVERFLOW_BUG_MS
-    return [(gap_time, int(correction))]
-
-
-def fix_gps_timing_gaps(
-    log: "LogFile",
-    expected_dt_ms: float = 40.0,
-    gnfi_timecodes: np.ndarray | None = None,
-    correct_laps: bool = True,
-) -> "LogFile":
-    """Detect and correct 16-bit overflow timing gaps in GPS channels and lap boundaries.
-
-    Some AIM data loggers produce GPS data with spurious timestamp jumps
-    (e.g., 65533ms gaps that should be ~40ms). This is caused by a 16-bit
-    overflow bug in the logger firmware where the upper 16 bits of the
-    timecode are corrupted, resulting in a gap of approximately 65533ms
-    (0xFFED, or 2^16 - 3).
-
-    This function detects the firmware bug in three ways (in order of preference):
-    1. GNFI-based detection: If GNFI timecodes are available, compare GPS end time
-       to GNFI end time (GNFI runs on logger's internal clock, provides ground truth)
-    2. Direct detection: gaps between 60000ms and 70000ms
-    3. Indirect detection: GPS ends ~65533ms after other channels, indicating
-       the bug occurred during a GPS signal loss (hidden within a smaller gap)
-
-    Returns a new LogFile with corrected timecodes (the original is not modified).
-
-    Parameters
-    ----------
-    log : LogFile
-        The loaded log file with channels dict.
-    expected_dt_ms : float, default=40.0
-        Expected time delta between GPS samples in milliseconds.
-        Default is 40ms (25 Hz GPS).
-    gnfi_timecodes : np.ndarray or None, default=None
-        Optional GNFI timecodes from logger's internal clock. If provided,
-        used for more robust detection of the GPS timing bug.
-    correct_laps : bool, default=True
-        Whether to also correct lap boundaries. Should be False when laps
-        come from LAP messages (which use the internal clock, unaffected
-        by the GPS timing bug). Should be True when laps come from
-        GPS-based detection (which uses the buggy GPS timecodes).
-
-    Returns
-    -------
-    LogFile
-        A new LogFile with corrected GPS timecodes (and optionally
-        lap boundaries).
-    """
-    # The firmware bug causes a gap of approximately 65533ms (0xFFED).
-    OVERFLOW_BUG_MS = 65533
-    OVERFLOW_GAP_MIN = 60000  # 60 seconds minimum
-    OVERFLOW_GAP_MAX = 70000  # 70 seconds maximum
-
-    # Find the first GPS channel that exists
-    gps_channel_name = None
-    for name in GPS_CHANNEL_NAMES:
-        if name in log.channels:
-            gps_channel_name = name
-            break
-
-    if gps_channel_name is None:
-        return log
-
-    # Get the GPS timecodes
-    gps_table = log.channels[gps_channel_name]
-    gps_time = gps_table.column("timecodes").to_numpy()
-
-    if len(gps_time) < 2:
-        return log
-
-    # Detect gaps
-    dt = np.diff(gps_time)
-    gap_threshold = expected_dt_ms * 10  # 400ms default
-
-    # Find indices where gaps are too large
-    gap_indices = np.where(dt > gap_threshold)[0]
-
-    if len(gap_indices) == 0:
-        return log
-
-    # Build list of (gap_time, correction) pairs - only for firmware bug gaps
-    gap_corrections = []
-
-    # Method 1: GNFI-based detection (most reliable, if available)
-    if gnfi_timecodes is not None:
-        gap_corrections = detect_gps_timing_offset_from_gnfi(
-            gps_time, gnfi_timecodes, expected_dt_ms
-        )
-
-    # Method 2: Direct detection - gaps between 60000ms and 70000ms
-    if len(gap_corrections) == 0:
-        for gap_idx in gap_indices:
-            gap_time = gps_time[gap_idx]
-            gap_size = dt[gap_idx]
-
-            # Only fix gaps that match the firmware bug signature (around 65533ms)
-            if not (OVERFLOW_GAP_MIN <= gap_size <= OVERFLOW_GAP_MAX):
-                continue  # Skip - this is a legitimate gap, not the firmware bug
-
-            correction = gap_size - expected_dt_ms
-            gap_corrections.append((gap_time, correction))
-
-    # Method 3: Indirect detection - GPS extends ~65533ms beyond other channels
-    # This happens when the bug occurs during GPS signal loss
-    if len(gap_corrections) == 0 and len(gap_indices) > 0:
-        # Find end time of non-GPS channels
-        non_gps_end_times = []
-        for ch_name, ch_table in log.channels.items():
-            if ch_name not in GPS_CHANNEL_NAMES:
-                ch_time = ch_table.column("timecodes").to_numpy()
-                if len(ch_time) > 0:
-                    non_gps_end_times.append(ch_time[-1])
-
-        if non_gps_end_times:
-            max_non_gps_end = max(non_gps_end_times)
-            gps_end = gps_time[-1]
-            end_offset = gps_end - max_non_gps_end
-
-            # If GPS extends ~65533ms beyond other channels, the bug is hidden
-            if OVERFLOW_GAP_MIN <= end_offset <= OVERFLOW_GAP_MAX:
-                # Find the gap where the bug likely occurred (largest gap)
-                largest_gap_idx = gap_indices[np.argmax(dt[gap_indices])]
-                gap_time = gps_time[largest_gap_idx]
-
-                # Apply correction of ~65533ms (the overflow amount)
-                correction = OVERFLOW_BUG_MS
-                gap_corrections.append((gap_time, correction))
-
-    # Fix GPS channel timecodes
-    gps_time_fixed = gps_time.astype(np.float64)
-    for gap_time, correction in gap_corrections:
-        gps_time_fixed[gps_time > gap_time] -= correction
-
-    gps_time_fixed = gps_time_fixed.astype(np.int64)
-
-    # Build new channels dict with corrected GPS timecodes
-    new_channels = dict(log.channels)
-    for name in GPS_CHANNEL_NAMES:
-        if name not in new_channels:
-            continue
-
-        table = new_channels[name]
-        value_column = table.column(name)
-        field = table.schema.field(name)
-        meta = ChannelMetadata.from_field(field)
-
-        new_table = pa.table(
-            {
-                "timecodes": pa.array(gps_time_fixed, type=pa.int64()),
-                name: value_column,
-            }
-        )
-
-        metadata = meta.to_field_metadata()
-        new_field = new_table.schema.field(name).with_metadata(metadata)
-        new_schema = pa.schema([new_table.schema.field("timecodes"), new_field])
-        new_table = new_table.cast(new_schema)
-
-        new_channels[name] = new_table
-
-    # Fix lap boundaries (start_time, end_time) only when laps came from
-    # GPS-based detection (not LAP messages, which use the internal clock)
-    new_laps = log.laps
-    if correct_laps and log.laps is not None and len(log.laps) > 0:
-        start_times = log.laps.column("start_time").to_numpy().astype(np.float64)
-        end_times = log.laps.column("end_time").to_numpy().astype(np.float64)
-
-        for gap_time, correction in gap_corrections:
-            start_times[start_times > gap_time] -= correction
-            end_times[end_times > gap_time] -= correction
-
-        new_laps_data = {}
-        for col_name in log.laps.column_names:
-            if col_name == "start_time":
-                new_laps_data[col_name] = pa.array(start_times.astype(np.int64), type=pa.int64())
-            elif col_name == "end_time":
-                new_laps_data[col_name] = pa.array(end_times.astype(np.int64), type=pa.int64())
-            else:
-                new_laps_data[col_name] = log.laps.column(col_name)
-
-        new_laps = pa.table(new_laps_data)
-
-    from .base import LogFile
-
-    return LogFile(
-        channels=new_channels,
-        laps=new_laps,
-        metadata=log.metadata,
-        file_name=log.file_name,
-    )

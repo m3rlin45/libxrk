@@ -25,11 +25,51 @@ from spec.xrk_format import (
     ParseResult,
 )
 from spec.tests.conftest import ALL_XRK_FILES
+from libxrk import gps
+from libxrk.gps import GPS_CHANNEL_NAMES
 
 
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
+
+def _run_gps_pipeline(parsed):
+    """Run the shared GPS pipeline over the spec's parse.
+
+    Returns (gps channels {name: pa.Table}, finished lap table as a list of
+    dicts). The spec contributes only raw material -- lap_table() from the
+    LAP messages and gps_input() (GPS/GNFI records, time offset, TRK
+    marker, end of the non-GPS streams) -- exactly as a backend does.
+    """
+    rows = parsed.lap_table()
+    laps = gps.laps_table(
+        [r["num"] for r in rows],
+        [r["start_time"] for r in rows],
+        [r["end_time"] for r in rows],
+        [r["lap_type"] for r in rows],
+    )
+    channels, laps = gps.process({}, laps, **parsed.gps_input())
+    return channels, [
+        {"num": n, "start_time": s, "end_time": e, "lap_type": k}
+        for n, s, e, k in zip(
+            laps.column("num").to_pylist(),
+            laps.column("start_time").to_pylist(),
+            laps.column("end_time").to_pylist(),
+            laps.column("lap_type").to_pylist(),
+        )
+    ]
+
+
+def _assert_tables_identical(a, b, label):
+    """Same schema (field metadata included) and bit-identical columns (NaN == NaN)."""
+    assert a.schema.equals(b.schema, check_metadata=True), f"{label}: schema differs"
+    for col in a.column_names:
+        x = a.column(col).to_numpy(zero_copy_only=False)
+        y = b.column(col).to_numpy(zero_copy_only=False)
+        assert np.array_equal(
+            x, y, equal_nan=np.issubdtype(x.dtype, np.floating)
+        ), f"{label}.{col}: values differ"
 
 
 def _decode_and_fixup(data_bytes, ch):
@@ -130,8 +170,8 @@ class TestCHSCrossValidation:
             "display_range_max": md.get(b"display_range_max", b"").decode(),
         }
 
-    # GPS-derived channels that the Cython parser creates from scratch in _decode_gps()
-    # rather than using the CHS definition. Their metadata won't match CHS values.
+    # GPS-derived channels the backends synthesize (gps.process) rather than
+    # take from a CHS definition. Their metadata won't match CHS values.
     _GPS_COMPUTED_CHANNELS = {
         "GPS Speed",
         "GPS Latitude",
@@ -163,7 +203,7 @@ class TestCHSCrossValidation:
         for idx, ch in parsed.channels.items():
             name = ch.name
             if name in self._GPS_COMPUTED_CHANNELS:
-                continue  # GPS-derived; Cython creates these independently
+                continue  # GPS-derived; synthesized by gps.process, not from CHS
             md = self._get_channel_metadata(cython_log, name)
             if md is None:
                 continue  # Channel not exposed by Cython (e.g., Master Clk)
@@ -268,6 +308,19 @@ class TestGRPCrossValidation:
 class TestGPSCrossValidation:
     """Verify GPS message parsing matches Cython output."""
 
+    def test_gps_channels_from_spec_material_match_backend(self, parsed_and_backend):
+        """A parser only collects GPS material (GPS and GNFI records, time
+        offset, TRK marker); the GPS channels are made from it by the one
+        shared pipeline (libxrk.gps.process). Running that pipeline over the
+        spec's material must give the backend's tables bit for bit, metadata
+        included: a difference means the parsers disagree on the material.
+        The pipeline itself is tested on its own in tests/test_gps_processing.py."""
+        parsed, log = parsed_and_backend
+        channels, _ = _run_gps_pipeline(parsed)
+        assert set(channels) == set(GPS_CHANNEL_NAMES)
+        for name in GPS_CHANNEL_NAMES:
+            _assert_tables_identical(channels[name], log.channels[name], name)
+
     def test_gps_count(self, parsed_and_backend):
         """GPS message count should match Cython channel row count."""
         parsed, cython_log = parsed_and_backend
@@ -359,16 +412,17 @@ class TestLAPCrossValidation:
     def test_lap_table_matches_backend(self, name, backend, request):
         # `backend` is requested directly so its session params are defined
         # for this test; getfixturevalue alone cannot parametrize.
-        """ParseResult.lap_table() is the lap table both backends expose:
-        numbers, session-relative times and out/full/in types, including the
-        final partial lap on SFJ 0101 and Suzuka 0090 (companion.md
-        section 7). Runs once per backend via the session `backend` param."""
+        """ParseResult.lap_table() (what the LAP messages say, including the
+        final partial lap on SFJ 0101 and Suzuka 0090, companion.md section
+        7) finished by the shared GPS pipeline (the in-lap classification,
+        or GPS lap detection for a file without LAP messages) is the lap
+        table both backends expose: numbers, session-relative times and
+        out/full/in types. Runs once per backend via the session `backend`
+        param."""
         parsed = request.getfixturevalue(f"{name}_parsed")
         log = request.getfixturevalue(f"{name}_backend")
-        spec = parsed.lap_table()
-        if not spec:
-            pytest.skip("no LAP messages: GPS cross-track fallback is not specified")
-        assert spec == self._backend_lap_table(log)
+        _, laps = _run_gps_pipeline(parsed)
+        assert laps == self._backend_lap_table(log)
 
     @pytest.mark.parametrize("name", ["sfj", "file_86", "aim_official", "sfj_0101", "sfj_suzuka"])
     def test_lap_table_matches_dll(self, name, request):
