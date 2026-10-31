@@ -67,6 +67,12 @@ pub struct ParseResult {
     pub laps: Vec<LapInfo>,
     /// ENF sub-messages: each entry is the sub-parsed messages from one ENF message
     pub enf_sub_messages: Vec<HashMap<u32, Vec<HeaderMessage>>>,
+    /// Byte runs the scanner could not interpret, as (offset, length) in the
+    /// decompressed stream. Fragments of messages cut by a header record are
+    /// not included — see `record_unparsed_run`.
+    pub unparsed_runs: Vec<(usize, usize)>,
+    /// Number of message fragments cut by header records that were skipped.
+    pub fragments: usize,
 }
 
 /// Typed channel value storage — preserves the native Arrow type from each decoder.
@@ -267,6 +273,10 @@ struct ParserState {
     last_v2_plus4_tc: HashMap<u16, (i32, u32)>,
     /// File-order counter for c-message variants.
     c_var_pos: u32,
+    /// See `ParseResult::unparsed_runs`.
+    unparsed_runs: Vec<(usize, usize)>,
+    /// See `ParseResult::fragments`.
+    fragments: usize,
 }
 
 /// Pre-scan results used to pre-allocate accumulator capacity.
@@ -327,6 +337,8 @@ impl ParserState {
             last_v2_base_tc: HashMap::new(),
             last_v2_plus4_tc: HashMap::new(),
             c_var_pos: 0,
+            unparsed_runs: Vec::new(),
+            fragments: 0,
         }
     }
 
@@ -567,6 +579,8 @@ impl ParserState {
             channel_data,
             laps,
             enf_sub_messages: self.enf_sub_messages,
+            unparsed_runs: self.unparsed_runs,
+            fragments: self.fragments,
         })
     }
 }
@@ -742,21 +756,59 @@ fn prescan_header_message(msg: &HeaderMessage, state: &mut ParserState, hints: &
     }
 }
 
-/// Print accumulated bad bytes as a diagnostic warning.
-fn flush_bad_bytes(data: &[u8], bad_pos: usize, bad_count: usize) {
-    if bad_count > 0 {
-        let end = (bad_pos + bad_count).min(data.len());
-        let hex: Vec<String> = data[bad_pos..end]
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect();
-        eprintln!(
-            "Bad bytes({} at {:x}): {}",
-            bad_count,
-            bad_pos,
-            hex.join(", ")
-        );
+/// Account for a run of bytes the scanner had to skip to resynchronise.
+///
+/// The logger writes messages over one another. The trailer (RCR, VEH, CMP,
+/// ...) is appended wherever recording stopped, cutting the last message
+/// short; the ODO record that closes the header block lands on the first GPS
+/// record or sample message; and mid-stream, a message is sometimes written
+/// over the head of the one before it. The cut message leaves a *fragment*:
+/// its head (opcode and first fields, ending where the next record begins)
+/// or its tail (last fields and the closing `)` or `>`, starting where the
+/// overwriting message ends). In an 812-file corpus every unparseable run
+/// but two was such a fragment. They are expected, carry no recoverable
+/// data, and are counted rather than reported.
+///
+/// A head fragment starts with a message opcode (`(S`, `(M`, `(G`, `(c`, `<h`,
+/// or a lone `(` / `<`) and runs into a header record or the end of the
+/// stream (`before_header`). A tail fragment does not start with an opcode
+/// and ends with a message terminator (`)` or `>`); a tail may begin with a
+/// stray `(` or `<` byte, which is why the opcode pair is required. Anything
+/// else — in particular a complete-looking `(...)` message that failed to
+/// parse, which is what an unhandled message variant (#77) or a damaged
+/// message looks like — is reported as bad bytes.
+/// See spec/docs/companion.md §10.
+fn record_unparsed_run(
+    data: &[u8],
+    bad_pos: usize,
+    bad_count: usize,
+    before_header: bool,
+    state: &mut ParserState,
+) {
+    if bad_count == 0 {
+        return;
     }
+    let run = &data[bad_pos..bad_pos + bad_count];
+    let starts_a_message = match run {
+        [b'(', b'S' | b'M' | b'G' | b'c', ..] | [b'<', b'h', ..] => true,
+        [b'(' | b'<'] => true,
+        _ => false,
+    };
+    let ends_a_message = matches!(run[run.len() - 1], b')' | b'>');
+    let head_fragment = starts_a_message && before_header;
+    let tail_fragment = !starts_a_message && ends_a_message;
+    if head_fragment || tail_fragment {
+        state.fragments += 1;
+        return;
+    }
+    state.unparsed_runs.push((bad_pos, bad_count));
+    let hex: Vec<String> = run.iter().map(|b| format!("{:02x}", b)).collect();
+    eprintln!(
+        "Bad bytes({} at {:x}): {}",
+        bad_count,
+        bad_pos,
+        hex.join(", ")
+    );
 }
 
 /// Scan the byte stream and populate the parser state.
@@ -792,7 +844,7 @@ fn scan_stream(
                 b'G' => {
                     // G message: group data
                     if let Some(consumed) = try_parse_g_message(data, pos, state) {
-                        flush_bad_bytes(data, bad_pos, bad_count);
+                        record_unparsed_run(data, bad_pos, bad_count, false, state);
                         bad_count = 0;
                         pos += consumed;
                         continue;
@@ -801,7 +853,7 @@ fn scan_stream(
                 b'S' => {
                     // S message: single channel sample
                     if let Some(consumed) = try_parse_s_message(data, pos, state) {
-                        flush_bad_bytes(data, bad_pos, bad_count);
+                        record_unparsed_run(data, bad_pos, bad_count, false, state);
                         bad_count = 0;
                         pos += consumed;
                         continue;
@@ -810,7 +862,7 @@ fn scan_stream(
                 b'M' => {
                     // M message: multi-sample burst
                     if let Some(consumed) = try_parse_m_message(data, pos, state) {
-                        flush_bad_bytes(data, bad_pos, bad_count);
+                        record_unparsed_run(data, bad_pos, bad_count, false, state);
                         bad_count = 0;
                         pos += consumed;
                         continue;
@@ -819,7 +871,7 @@ fn scan_stream(
                 b'c' => {
                     // c message: expansion device channel
                     if let Some(consumed) = try_parse_c_message(data, pos, state) {
-                        flush_bad_bytes(data, bad_pos, bad_count);
+                        record_unparsed_run(data, bad_pos, bad_count, false, state);
                         bad_count = 0;
                         pos += consumed;
                         continue;
@@ -837,7 +889,7 @@ fn scan_stream(
             }
 
             if let Ok((msg, consumed)) = HeaderMessage::parse(data, pos) {
-                flush_bad_bytes(data, bad_pos, bad_count);
+                record_unparsed_run(data, bad_pos, bad_count, true, state);
                 bad_count = 0;
                 handle_header_message(&msg, state);
                 pos += consumed;
@@ -853,8 +905,8 @@ fn scan_stream(
         pos += 1;
     }
 
-    // Flush any remaining bad bytes
-    flush_bad_bytes(data, bad_pos, bad_count);
+    // Whatever is left runs into the end of the stream.
+    record_unparsed_run(data, bad_pos, bad_count, true, state);
 
     pos
 }
@@ -1899,6 +1951,149 @@ mod tests {
     // ═══════════════════════════════════════════════════════════════════
     // Tests
     // ═══════════════════════════════════════════════════════════════════
+
+    // ── Unparsed runs: fragments cut by header records vs. bad bytes ───
+
+    fn rpm_chs_frame() -> Vec<u8> {
+        make_header_frame(
+            "CHS",
+            0,
+            &make_chs_bytes(0, "RPM", "Engine RPM", 0, 4, 15, 0),
+        )
+    }
+
+    fn trailer_frame() -> Vec<u8> {
+        make_header_frame("RCR", 0, b"CMD\0")
+    }
+
+    #[test]
+    fn test_message_head_cut_by_trailer_is_a_fragment() {
+        // Recording stopped mid-message; the trailer follows the partial S message.
+        let full = make_s_message(1000, 0, &5000i32.to_le_bytes());
+        let partial = full[..5].to_vec();
+        let stream = build_xrk_stream(&[rpm_chs_frame()], &[full, partial, trailer_frame()]);
+        let result = parse_xrk(&stream, None).unwrap();
+        assert_eq!(result.fragments, 1);
+        assert!(result.unparsed_runs.is_empty());
+        assert_eq!(result.channel_data[&0].timecodes.len(), 1);
+    }
+
+    #[test]
+    fn test_message_head_cut_by_end_of_stream_is_a_fragment() {
+        let full = make_s_message(1000, 0, &5000i32.to_le_bytes());
+        let partial = full[..2].to_vec(); // just "(S"
+        let stream = build_xrk_stream(&[rpm_chs_frame()], &[full, partial]);
+        let result = parse_xrk(&stream, None).unwrap();
+        assert_eq!(result.fragments, 1);
+        assert!(result.unparsed_runs.is_empty());
+    }
+
+    #[test]
+    fn test_lone_opcode_byte_before_trailer_is_a_fragment() {
+        let s_msg = make_s_message(1000, 0, &5000i32.to_le_bytes());
+        let stream = build_xrk_stream(&[rpm_chs_frame()], &[s_msg, vec![b'('], trailer_frame()]);
+        let result = parse_xrk(&stream, None).unwrap();
+        assert_eq!(result.fragments, 1);
+        assert!(result.unparsed_runs.is_empty());
+    }
+
+    #[test]
+    fn test_header_record_cut_by_trailer_is_a_fragment() {
+        // A GPS record whose payload is cut short by the trailer: the frame
+        // declares 56 payload bytes but only 20 were written.
+        let gps = make_header_frame("GPS", 1, &[0x11u8; 56]);
+        let truncated = gps[..12 + 20].to_vec();
+        let s_msg = make_s_message(1000, 0, &5000i32.to_le_bytes());
+        let stream = build_xrk_stream(&[rpm_chs_frame()], &[s_msg, truncated, trailer_frame()]);
+        let result = parse_xrk(&stream, None).unwrap();
+        assert_eq!(result.fragments, 1);
+        assert!(result.unparsed_runs.is_empty());
+    }
+
+    #[test]
+    fn test_message_tail_after_header_record_is_a_fragment() {
+        // The header record overwrote the head of the first S message.
+        let full = make_s_message(1000, 0, &5000i32.to_le_bytes());
+        let tail = full[full.len() - 4..].to_vec(); // "...xx xx xx )"
+        let next = make_s_message(1100, 0, &5100i32.to_le_bytes());
+        let stream = build_xrk_stream(&[rpm_chs_frame(), trailer_frame()], &[tail, next]);
+        let result = parse_xrk(&stream, None).unwrap();
+        assert_eq!(result.fragments, 1);
+        assert!(result.unparsed_runs.is_empty());
+        assert_eq!(result.channel_data[&0].timecodes.len(), 1);
+    }
+
+    #[test]
+    fn test_message_tail_after_sample_message_is_a_fragment() {
+        // Mid-stream, a sample message was written over the head of the next one.
+        let a = make_s_message(1000, 0, &5000i32.to_le_bytes());
+        let cut = make_s_message(1050, 0, &5050i32.to_le_bytes());
+        let tail = cut[cut.len() - 3..].to_vec();
+        let b = make_s_message(1100, 0, &5100i32.to_le_bytes());
+        let stream = build_xrk_stream(&[rpm_chs_frame()], &[a, tail, b]);
+        let result = parse_xrk(&stream, None).unwrap();
+        assert_eq!(result.fragments, 1);
+        assert!(result.unparsed_runs.is_empty());
+        assert_eq!(result.channel_data[&0].timecodes.len(), 2);
+    }
+
+    #[test]
+    fn test_header_record_tail_is_a_fragment() {
+        // The ODO record closing the header block overwrote the head of the
+        // first GPS record; its payload and "<GPS..>" footer remain.
+        let gps = make_header_frame("GPS", 1, &[0x11u8; 56]);
+        let tail = gps[9..].to_vec();
+        let s_msg = make_s_message(1000, 0, &5000i32.to_le_bytes());
+        let stream = build_xrk_stream(&[rpm_chs_frame(), trailer_frame()], &[tail, s_msg]);
+        let result = parse_xrk(&stream, None).unwrap();
+        assert_eq!(result.fragments, 1);
+        assert!(result.unparsed_runs.is_empty());
+    }
+
+    #[test]
+    fn test_stray_bytes_between_sample_messages_are_reported() {
+        // Three bytes that neither start nor end a message: unexplained.
+        let a = make_s_message(1000, 0, &5000i32.to_le_bytes());
+        let b = make_s_message(1100, 0, &5100i32.to_le_bytes());
+        let stray = vec![0xa4, 0x4d, 0x2a];
+        let stream = build_xrk_stream(&[rpm_chs_frame()], &[a.clone(), stray, b]);
+        let result = parse_xrk(&stream, None).unwrap();
+        assert_eq!(result.fragments, 0);
+        assert_eq!(
+            result.unparsed_runs,
+            vec![(rpm_chs_frame().len() + a.len(), 3)]
+        );
+    }
+
+    #[test]
+    fn test_unparseable_complete_message_is_reported() {
+        // A framed "(S ... )" message the parser cannot interpret — here for a
+        // channel index with no CHS, the shape of an unhandled variant (#77).
+        // It starts and ends like a message, so it is neither fragment kind.
+        let a = make_s_message(1000, 0, &5000i32.to_le_bytes());
+        let unknown = make_s_message(1050, 7, &[0x39, 0x55]);
+        let b = make_s_message(1100, 0, &5100i32.to_le_bytes());
+        let stream = build_xrk_stream(&[rpm_chs_frame()], &[a.clone(), unknown.clone(), b]);
+        let result = parse_xrk(&stream, None).unwrap();
+        assert_eq!(result.fragments, 0);
+        assert_eq!(
+            result.unparsed_runs,
+            vec![(rpm_chs_frame().len() + a.len(), unknown.len())]
+        );
+    }
+
+    #[test]
+    fn test_message_head_before_sample_message_is_reported() {
+        // A partial message followed by another sample message, not a header
+        // record: nothing cut it, so it is reported.
+        let full = make_s_message(1000, 0, &5000i32.to_le_bytes());
+        let partial = full[..5].to_vec();
+        let next = make_s_message(1100, 0, &5100i32.to_le_bytes());
+        let stream = build_xrk_stream(&[rpm_chs_frame()], &[partial, next]);
+        let result = parse_xrk(&stream, None).unwrap();
+        assert_eq!(result.fragments, 0);
+        assert_eq!(result.unparsed_runs.len(), 1);
+    }
 
     // ── parse_xrk: basic tests ─────────────────────────────────────────
 
