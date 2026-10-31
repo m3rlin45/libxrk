@@ -1,10 +1,10 @@
 """Backend tests for GPS timecode reconstruction (issue #84).
 
-The wire-level rule and its reference implementation live in
-`spec/xrk_format.py::reconstruct_gps_timecodes` (see
-`spec/tests/test_gps_timecodes.py` and `spec/docs/companion.md` section 6).
-These tests pin the same behaviour in the Cython backend at the unit level, and
-check both backends end-to-end against the `issue84` fixture.
+Reconstruction is implemented once, in the shared GPS crate (`libxrk-gps`,
+`libxrk._aim_xrk_rs.reconstruct_gps_timecodes`); its unit tests are in
+`tests/test_gps_processing.py` and the spec-level fixture analysis in
+`spec/tests/test_gps_timecodes.py` (see `spec/docs/companion.md` section 6).
+These tests check both backends end-to-end against the `issue84` fixture.
 
 The fixture is a real Solo 2 qualifying session in which the logger re-emits a
 block of 41 GPS records. That steps the logger clock backwards by 1600ms without
@@ -13,12 +13,10 @@ got wrong, inflating the GPS timeline and drifting it away from every other
 channel.
 """
 
-import struct
 from pathlib import Path
 
 import pytest
 
-from libxrk._aim_xrk_cy import _decode_gps  # type: ignore[attr-defined]
 from libxrk._aim_xrk_cy import aim_xrk as cython_aim_xrk
 from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
 
@@ -29,87 +27,6 @@ ISSUE84_XRZ = (
     / "issue84"
     / "CMD_KK-SII_Tsukuba_Car_Qualifying testing_a_0159.xrz"
 )
-
-WRAP = 65536
-
-
-def _gps_record(timecode: int) -> bytes:
-    """A minimal well-formed 56-byte NAV-SOL record with a 3D fix."""
-    r = bytearray(56)
-    r[0:4] = struct.pack("<i", timecode)
-    r[14] = 3  # gpsFix = 3D
-    r[16:20] = struct.pack("<i", 637_813_700)  # ecefX ~6378137m in cm
-    r[28:32] = struct.pack("<I", 100)  # pAcc 1m
-    r[44:48] = struct.pack("<I", 50)  # sAcc 0.5 m/s
-    r[48:50] = struct.pack("<H", 150)  # pDOP 1.50
-    r[51] = 12  # numSV
-    return bytes(r)
-
-
-def _decoded_timecodes(timecodes) -> list:
-    """Run the Cython GPS decoder over synthetic records, return its timecodes."""
-    blob = b"".join(_gps_record(t) for t in timecodes)
-    channels = _decode_gps(blob, 0)
-    return list(channels[0].timecodes)
-
-
-class TestCythonTimecodeReconstruction:
-    """Only a backwards step close to 65536 is a 16-bit rollover."""
-
-    def test_clean_stream_unchanged(self):
-        tcs = [1000, 1040, 1080, 1120]
-        assert _decoded_timecodes(tcs) == tcs
-
-    def test_clean_stream_with_large_forward_gap_untouched(self):
-        # A legitimate forward gap beyond the 32768ms half-range must survive.
-        tcs = [1000, 1040, 200_000, 200_040]
-        assert _decoded_timecodes(tcs) == tcs
-
-    def test_true_rollover_advances_one_band(self):
-        assert _decoded_timecodes([65440, 65480, 65520, 24, 64]) == [
-            65440,
-            65480,
-            65520,
-            65560,
-            65600,
-        ]
-
-    def test_replayed_block_is_not_a_rollover(self):
-        # The issue84 fault in miniature.
-        tcs = [1000, 1040, 1080, 1000, 1040, 1080, 1120]
-        assert _decoded_timecodes(tcs) == tcs
-
-    def test_seam_jitter_is_not_a_rollover(self):
-        tcs = [100, 200, 160, 240, 280]
-        assert _decoded_timecodes(tcs) == tcs
-
-    def test_straggler_after_rollover_resolves_pre_wrap(self):
-        # A record from just before a rollover, arriving just after it, must
-        # land at its true pre-wrap time rather than a whole band later.
-        assert _decoded_timecodes([65500, 65530, 20, 65510, 50]) == [
-            65500,
-            65530,
-            65556,
-            65510,
-            65586,
-        ]
-
-    def test_zero_dropout_record_absorbed(self):
-        # A single all-zero record must not shift everything after it.
-        out = _decoded_timecodes([66063, 66103, 66143, 0, 66183, 66223])
-        assert out[4] == 66183
-        assert out[5] == 66223
-
-    def test_upper_bits_garbage_reconstructs_from_low_16(self):
-        truth = [500 + i * 40 for i in range(8)]
-        corrupt = [(t & 0xFFFF) + (WRAP * 7 if i % 3 == 2 else 0) for i, t in enumerate(truth)]
-        assert _decoded_timecodes(corrupt) == truth
-
-    def test_low_16_bits_always_preserved(self):
-        # Reconstruction never alters a real sample time, only its 65536 band.
-        corrupt = [500, 540, 400, 65_000, 20, 60]
-        out = _decoded_timecodes(corrupt)
-        assert [t & 0xFFFF for t in out] == [t & 0xFFFF for t in corrupt]
 
 
 @pytest.fixture(scope="module")

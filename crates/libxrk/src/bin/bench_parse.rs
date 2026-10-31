@@ -5,7 +5,6 @@
 
 use std::time::Instant;
 
-use libxrk::gps;
 use libxrk::parser;
 
 fn decompress_if_zlib(data: Vec<u8>) -> Vec<u8> {
@@ -53,7 +52,7 @@ fn main() {
     // Warmup
     for _ in 0..2 {
         let result = parser::parse_xrk(&data, None).expect("parse failed");
-        let _ = gps::decode_gps(&result.gps_data, result.time_offset);
+        let _ = libxrk::process_gps(&result);
         std::hint::black_box(&result);
     }
 
@@ -61,7 +60,7 @@ fn main() {
     for _ in 0..iterations {
         let t0 = Instant::now();
         let result = parser::parse_xrk(&data, None).expect("parse failed");
-        let _ = gps::decode_gps(&result.gps_data, result.time_offset);
+        let _ = libxrk::process_gps(&result);
         std::hint::black_box(&result);
         times.push(t0.elapsed().as_secs_f64() * 1000.0);
     }

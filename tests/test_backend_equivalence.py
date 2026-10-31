@@ -4,19 +4,16 @@ Every test fixture is loaded with both backends and compared at full
 strictness: channel name sets, Arrow types, all 11 field-metadata keys,
 bit-exact timecodes and values, the laps table, and the complete metadata
 dict.  This is deliberately stronger than the per-file CrossBackend classes
-(which check a subset of metadata keys and use loose GPS tolerances).
+(which check a subset of metadata keys).
 
-GPS channels derived through libm transcendentals (atan2, cbrt, pow) —
-Latitude, Longitude, Altitude, and the heading-derived float32 products
-LateralAcc and Yaw_Rate — are compared within a few ulp instead of
-bit-exactly.  numpy's math kernels vary with platform, glibc version, and
-CPU SIMD dispatch, while Rust links a vendored libm, so bit-exactness is
-not portable and deliberately not a goal.  The Rust backend minimizes the
-gap by mirroring numpy's float operation order and keeping the float64
-yaw rate for the lateral product; the residual 1-ulp-scale differences
-are nanometers in physical terms, dwarfed by the wire format's own 1 cm
-quantization.  Everything else — including GPS Speed and InlineAcc (pure
-arithmetic + sqrt) — must be bit-exact on every platform.
+This is a test of the two *parsers*. GPS processing is not part of it: the
+GPS channels, the timing fix and the GPS steps of the lap table come from
+one shared implementation (``libxrk._aim_xrk_rs.process_gps``, tested on its own in
+``tests/test_gps_processing.py``) on both backends. The GPS channels are
+still compared, bit-exactly like everything else, because they are made
+from material the parsers collect -- the raw GPS and GNFI records, the time
+offset, the TRK marker -- so a difference there means the parsers disagree
+on that material.
 """
 
 from pathlib import Path
@@ -28,18 +25,6 @@ from libxrk._aim_xrk_cy import aim_xrk as cython_aim_xrk
 from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
 
 TEST_DATA_DIR = Path(__file__).parent / "test_data"
-
-
-# Tight tolerances for GPS channels derived through libm transcendentals
-# (rtol, atol); see the module docstring for why these are not bit-exact
-# across platforms.  Channels not listed must match bit-exactly everywhere.
-_GPS_FLOAT_TOLERANCES = {
-    "GPS Latitude": (0.0, 1e-11),
-    "GPS Longitude": (0.0, 1e-11),
-    "GPS Altitude": (0.0, 1e-6),
-    "GPS_LateralAcc": (1e-4, 1e-7),
-    "GPS_Yaw_Rate": (1e-4, 1e-9),
-}
 
 
 FIXTURES = [
@@ -93,31 +78,21 @@ def _compare_channel(name: str, cy_t, rs_t, errors: list) -> None:
 
     cy_v = cy_t.column(name).to_numpy(zero_copy_only=False)
     rs_v = rs_t.column(name).to_numpy(zero_copy_only=False)
-    tol = _GPS_FLOAT_TOLERANCES.get(name)
-    if tol is not None:
-        rtol, atol = tol
-        if not np.allclose(cy_v, rs_v, rtol=rtol, atol=atol, equal_nan=True):
-            maxdiff = float(np.nanmax(np.abs(cy_v - rs_v)))
-            errors.append(
-                f"{name}: values exceed documented float tolerance "
-                f"(rtol={rtol}, atol={atol}), max abs diff {maxdiff:.3e}"
-            )
-    else:
-        cy_f64 = cy_v.astype(np.float64)
-        rs_f64 = rs_v.astype(np.float64)
-        equal = (cy_v == rs_v) | (np.isnan(cy_f64) & np.isnan(rs_f64))
-        if not bool(np.all(equal)):
-            i = int(np.argmax(~equal))
-            errors.append(
-                f"{name}: values differ bit-exactly at {i}: "
-                f"cython={cy_v[i]!r} rust={rs_v[i]!r} "
-                f"({int(np.sum(~equal))}/{len(cy_v)} samples)"
-            )
+    cy_f64 = cy_v.astype(np.float64)
+    rs_f64 = rs_v.astype(np.float64)
+    equal = (cy_v == rs_v) | (np.isnan(cy_f64) & np.isnan(rs_f64))
+    if not bool(np.all(equal)):
+        i = int(np.argmax(~equal))
+        errors.append(
+            f"{name}: values differ bit-exactly at {i}: "
+            f"cython={cy_v[i]!r} rust={rs_v[i]!r} "
+            f"({int(np.sum(~equal))}/{len(cy_v)} samples)"
+        )
 
 
 @pytest.mark.parametrize("fixture", FIXTURES, ids=lambda p: p.name)
 def test_backends_equivalent(fixture: Path) -> None:
-    """Cython and Rust must agree on everything except documented gaps."""
+    """Cython and Rust must agree on everything, bit for bit."""
     cy, rs = _load_both(fixture)
     errors: list = []
 
