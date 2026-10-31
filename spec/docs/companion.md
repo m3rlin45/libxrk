@@ -314,8 +314,9 @@ decimal precision. The high bit indicates whether the channel has been calibrate
 | 4  | deg    | 1 |
 | 5  | deg/s  | 1 |
 | 6  | (none) | 0 |
+| 8  | m      | 0 |
 | 9  | Hz     | 0 |
-| 11 | (none) | 0 |
+| 11 | #      | 0 |
 | 12 | mm     | 0 |
 | 14 | bar    | 2 |
 | 15 | rpm    | 0 |
@@ -329,9 +330,56 @@ decimal precision. The high bit indicates whether the channel has been calibrate
 | 24 | l/s    | 0 |
 | 26 | time?  | 0 |
 | 27 | A      | 0 |
+| 28 | %      | 2 |
 | 30 | lambda | 2 |
 | 31 | gear   | 0 |
 | 33 | %      | 2 |
 | 43 | kg     | 3 |
 
 Reference: `_aim_xrk_cy.pyx:144-169`
+
+## 10. Unparsed Byte Runs: Messages Written Over One Another
+
+The scanner tries each opcode at the current offset (`(S`, `(M`, `(G`, `(c`,
+`<h`) and, when none parses, advances one byte and tries again (the `Bytes(1)`
+fallback in `XRKStream`). A run of such skipped bytes is almost never
+corruption. The logger writes messages over one another:
+
+* the trailer (`RCR`, `VEH`, `CMP`, `VTY`, `NTE`) is appended wherever recording
+  stopped, so the last message is usually cut short — its **head** (opcode,
+  timecode, index, some data) sits immediately before the trailer. A `<hGPS`
+  record can be cut the same way: a frame declaring a 56-byte payload with only
+  part of it present;
+* the `ODO` record that closes the header block lands on the first GPS record or
+  sample message of the data region, leaving its **tail** — the end of the
+  payload and the closing `)` or `<GPS..>` footer — right after the record;
+* mid-stream, a message is occasionally written over the head of the one
+  before it, leaving a tail of a few bytes (`.. af 29`, `.. c3 29`) or of a
+  whole GPS record between two complete messages.
+
+In a survey of 812 files (406 sessions as .xrk and .xrz, MXP/MXm/Solo 2 and
+others, 2025-2026) the scanner skipped 255 runs in 166 files. All but two were
+one of these fragments. The two exceptions are messages that straddle a 64 KiB
+boundary of the file (ending at 0x10005 and 0x10008) with a few junk bytes
+inserted at the boundary; they are framed like messages but do not parse.
+
+### Classification rule
+
+A skipped run is a *fragment* — expected, carrying no recoverable data, and not
+worth reporting — when either:
+
+* **head**: it begins with a message opcode (`(S`, `(M`, `(G`, `(c` or `<h`, or
+  is a lone `(` / `<`) and is immediately followed by a header record or by the
+  end of the stream; or
+* **tail**: it does not begin with an opcode and ends with a message terminator
+  (`)` or `>`). A tail can begin with a stray `(` or `<` byte (`3c 29` is seen
+  after the ODO record), which is why the full opcode pair is required above.
+
+Every other skipped run is reported as bad bytes with its offset and content.
+In particular a run that both begins with an opcode and ends with a terminator
+is a framed message the parser could not interpret: an unhandled message
+variant looks exactly like that (issue #77 was found from these lines), as do
+the boundary-junk messages above and any message with a damaged body.
+
+Reference: `crates/libxrk/src/parser.rs::record_unparsed_run`. The Cython
+backend counts skipped bytes the same way behind its `show_bad` switch.

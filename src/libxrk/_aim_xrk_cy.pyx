@@ -163,6 +163,7 @@ _unit_map = {
     4:  ('deg', 1),
     5:  ('deg/s', 1),
     6:  ('', 0), # number
+    8:  ('m', 0), # Mileage / Distance Lap - RS3 exports as 'm'
     9:  ('Hz', 0),
     11: ('#', 0), # number - the AIM DLL reports '#'
     12: ('mm', 0),
@@ -178,6 +179,7 @@ _unit_map = {
     24: ('l/s', 0), # ? rs3 displayed 1l/h
     26: ('time?', 0),
     27: ('A', 0),
+    28: ('%', 2), # Luminosity on the official AIM sample; RS3 displays %
     30: ('lambda', 2),
     31: ('gear', 0),
     33: ('%', 2),

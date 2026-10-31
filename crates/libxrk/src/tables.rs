@@ -15,6 +15,7 @@ pub fn unit_map(unit_type: u8) -> (&'static str, u8) {
         4 => ("deg", 1),
         5 => ("deg/s", 1),
         6 => ("", 0), // "number"; never exposed by the AIM DLL on the corpus, so unverified
+        8 => ("m", 0), // Mileage / Distance Lap; RaceStudio3 exports Mileage as "m"
         9 => ("Hz", 0),
         11 => ("#", 0), // "number"; the AIM DLL reports "#" (see test below)
         12 => ("mm", 0),
@@ -30,6 +31,7 @@ pub fn unit_map(unit_type: u8) -> (&'static str, u8) {
         24 => ("l/s", 0),
         26 => ("time?", 0),
         27 => ("A", 0),
+        28 => ("%", 2), // Luminosity on the official AIM sample; RaceStudio3 displays "%"
         30 => ("lambda", 2),
         31 => ("gear", 0),
         33 => ("%", 2),
@@ -47,6 +49,7 @@ pub fn is_known_unit(unit_type_byte: u8) -> bool {
             | 4
             | 5
             | 6
+            | 8
             | 9
             | 11
             | 12
@@ -62,6 +65,7 @@ pub fn is_known_unit(unit_type_byte: u8) -> bool {
             | 24
             | 26
             | 27
+            | 28
             | 30
             | 31
             | 33
@@ -285,6 +289,22 @@ mod tests {
         // The calibrated flag must not turn it into something else: that
         // rewrite exists only for mV -> V.
         assert_eq!(resolve_unit(139), "#");
+    }
+
+    /// Unit code 8 is "m": RaceStudio3 exports Mileage (code 8) as "m" in
+    /// every corpus CSV that has it. Mirrors `UNIT_MAP` in `spec/xrk_format.py`.
+    #[test]
+    fn unit_code_8_is_metres() {
+        assert_eq!(unit_map(8), ("m", 0));
+        assert!(is_known_unit(8));
+    }
+
+    /// Unit code 28 is "%": Luminosity on the official AIM sample carries it
+    /// and RaceStudio3 displays "%". Mirrors `UNIT_MAP` in `spec/xrk_format.py`.
+    #[test]
+    fn unit_code_28_is_percent() {
+        assert_eq!(unit_map(28), ("%", 2));
+        assert!(is_known_unit(28));
     }
 
     #[test]
