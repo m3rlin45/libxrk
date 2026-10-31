@@ -21,7 +21,8 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from spec.xrk_format import (
-    DECODER_TABLE,
+    INTERPOLATED_DECODERS,
+    SAMPLE_CODECS,
     parse_xrk_file,
 )
 
@@ -46,8 +47,10 @@ def generate_channel_defs(sfj_result, file_86_result):
             # Get decoder info
             decoder_fmt = None
             decoder_interpolate = None
-            if decoder_type in DECODER_TABLE:
-                decoder_fmt, decoder_interpolate = DECODER_TABLE[decoder_type]
+            if decoder_type in SAMPLE_CODECS:
+                codec = SAMPLE_CODECS[decoder_type]
+                decoder_fmt = getattr(codec, "subcon", codec).fmtstr[-1]
+                decoder_interpolate = decoder_type in INTERPOLATED_DECODERS
 
             vector = {
                 "id": f"chs_{label}_{idx:03d}",
