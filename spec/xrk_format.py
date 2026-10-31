@@ -132,6 +132,9 @@ UNIT_MAP = {
     24: ("l/s", 0),
     26: ("time?", 0),
     27: ("A", 0),
+    # Luminosity on the official AIM sample (test.xrk) carries code 28 and
+    # RaceStudio3 displays it as "%"; Backlight and WiFi share the code.
+    28: ("%", 2),
     30: ("lambda", 2),
     31: ("gear", 0),
     33: ("%", 2),

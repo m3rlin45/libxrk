@@ -179,6 +179,7 @@ _unit_map = {
     24: ('l/s', 0), # ? rs3 displayed 1l/h
     26: ('time?', 0),
     27: ('A', 0),
+    28: ('%', 2), # Luminosity on the official AIM sample; RS3 displays %
     30: ('lambda', 2),
     31: ('gear', 0),
     33: ('%', 2),
