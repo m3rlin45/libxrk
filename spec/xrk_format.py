@@ -547,66 +547,6 @@ GPSPayload = Struct(
 )
 
 
-def _lla_to_ecef(lat_deg, lon_deg, alt_m=0.0):
-    """WGS-84 latitude/longitude [deg] (and altitude [m]) -> ECEF [m]."""
-    a = 6378137.0
-    e2 = 8.181919084261345e-2**2
-    lat = math.radians(lat_deg)
-    lon = math.radians(lon_deg)
-    n = a / math.sqrt(1 - e2 * math.sin(lat) ** 2)
-    x = (n + alt_m) * math.cos(lat) * math.cos(lon)
-    y = (n + alt_m) * math.cos(lat) * math.sin(lon)
-    z = (n * (1 - e2) + alt_m) * math.sin(lat)
-    return (x, y, z)
-
-
-def reconstruct_gps_timecodes(timecodes):
-    """Rebuild GPS timecodes whose upper 16 bits are unreliable.
-
-    Some AIM firmware periodically corrupts the upper 16 bits of the 4-byte
-    logger timecode in GPS records, leaving only the low 16 bits trustworthy.
-
-    Reconstruction is a **phase unwrap**: each sample is placed at the multiple
-    of 65536 that puts it closest to its predecessor, i.e. the low-16 delta is
-    folded into [-32768, +32767]. This is the general inverse of "the upper bits
-    are garbage" and assumes nothing about the stream being monotonic.
-
-    The distinction that matters: a backwards step only reads as a 16-bit
-    rollover when it is *close to 65536*. Smaller backwards steps have other
-    causes — out-of-order records, a replayed record block, an all-zero dropout
-    record — and are reproduced at their true time instead of being mistaken for
-    a wrap and inflating every later sample by 65536ms.
-
-    Only applied when the raw stream is non-monotonic (the corruption
-    signature). Clean streams are returned untouched, which preserves legitimate
-    forward gaps larger than the 32768ms half-range.
-
-    Args:
-        timecodes: Raw int32 logger timecodes, in file order.
-
-    Returns:
-        list[int]: Reconstructed timecodes, same length as the input.
-
-    Example:
-        >>> # a replayed 2-sample block: time steps back, but not by ~65536
-        >>> reconstruct_gps_timecodes([1000, 1040, 1000, 1040, 1080])
-        [1000, 1040, 1000, 1040, 1080]
-        >>> # a genuine 16-bit rollover
-        >>> reconstruct_gps_timecodes([65480, 65520, 24, 64])
-        [65480, 65520, 65560, 65600]
-
-    Reference: spec/docs/companion.md section 6.
-    """
-    tcs = list(timecodes)
-    if len(tcs) < 2 or all(a <= b for a, b in zip(tcs, tcs[1:])):
-        return tcs
-    out = [tcs[0]]
-    for raw in tcs[1:]:
-        delta = (((raw - out[-1]) & 0xFFFF) ^ 0x8000) - 0x8000
-        out.append(out[-1] + delta)
-    return out
-
-
 # GNFI — Logger Internal Clock (32 bytes)
 # Reference: _aim_xrk_cy.pyx:1012-1035
 GNFIPayload = Struct(
@@ -1654,16 +1594,19 @@ class ParseResult:
 
         Built from segment-0 LAP messages: deduplicated by lap number, a
         single missing number inferred, times made session-relative, the
-        first lap typed "out" when it starts at or before 0, the last typed
-        "in" when GPS puts the car more than 30 m from the TRK start/finish
-        at its end, and a final partial lap appended from the last LAP end to
+        first lap typed "out" when it starts at or before 0, and a final
+        partial lap (typed "in") appended from the last LAP end to
         end_of_data() when at least one lap was completed and data continues
         past it. Lap numbers are normalised to start at 0.
 
-        Returns a list of dicts {num, start_time, end_time, lap_type}. Only
-        the LAP-message path is specified here; files without LAP messages
-        fall back to GPS cross-track detection in the backends and return []
-        from this method.
+        This is what the LAP messages say, nothing more. The GPS steps are
+        not wire format and live in the shared GPS pipeline
+        (``libxrk._aim_xrk_rs.process_gps``, crate ``libxrk-gps``): it types the last
+        lap "in" when GPS puts the car more than 30 m from the TRK
+        start/finish at its end, and detects laps from the GPS track when
+        this table is empty. ``gps_input()`` gathers what it needs.
+
+        Returns a list of dicts {num, start_time, end_time, lap_type}.
         """
         offset = self.time_offset()
         nums, starts, ends, types = [], [], [], []
@@ -1690,14 +1633,10 @@ class ParseResult:
             return []
         if starts[0] <= 0:
             types[0] = "out"
-        if types[-1] != "out" and self._distance_from_start_finish(ends[-1], offset) > 30.0:
-            types[-1] = "in"
         end_of_data = self.end_of_data()
         if len(nums) >= 2 and end_of_data is not None and end_of_data > ends[-1]:
             # The lap that ended at a LAP message was completed, so it is
-            # "full"; the synthesized lap takes the "in" classification.
-            if types[-1] == "in":
-                types[-1] = "full"
+            # "full"; the synthesized lap is the "in" lap.
             nums.append(nums[-1] + 1)
             starts.append(ends[-1])
             ends.append(end_of_data)
@@ -1708,22 +1647,46 @@ class ParseResult:
             for n, s, e, t in zip(nums, starts, ends, types)
         ]
 
-    def _distance_from_start_finish(self, when, offset):
-        """Metres from the TRK start/finish to the GPS position at session time `when`.
-
-        NaN (which compares False against any threshold) when there is no
-        TRK message, no GPS data, or the position at that time is unknown.
-        """
+    def start_finish(self):
+        """TRK start/finish (latitude, longitude) in degrees, or None without a TRK message."""
         trk = self.messages_by_token("TRK")
-        samples = self.get_gps_samples()
-        if not trk or trk[-1].payload is None or not samples:
-            return math.nan
-        timecodes = reconstruct_gps_timecodes([s.timecode for s in samples])
-        timecodes = [t - offset for t in timecodes]
-        idx = min(sum(1 for t in timecodes if t < when), len(samples) - 1)
-        here = _lla_to_ecef(samples[idx].latitude, samples[idx].longitude)
-        start_finish = _lla_to_ecef(trk[-1].payload.sf_lat, trk[-1].payload.sf_long)
-        return math.dist(here, start_finish)
+        if not trk or trk[-1].payload is None:
+            return None
+        return (trk[-1].payload.sf_lat, trk[-1].payload.sf_long)
+
+    def gps_data(self):
+        """The raw GPS records (GPS/GPS1 payloads) concatenated in file order."""
+        return b"".join(self.gps_payloads)
+
+    def gnfi_data(self):
+        """The raw GNFI records concatenated in file order."""
+        return b"".join(self.gnfi_payloads)
+
+    def non_gps_end_time(self):
+        """Session-relative time of the last accepted sample over all data streams, or None.
+
+        What the GPS timing fix's indirect method compares the GPS end time
+        against (companion.md section 6); the backends take the same value
+        from their decoded channels.
+        """
+        if not self._last_accepted:
+            return None
+        return max(self._last_accepted.values()) - self.time_offset()
+
+    def gps_input(self):
+        """Keyword arguments for ``libxrk._aim_xrk_rs.process_gps``'s raw material.
+
+        Everything the shared GPS pipeline needs from a parse, so a test can
+        run it over the spec's parse and compare with a backend:
+        ``process_gps(laps=<lap_table() rows>, **gps_input())``.
+        """
+        return {
+            "gps_data": self.gps_data(),
+            "gnfi_data": self.gnfi_data(),
+            "time_offset": self.time_offset(),
+            "start_finish": self.start_finish(),
+            "non_gps_max_end_time": self.non_gps_end_time(),
+        }
 
     def header_messages(self):
         """Return only header messages."""

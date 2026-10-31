@@ -1,0 +1,14 @@
+[package]
+name = "libxrk-gps"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "GPS processing shared by every libxrk parser: NAV-SOL decoding, timing repair, lap detection"
+
+[features]
+default = []
+arrow = ["dep:arrow"]
+
+[dependencies.arrow]
+workspace = true
+optional = true

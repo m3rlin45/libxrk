@@ -1,7 +1,5 @@
 //! GPS timing fix: detect and correct 16-bit overflow timing gaps.
 //!
-//! Port of fix_gps_timing_gaps / detect_gps_timing_offset_from_gnfi from gps.py.
-//!
 //! Some AIM data loggers produce GPS data with spurious timestamp jumps
 //! (e.g., 65533ms gaps that should be ~40ms). This is caused by a 16-bit
 //! overflow bug in the logger firmware where the upper 16 bits of the
@@ -18,6 +16,24 @@ pub struct GapCorrection {
 const OVERFLOW_BUG_MS: i64 = 65533;
 const OVERFLOW_GAP_MIN: i64 = 60000;
 const OVERFLOW_GAP_MAX: i64 = 70000;
+
+/// Size of one GNFI record: 4-byte logger timecode + 28 bytes not used here.
+pub const GNFI_RECORD_SIZE: usize = 32;
+
+/// Session-relative GNFI timecodes from concatenated 32-byte GNFI records.
+///
+/// GNFI messages run on the logger's internal clock, immune to the GPS bug,
+/// which is what makes them a reference. Empty when there are none or the
+/// data is not a whole number of records.
+pub fn decode_gnfi_timecodes(gnfi_data: &[u8], time_offset: i64) -> Vec<i64> {
+    if gnfi_data.is_empty() || !gnfi_data.len().is_multiple_of(GNFI_RECORD_SIZE) {
+        return Vec::new();
+    }
+    gnfi_data
+        .chunks_exact(GNFI_RECORD_SIZE)
+        .map(|rec| i32::from_le_bytes([rec[0], rec[1], rec[2], rec[3]]) as i64 - time_offset)
+        .collect()
+}
 
 /// Detect GPS timing offset using GNFI as reference clock.
 ///
@@ -216,6 +232,19 @@ mod tests {
 
         let corrections = detect_gps_timing_offset_from_gnfi(&gps_tc, &gnfi_tc, 40.0);
         assert_eq!(corrections.len(), 1);
+    }
+
+    #[test]
+    fn test_decode_gnfi_timecodes() {
+        let mut data = Vec::new();
+        for tc in [1000i32, 2000, 3000] {
+            let mut rec = vec![0u8; GNFI_RECORD_SIZE];
+            rec[0..4].copy_from_slice(&tc.to_le_bytes());
+            data.extend(rec);
+        }
+        assert_eq!(decode_gnfi_timecodes(&data, 500), vec![500, 1500, 2500]);
+        assert!(decode_gnfi_timecodes(&[], 0).is_empty());
+        assert!(decode_gnfi_timecodes(&data[..40], 0).is_empty());
     }
 
     #[test]

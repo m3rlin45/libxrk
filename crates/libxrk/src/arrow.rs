@@ -12,8 +12,11 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Field, Schema};
 
-use crate::gps::{GpsChannelDef, GpsDecodeResult, GPS_CHANNEL_DEFS};
 use crate::parser::{ChannelData, ChannelInfo, ChannelValues, ProcessedLap};
+
+/// GPS channel batches are built by the shared GPS crate so every backend
+/// exposes identical tables.
+pub use libxrk_gps::arrow::build_gps_channel_batches;
 
 /// Channel metadata keys used in Arrow field metadata.
 pub struct ChannelMetadata {
@@ -81,23 +84,6 @@ impl ChannelMetadata {
             format_f32(self.display_range_max),
         );
         m
-    }
-
-    /// Build default GPS metadata.
-    pub fn for_gps_channel(def: &GpsChannelDef) -> Self {
-        ChannelMetadata {
-            units: def.units.to_string(),
-            dec_pts: def.dec_pts as u8,
-            interpolate: def.interpolate,
-            function: "".to_string(),
-            source_type: 0,
-            source_channel_id: 0,
-            device_tag: "".to_string(),
-            cal_value_1: 0.0,
-            cal_value_2: 1.0,
-            display_range_min: 0.0,
-            display_range_max: 0.0,
-        }
     }
 }
 
@@ -189,89 +175,4 @@ pub fn build_laps_batch(laps: &[ProcessedLap]) -> arrow::error::Result<RecordBat
             Arc::new(StringArray::from(types)),
         ],
     )
-}
-
-/// Build a GPS channel RecordBatch.
-fn build_gps_channel_batch(
-    name: &str,
-    def: &GpsChannelDef,
-    timecodes: Vec<i64>,
-    values_f64: Option<Vec<f64>>,
-    values_f32: Option<Vec<f32>>,
-    format_f32: &impl Fn(f32) -> String,
-) -> arrow::error::Result<RecordBatch> {
-    let metadata = ChannelMetadata::for_gps_channel(def).to_hashmap(format_f32);
-    let tc_array = Int64Array::from(timecodes);
-
-    if def.is_f64 {
-        let vals = Float64Array::from(values_f64.unwrap());
-        let schema = Schema::new(vec![
-            Field::new("timecodes", DataType::Int64, false),
-            Field::new(name, DataType::Float64, false).with_metadata(metadata),
-        ]);
-        RecordBatch::try_new(Arc::new(schema), vec![Arc::new(tc_array), Arc::new(vals)])
-    } else {
-        let vals = Float32Array::from(values_f32.unwrap());
-        let schema = Schema::new(vec![
-            Field::new("timecodes", DataType::Int64, false),
-            Field::new(name, DataType::Float32, false).with_metadata(metadata),
-        ]);
-        RecordBatch::try_new(Arc::new(schema), vec![Arc::new(tc_array), Arc::new(vals)])
-    }
-}
-
-/// Build Arrow RecordBatches for all 14 GPS channels.
-///
-/// Returns a Vec of (channel_name, RecordBatch) pairs.
-pub fn build_gps_channel_batches(
-    gps: GpsDecodeResult,
-    format_f32: impl Fn(f32) -> String,
-) -> arrow::error::Result<Vec<(String, RecordBatch)>> {
-    let mut batches = Vec::with_capacity(14);
-
-    let GpsDecodeResult {
-        timecodes,
-        speed,
-        latitude,
-        longitude,
-        altitude,
-        itow,
-        satellites,
-        fix,
-        pdop,
-        position_accuracy,
-        velocity_accuracy,
-        inline_acc,
-        lateral_acc,
-        yaw_rate,
-        week,
-    } = gps;
-
-    let mut f64_channels = vec![speed, latitude, longitude, altitude, itow].into_iter();
-    let mut f32_channels = vec![
-        satellites,
-        fix,
-        pdop,
-        position_accuracy,
-        velocity_accuracy,
-        inline_acc,
-        lateral_acc,
-        yaw_rate,
-        week,
-    ]
-    .into_iter();
-
-    for def in GPS_CHANNEL_DEFS {
-        let tc = timecodes.clone();
-        let batch = if def.is_f64 {
-            let vals = f64_channels.next().unwrap();
-            build_gps_channel_batch(def.name, def, tc, Some(vals), None, &format_f32)?
-        } else {
-            let vals = f32_channels.next().unwrap();
-            build_gps_channel_batch(def.name, def, tc, None, Some(vals), &format_f32)?
-        };
-        batches.push((def.name.to_string(), batch));
-    }
-
-    Ok(batches)
 }
