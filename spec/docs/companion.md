@@ -32,6 +32,11 @@ milliseconds since session start.
 If no LAP messages exist, `time_offset` is the minimum of the first timecodes
 across all channels.
 
+Precisely, both backends take the **minimum** of all three candidates: the first
+LAP message's start, the first timecode of every data stream (S/G/M/c, per
+channel or group), and the first GPS record's timecode. The spec implements
+this as `ParseResult.time_offset()`.
+
 Reference: `_aim_xrk_cy.pyx:530-533`, `_aim_xrk_cy.pyx:662-690`
 
 ## 3. Decoder Dispatch Table
@@ -243,6 +248,36 @@ When LAP messages exist, they define lap boundaries directly:
 - Deduplicate by `lap_num`
 - Compute `start_time = end_time - duration`
 - Normalize to 0-based indexing
+
+#### Final partial lap
+
+When the recording runs past the last beacon crossing, the official AIM DLL
+reports one more lap, from the last LAP message's end to the **end of data**.
+Observed on 9 corpus files plus the SFJ 0101 and Suzuka 0090 fixtures:
+
+- it is added whenever at least one lap was completed (7 of 7 files with two
+  or more laps), and never when the out-lap is the only lap (2 of 2);
+- its end is the **header timecode of the last data message in file order**
+  (`(S`/`(G`/`(M`/`(c`), taken even when that message is truncated. Suzuka
+  0090 ends with an `(S` whose payload is cut off by the trailing RCR/VEH
+  frames; both backends discard the sample, but its header timecode is still
+  where the DLL ends the lap. This is not the maximum timecode over channels:
+  loggers buffer per channel, so a channel's final sample can sit earlier in
+  the file than another's and be up to tens of milliseconds later in time
+  (58 ms on Suzuka 0090). Only the file-order rule matches the DLL to the
+  millisecond. For an `(M` burst the header (first-sample) timecode is used;
+  no file in hand ends with one, so that detail is unverified.
+
+libxrk implements the same rule. The synthesized lap is typed `"in"`; the lap
+before it ended at a LAP message, so it is `"full"` even if the GPS-distance
+heuristic would have called it `"in"`.
+
+In the spec: `XRKMessage` falls back to a header-only parse (`_SMessageHeader`
+and friends, `Peek`ed so bad-byte recovery still advances one byte) when a data
+message's body does not parse, and both whole messages and bare headers set
+`ParseResult.last_data_timecode`. `ParseResult.end_of_data()` makes it
+session-relative and `ParseResult.lap_table()` builds the whole table that
+`test_spec.py` compares against both backends and the DLL.
 
 ### Fallback: GPS Cross-Track
 
