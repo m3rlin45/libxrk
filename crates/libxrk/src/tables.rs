@@ -1,9 +1,9 @@
 //! Static lookup tables: UNIT_MAP, DECODER_TABLE, LOGGER_MODELS.
 //!
-//! These are the Rust equivalents of the Python dicts in aim_xrk.pyx.
+//! These are the Rust equivalents of the Python dicts in _aim_xrk_cy.pyx.
 
 /// Unit type map: unit_type_byte -> (unit_string, decimal_points).
-/// From aim_xrk.pyx:144-169.
+/// From _aim_xrk_cy.pyx:144-169.
 ///
 /// Checked against the official AIM `MatLabXRK` DLL over the whole test
 /// corpus (`get_channel_units`, 253 channel observations): every entry the
@@ -81,7 +81,7 @@ pub fn resolve_unit(unit_type_byte: u8) -> &'static str {
 }
 
 /// Decoder type info: (struct_format_char, interpolate, byte_size).
-/// From aim_xrk.pyx:111-135.
+/// From _aim_xrk_cy.pyx:111-135.
 pub struct DecoderInfo {
     pub format: char,
     pub interpolate: bool,

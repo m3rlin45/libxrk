@@ -1,6 +1,6 @@
 //! ODO — Odometer Record (64 bytes per record).
 //!
-//! Reference: aim_xrk.pyx:622-631, spec/xrk_format.py:364-376.
+//! Reference: _aim_xrk_cy.pyx:622-631, spec/xrk_format.py:364-376.
 
 use std::collections::HashMap;
 

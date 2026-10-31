@@ -92,7 +92,7 @@ These are acceptable as long as spot-checked samples match within tolerance.
 
 **Problem:** libxrk was using GPS-based lap detection even when LAP messages were present, causing lap time mismatches.
 
-**Fix in `src/libxrk/aim_xrk.pyx`:**
+**Fix in `src/libxrk/_aim_xrk_cy.pyx`:**
 - Prefer LAP messages when available (matches DLL behavior)
 - Only fall back to GPS detection when no LAP messages exist
 - Normalize lap numbers to 0-based indexing
@@ -115,7 +115,7 @@ elif lat_ch and lon_ch:
 
 **Problem:** libxrk used uppercase `'G'` for acceleration units, DLL uses lowercase `'g'`.
 
-**Fix in `src/libxrk/aim_xrk.pyx:131`:**
+**Fix in `src/libxrk/_aim_xrk_cy.pyx:131`:**
 ```python
 # Changed from ('G', 2) to ('g', 2)
 _unit_map = {

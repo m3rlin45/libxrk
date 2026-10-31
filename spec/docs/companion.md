@@ -15,7 +15,7 @@ decompressed result is a standard XRK byte stream. Some XRZ files may be
 truncated (incomplete logging sessions); use `decompressobj()` with `flush()`
 to recover partial data.
 
-Reference: `aim_xrk.pyx:1165-1186` (`_decompress_if_zlib`)
+Reference: `_aim_xrk_cy.pyx:1165-1186` (`_decompress_if_zlib`)
 
 ## 2. Time Offset Computation
 
@@ -32,7 +32,7 @@ milliseconds since session start.
 If no LAP messages exist, `time_offset` is the minimum of the first timecodes
 across all channels.
 
-Reference: `aim_xrk.pyx:530-533`, `aim_xrk.pyx:662-690`
+Reference: `_aim_xrk_cy.pyx:530-533`, `_aim_xrk_cy.pyx:662-690`
 
 ## 3. Decoder Dispatch Table
 
@@ -76,7 +76,7 @@ Map `'N'`(0x4E)→0, `'1'`(0x31)→1, ..., `'6'`(0x36)→6.
 - Unit type 21 (`mV`): when the calibrated flag (high bit of `unit_type_byte`) is set,
   the display unit becomes `V` and values are divided by 1000.
 
-Reference: `aim_xrk.pyx:95-137`
+Reference: `_aim_xrk_cy.pyx:95-137`
 
 ## 4. M-Message Timing
 
@@ -92,7 +92,7 @@ Where `Mms = CHS.sample_period_us // 1000` (the channel's sample period in ms).
 This means M-messages are used for high-frequency channels (e.g., 500 Hz shock
 potentiometers with Mms=2). The base timecode is the message timecode.
 
-Reference: `aim_xrk.pyx:314-326`
+Reference: `_aim_xrk_cy.pyx:314-326`
 
 ## 5. GPS Data (u-blox NAV-SOL)
 
@@ -132,7 +132,7 @@ as a channel.
 - **GPS_Yaw_Rate** = `d(heading)/dt` [deg/s] (with ±180° wrap handling)
 - **GPS_LateralAcc** = `speed × yaw_rate × π/180 / 9.81` [g]
 
-Reference: `aim_xrk.pyx:910-1036`, `gps.py`
+Reference: `_aim_xrk_cy.pyx:910-1036`, `gps.py`
 
 ## 6. GPS Timing Bug
 
@@ -176,7 +176,7 @@ Clean streams are left untouched, which preserves legitimate forward gaps larger
 than the 32768 ms half-range.
 
 Reference implementation: `spec/xrk_format.py` → `reconstruct_gps_timecodes()`.
-Backends: `aim_xrk.pyx` `_decode_gps()`, `crates/libxrk/src/gps/processing.rs`
+Backends: `_aim_xrk_cy.pyx` `_decode_gps()`, `crates/libxrk/src/gps/processing.rs`
 `fix_timecodes()`.
 
 ### GNFI-Based Detection
@@ -208,7 +208,7 @@ cross-track distance to the start/finish line:
 3. Find positions closest to the S/F line (minimum cross-track distance)
 4. Use these crossing points as lap boundaries
 
-Reference: `aim_xrk.pyx:1064-1125` (`_get_laps`), `gps.py:309-380` (`find_laps`)
+Reference: `_aim_xrk_cy.pyx:1064-1125` (`_get_laps`), `gps.py:309-380` (`find_laps`)
 
 ## 8. Channel Merging
 
@@ -283,4 +283,4 @@ decimal precision. The high bit indicates whether the channel has been calibrate
 | 33 | %      | 2 |
 | 43 | kg     | 3 |
 
-Reference: `aim_xrk.pyx:144-169`
+Reference: `_aim_xrk_cy.pyx:144-169`

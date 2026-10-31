@@ -2,6 +2,7 @@
 
 import gc
 import unittest
+from pathlib import Path
 from typing import ClassVar, Dict, Optional
 
 import numpy as np
@@ -9,6 +10,8 @@ import pyarrow as pa
 
 from libxrk import GPS_CHANNEL_NAMES, ChannelMetadata, LogFile, aim_xrk
 from libxrk.gps import fix_gps_timing_gaps
+from libxrk._aim_xrk_cy import aim_xrk as cython_aim_xrk
+from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
 
 
 def create_mock_log_with_gps_gap(
@@ -310,17 +313,15 @@ class TestGpsTimingGapFix(unittest.TestCase):
 class TestGpsTimingGapFixIntegration(unittest.TestCase):
     """Integration tests using real XRK files with the GPS timing bug."""
 
-    TEST_DATA_DIR: "Path"  # type: ignore[name-defined]
-    SFJ_0101_XRK: "Path"  # type: ignore[name-defined]
-    SFJ_0101_XRZ: "Path"  # type: ignore[name-defined]
+    TEST_DATA_DIR: "Path"
+    SFJ_0101_XRK: "Path"
+    SFJ_0101_XRZ: "Path"
     log_xrk: "Any"  # type: ignore[name-defined]
     log_xrz: "Any"  # type: ignore[name-defined]
 
     @classmethod
     def setUpClass(cls) -> None:
         """Load the test file once for all tests."""
-        from pathlib import Path
-
         cls.TEST_DATA_DIR = Path(__file__).parent / "test_data"
         cls.SFJ_0101_XRK = (
             cls.TEST_DATA_DIR / "SFJ" / "CMD_SFJ_Fuji GP Sh_Generic testing_a_0101.xrk"
@@ -574,15 +575,13 @@ class TestGnfiBasedDetection(unittest.TestCase):
 class TestSuzukaGnfiIntegration(unittest.TestCase):
     """Integration tests for GNFI-based detection on Suzuka file."""
 
-    TEST_DATA_DIR: "Path"  # type: ignore[name-defined]
-    SUZUKA_XRK: "Path"  # type: ignore[name-defined]
+    TEST_DATA_DIR: "Path"
+    SUZUKA_XRK: "Path"
     log: "Any"  # type: ignore[name-defined]
 
     @classmethod
     def setUpClass(cls) -> None:
         """Load the Suzuka test file."""
-        from pathlib import Path
-
         cls.TEST_DATA_DIR = Path(__file__).parent / "test_data"
         cls.SUZUKA_XRK = cls.TEST_DATA_DIR / "SFJ" / "CMD_SFJ_Suzuka Car_Generic testing_a_0090.xrk"
 
@@ -623,17 +622,6 @@ class TestSuzukaGnfiIntegration(unittest.TestCase):
         )
 
 
-def _rust_backend_available() -> bool:
-    """Check if the Rust backend extension is importable."""
-    try:
-        import libxrk._aim_xrk_rs  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
-
-
-@unittest.skipUnless(_rust_backend_available(), "Rust backend not available")
 class TestGpsTimingCrossBackend(unittest.TestCase):
     """Cross-backend comparison for GPS timing fix on real files."""
 
@@ -644,11 +632,6 @@ class TestGpsTimingCrossBackend(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        from pathlib import Path
-
-        from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
-        from libxrk.aim_xrk import aim_xrk as cython_aim_xrk
-
         test_data_dir = Path(__file__).parent / "test_data"
         sfj_0101 = test_data_dir / "SFJ" / "CMD_SFJ_Fuji GP Sh_Generic testing_a_0101.xrk"
         suzuka = test_data_dir / "SFJ" / "CMD_SFJ_Suzuka Car_Generic testing_a_0090.xrk"

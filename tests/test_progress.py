@@ -9,22 +9,13 @@ from pathlib import Path
 
 import pytest
 
+from libxrk._aim_xrk_cy import aim_xrk as cython_aim_xrk
+from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
+
 TEST_DATA_DIR = Path(__file__).parent / "test_data"
 # 3.2 MB: under the old 8 MB threshold, so this file never produced a callback.
 SMALL_XRK = TEST_DATA_DIR / "aim_official" / "test.xrk"
 MEDIUM_XRK = TEST_DATA_DIR / "SFJ" / "CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrk"
-
-
-def _load(backend: str):
-    """Resolve a backend's aim_xrk at test time, not at collection time."""
-    if backend == "rust":
-        try:
-            from libxrk._aim_xrk_rs import aim_xrk
-        except ImportError:
-            pytest.skip("Rust backend not available")
-    else:
-        from libxrk.aim_xrk import aim_xrk
-    return aim_xrk
 
 
 def _calls(aim_xrk, path: Path) -> list:
@@ -33,9 +24,9 @@ def _calls(aim_xrk, path: Path) -> list:
     return calls
 
 
-@pytest.mark.parametrize("backend", ["cython", "rust"])
-def test_callback_fires_on_a_small_file(backend: str) -> None:
-    calls = _calls(_load(backend), SMALL_XRK)
+@pytest.mark.parametrize("aim_xrk", [cython_aim_xrk, rust_aim_xrk], ids=["cython", "rust"])
+def test_callback_fires_on_a_small_file(aim_xrk) -> None:
+    calls = _calls(aim_xrk, SMALL_XRK)
     size = SMALL_XRK.stat().st_size
 
     assert calls, f"no progress callback on a {size}-byte file"
@@ -47,4 +38,4 @@ def test_callback_fires_on_a_small_file(backend: str) -> None:
 
 @pytest.mark.parametrize("path", [SMALL_XRK, MEDIUM_XRK], ids=lambda p: p.name)
 def test_both_backends_call_back_at_the_same_positions(path: Path) -> None:
-    assert _calls(_load("cython"), path) == _calls(_load("rust"), path)
+    assert _calls(cython_aim_xrk, path) == _calls(rust_aim_xrk, path)

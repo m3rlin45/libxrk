@@ -1,6 +1,6 @@
 //! Channel type decoders: decode raw sample bytes to typed values.
 //!
-//! Maps decoder_type to decode function. Equivalent to `_decoders` in aim_xrk.pyx.
+//! Maps decoder_type to decode function. Equivalent to `_decoders` in _aim_xrk_cy.pyx.
 
 /// Decoded sample value — preserves the native type from each decoder.
 #[derive(Debug, Clone, Copy)]
@@ -41,7 +41,7 @@ impl SampleValue {
 }
 
 /// Gear lookup table: maps uint16 decoded value to gear number.
-/// Matches aim_xrk.pyx:102-109.
+/// Matches _aim_xrk_cy.pyx:102-109.
 fn gear_lookup(val: u16) -> u16 {
     match val {
         0x4E => 0, // 'N'

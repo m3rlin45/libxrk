@@ -7,6 +7,8 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from libxrk._aim_xrk_cy import aim_xrk as cython_aim_xrk
+from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
 
 # Test data paths
 TEST_DATA_DIR = Path(__file__).parent.parent.parent / "tests" / "test_data"
@@ -118,15 +120,11 @@ def backend(request):
     return request.param
 
 
+_BACKENDS = {"cython": cython_aim_xrk, "rust": rust_aim_xrk}
+
+
 def _load_backend(backend, path):
-    if backend == "rust":
-        try:
-            from libxrk._aim_xrk_rs import aim_xrk
-        except ImportError:
-            pytest.skip("Rust backend not available")
-    else:
-        from libxrk.aim_xrk import aim_xrk  # the Cython module itself, env-independent
-    return aim_xrk(str(path))
+    return _BACKENDS[backend](str(path))
 
 
 @pytest.fixture(scope="session")
@@ -186,10 +184,6 @@ def issue68_backend(backend):
 @pytest.fixture(scope="session")
 def issue68_rust():
     """Load the issue68 file via Rust parser once per session."""
-    try:
-        from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
-    except ImportError:
-        pytest.skip("Rust backend not available")
     return rust_aim_xrk(str(ISSUE68_XRZ))
 
 
@@ -214,10 +208,6 @@ def issue84_backend(backend):
 @pytest.fixture(scope="session")
 def issue84_rust():
     """Load the issue84 file via Rust parser once per session."""
-    try:
-        from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
-    except ImportError:
-        pytest.skip("Rust backend not available")
     return rust_aim_xrk(str(ISSUE84_XRZ))
 
 

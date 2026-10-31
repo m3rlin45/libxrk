@@ -42,7 +42,7 @@ This builds the library for WebAssembly and runs tests in Pyodide. **This is a l
 
 ### Cython Rebuild
 
-After modifying `aim_xrk.pyx`, rebuild the Cython extension:
+After modifying `_aim_xrk_cy.pyx`, rebuild the Cython extension:
 
 ```bash
 poetry install

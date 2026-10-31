@@ -22,8 +22,8 @@ else:
 
 extensions = [
     Extension(
-        "libxrk.aim_xrk",
-        sources=["src/libxrk/aim_xrk.pyx"],
+        "libxrk._aim_xrk_cy",
+        sources=["src/libxrk/_aim_xrk_cy.pyx"],
         include_dirs=[np.get_include()],
         language="c++",
         extra_compile_args=extra_compile_args,

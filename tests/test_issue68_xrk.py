@@ -15,15 +15,8 @@ from typing import ClassVar
 import numpy as np
 
 from libxrk.base import LogFile
-
-
-def _rust_backend_available() -> bool:
-    try:
-        import libxrk._aim_xrk_rs  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
+from libxrk._aim_xrk_cy import aim_xrk as cython_aim_xrk
+from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
 
 
 TEST_DATA_DIR = Path(__file__).parent / "test_data"
@@ -42,21 +35,12 @@ RATE_CHANNELS = {"RollRate", "PitchRate", "YawRate"}
 
 
 class TestIssue68XRK(unittest.TestCase):
-    """Cython-backend tests for the issue68 fixture.
-
-    Pinned to the Cython backend because the Rust backend fix lands in
-    the next commit; on this commit CI with LIBXRK_BACKEND=rust would
-    still drop the 10 new channels. The import is inside setUpClass so
-    it doesn't rebind libxrk.aim_xrk at pytest collection time (which
-    would otherwise pollute the package attribute and break sibling
-    test modules that do `from libxrk import aim_xrk`).
-    """
+    """Cython-backend tests for the issue68 fixture (TestIssue68CrossBackend covers Rust)."""
 
     log: ClassVar[LogFile]
 
     @classmethod
     def setUpClass(cls) -> None:
-        from libxrk.aim_xrk import aim_xrk as cython_aim_xrk
 
         cls.log = cython_aim_xrk(str(ISSUE68_XRZ_FILE))
 
@@ -164,7 +148,6 @@ class TestIssue68XRK(unittest.TestCase):
         self.assertGreater(log.laps.num_rows, 0, "laps missing — bad-byte path corruption?")
 
 
-@unittest.skipUnless(_rust_backend_available(), "Rust backend not available")
 class TestIssue68CrossBackend(unittest.TestCase):
     """Cross-backend parity on the issue68 fixture — same 10 channels,
     identical timecodes, identical fp16 values.
@@ -175,8 +158,6 @@ class TestIssue68CrossBackend(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
-        from libxrk.aim_xrk import aim_xrk as cython_aim_xrk
 
         cls.rust_log = rust_aim_xrk(str(ISSUE68_XRZ_FILE))
         cls.cython_log = cython_aim_xrk(str(ISSUE68_XRZ_FILE))

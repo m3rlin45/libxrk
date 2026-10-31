@@ -1,6 +1,6 @@
 //! GPSR — GPS Receiver (36 bytes).
 //!
-//! Reference: aim_xrk.pyx:560-570, spec/xrk_format.py:352-359.
+//! Reference: _aim_xrk_cy.pyx:560-570, spec/xrk_format.py:352-359.
 
 use crate::messages::nullterm_string;
 

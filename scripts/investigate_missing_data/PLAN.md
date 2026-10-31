@@ -41,7 +41,7 @@ Create `scripts/xrk_message_scanner.py` that:
 - Identifies unknown/unhandled tokens
 
 ### 2.2 Known Gaps to Investigate
-From `src/libxrk/aim_xrk.pyx`:
+From `src/libxrk/_aim_xrk_cy.pyx`:
 
 | Token | Line | Current Handling | Gap |
 |-------|------|------------------|-----|
@@ -143,7 +143,7 @@ Line 231 comment: "Not sure how to represent 500 Hz"
    - DLL channels vs libxrk channels
    - Identify missing channels
 
-5. **Add decoder logging** - temporary modification to `aim_xrk.pyx`
+5. **Add decoder logging** - temporary modification to `_aim_xrk_cy.pyx`
    - Log skipped channels and their decoder types
    - Remove after investigation
 
@@ -167,7 +167,7 @@ Line 231 comment: "Not sure how to represent 500 Hz"
 
 | File | Purpose |
 |------|---------|
-| `src/libxrk/aim_xrk.pyx` | Core parser - all message handling |
+| `src/libxrk/_aim_xrk_cy.pyx` | Core parser - all message handling |
 | `tests/reference_dll/aim_dll_wrapper.py` | DLL wrapper to expand |
 | `tests/test_data/86/*.xrk` | Most complex test file (92 channels) |
 | `tests/reference_dll/COMPARISON_REPORT.md` | Current known differences |

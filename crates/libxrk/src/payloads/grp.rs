@@ -1,6 +1,6 @@
 //! GRP — Group Definition (variable size).
 //!
-//! Reference: aim_xrk.pyx:418-421, spec/xrk_format.py:248-252.
+//! Reference: _aim_xrk_cy.pyx:418-421, spec/xrk_format.py:248-252.
 
 /// GRP payload — variable size.
 #[derive(Debug, Clone)]

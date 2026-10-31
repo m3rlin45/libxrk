@@ -3,7 +3,6 @@
 Tests both Rust and Cython backends, plus cross-backend comparison.
 """
 
-import os
 import gc
 import unittest
 from pathlib import Path
@@ -12,22 +11,13 @@ from typing import Any, ClassVar
 import numpy as np
 
 from libxrk.base import LogFile
+from libxrk._aim_xrk_cy import aim_xrk as cython_aim_xrk
+from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
 
 TEST_DATA_DIR = Path(__file__).parent / "test_data"
 ISSUE49_XRK_FILE = TEST_DATA_DIR / "issue49" / "badGPSdata.xrk"
 
 
-def _rust_backend_available() -> bool:
-    """Check if the Rust backend extension is importable."""
-    try:
-        import libxrk._aim_xrk_rs  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
-
-
-@unittest.skipUnless(_rust_backend_available(), "Rust backend not available")
 class TestIssue49XRK(unittest.TestCase):
     """Tests for the issue49 badGPSdata.xrk file (Rust backend)."""
 
@@ -35,12 +25,7 @@ class TestIssue49XRK(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        # Force Rust backend for this entire test class
-        os.environ["LIBXRK_BACKEND"] = "rust"
-        # Import Rust backend directly
-        from libxrk._aim_xrk_rs import aim_xrk
-
-        cls.log = aim_xrk(str(ISSUE49_XRK_FILE))
+        cls.log = rust_aim_xrk(str(ISSUE49_XRK_FILE))
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -96,9 +81,7 @@ class TestIssue49CythonXRK(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        from libxrk.aim_xrk import aim_xrk
-
-        cls.log = aim_xrk(str(ISSUE49_XRK_FILE))
+        cls.log = cython_aim_xrk(str(ISSUE49_XRK_FILE))
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -143,7 +126,6 @@ class TestIssue49CythonXRK(unittest.TestCase):
         self.assertEqual(model_id, 768)
 
 
-@unittest.skipUnless(_rust_backend_available(), "Rust backend not available")
 class TestIssue49CrossBackend(unittest.TestCase):
     """Cross-backend comparison for the issue49 badGPSdata.xrk file."""
 
@@ -152,8 +134,6 @@ class TestIssue49CrossBackend(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
-        from libxrk.aim_xrk import aim_xrk as cython_aim_xrk
 
         cls.rust_log = rust_aim_xrk(str(ISSUE49_XRK_FILE))
         cls.cython_log = cython_aim_xrk(str(ISSUE49_XRK_FILE))

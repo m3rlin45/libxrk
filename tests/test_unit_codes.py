@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from libxrk._aim_xrk_rs import aim_xrk as decode_rust
-from libxrk.aim_xrk import aim_xrk as decode_cython
+from libxrk._aim_xrk_cy import aim_xrk as decode_cython
 
 TEST_DATA_DIR = Path(__file__).parent / "test_data"
 SFJ_XRK = TEST_DATA_DIR / "SFJ/CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrk"

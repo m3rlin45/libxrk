@@ -11,6 +11,8 @@ from parameterized import parameterized
 
 from libxrk import aim_xrk
 from libxrk.base import ChannelMetadata, LogFile
+from libxrk._aim_xrk_cy import aim_xrk as cython_aim_xrk
+from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
 
 
 # Path to test data
@@ -813,17 +815,6 @@ class Test86XRK(unittest.TestCase):
             )
 
 
-def _rust_backend_available() -> bool:
-    """Check if the Rust backend extension is importable."""
-    try:
-        import libxrk._aim_xrk_rs  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
-
-
-@unittest.skipUnless(_rust_backend_available(), "Rust backend not available")
 class Test86CrossBackend(unittest.TestCase):
     """Cross-backend comparison for the 86 XRK file."""
 
@@ -832,8 +823,6 @@ class Test86CrossBackend(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
-        from libxrk.aim_xrk import aim_xrk as cython_aim_xrk
 
         cls.rust_log = rust_aim_xrk(str(XRK_86_FILE))
         cls.cython_log = cython_aim_xrk(str(XRK_86_FILE))
