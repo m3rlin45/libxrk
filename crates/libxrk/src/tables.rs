@@ -31,6 +31,7 @@ pub fn unit_map(unit_type: u8) -> (&'static str, u8) {
         24 => ("l/s", 0),
         26 => ("time?", 0),
         27 => ("A", 0),
+        28 => ("%", 2), // Luminosity on the official AIM sample; RaceStudio3 displays "%"
         30 => ("lambda", 2),
         31 => ("gear", 0),
         33 => ("%", 2),
@@ -64,6 +65,7 @@ pub fn is_known_unit(unit_type_byte: u8) -> bool {
             | 24
             | 26
             | 27
+            | 28
             | 30
             | 31
             | 33
@@ -295,6 +297,14 @@ mod tests {
     fn unit_code_8_is_metres() {
         assert_eq!(unit_map(8), ("m", 0));
         assert!(is_known_unit(8));
+    }
+
+    /// Unit code 28 is "%": Luminosity on the official AIM sample carries it
+    /// and RaceStudio3 displays "%". Mirrors `UNIT_MAP` in `spec/xrk_format.py`.
+    #[test]
+    fn unit_code_28_is_percent() {
+        assert_eq!(unit_map(28), ("%", 2));
+        assert!(is_known_unit(28));
     }
 
     #[test]

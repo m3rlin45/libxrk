@@ -20,6 +20,7 @@ from libxrk.aim_xrk import aim_xrk as decode_cython
 TEST_DATA_DIR = Path(__file__).parent / "test_data"
 SFJ_XRK = TEST_DATA_DIR / "SFJ/CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrk"
 EK9_XRZ = TEST_DATA_DIR / "ek9/CMD_EK9_Motegi_Generic testing_a_0351.xrz"
+AIM_OFFICIAL_XRK = TEST_DATA_DIR / "aim_official/test.xrk"
 
 # Channel -> unit the AIM DLL reports for this file. StartRec carries unit
 # code 139 (11 | calibrated flag), Lateral Grip carries 11.
@@ -58,3 +59,16 @@ def test_unit_code_8_is_metres(decode):
         assert _units(log, name) == "m"
     dist = log.channels["Distance Lap"].column("Distance Lap").to_pylist()
     assert 1_000 < max(dist) < 20_000
+
+
+@pytest.mark.parametrize("decode", [decode_cython, decode_rust], ids=["cython", "rust"])
+def test_unit_code_28_is_percent(decode):
+    """Unit code 28 is "%".
+
+    The official AIM sample's Luminosity carries code 28 and RaceStudio3
+    displays it as "%"; the sample's Backlight and WiFi channels share the
+    code. Neither the DLL nor a CSV export exposes these channels.
+    """
+    log = decode(str(AIM_OFFICIAL_XRK))
+    for name in ("Luminosity", "Backlight", "WiFi"):
+        assert _units(log, name) == "%"

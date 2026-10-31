@@ -279,6 +279,7 @@ decimal precision. The high bit indicates whether the channel has been calibrate
 | 24 | l/s    | 0 |
 | 26 | time?  | 0 |
 | 27 | A      | 0 |
+| 28 | %      | 2 |
 | 30 | lambda | 2 |
 | 31 | gear   | 0 |
 | 33 | %      | 2 |
