@@ -280,7 +280,7 @@ class TestDataMessageRoundTrip:
         """Build an (M data message."""
         return struct.pack("<HiHH", 0x4D28, timecode, channel_index, count) + data + b")"
 
-    def _parse_data_message(self, frame, channel_sizes, group_sizes):
+    def _parse_data_message(self, frame, channel_sizes, group_sizes, group_layouts=None):
         """Parse a data message using compiled opcode dispatch."""
         opcode = frame[:2]
         struct_def = _DATA_MSG_STRUCTS.get(opcode)
@@ -292,6 +292,7 @@ class TestDataMessageRoundTrip:
                 stream,
                 channel_sizes=channel_sizes,
                 group_sizes=group_sizes,
+                group_layouts=group_layouts or {},
             )
             return dmsg.msg_type, _container_to_dict(dmsg), stream.tell()
         except (ConstructError, KeyError):
@@ -331,7 +332,10 @@ class TestDataMessageRoundTrip:
             msg.parsed["data"],
         )
         result = self._parse_data_message(
-            frame, file_86_parsed.channel_sizes, file_86_parsed.group_sizes
+            frame,
+            file_86_parsed.channel_sizes,
+            file_86_parsed.group_sizes,
+            file_86_parsed.group_layouts,
         )
         assert result is not None
         msg_type, parsed, next_offset = result

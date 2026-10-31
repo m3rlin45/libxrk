@@ -70,6 +70,41 @@ common encoding for analog sensor channels.
 **Gear lookup (decoder 15):** The raw uint16 value is an ASCII character code.
 Map `'N'`(0x4E)→0, `'1'`(0x31)→1, ..., `'6'`(0x36)→6.
 
+**Non-finite samples:** loggers write IEEE infinities (and occasionally NaN)
+into float channels as "no value" sentinels — float16 `0x7C00` (+inf) on every
+sample of the official AIM sample's `External Voltage` channel (no external
+supply connected), float32 `0xFF800000` (−inf) on CAN channels such as
+`Lambda` and `P_Brake` during bus dropouts. The official AIM DLL returns `0.0`
+for those samples, and hides a channel whose every sample is non-finite.
+libxrk instead reports them as **`NaN`** on both backends: after decoding and
+the mV→V conversion, any non-finite value in a decoder-6 (float32) or
+decoder-20 (float16) channel becomes `NaN`. Integer channels are untouched.
+In the spec this is the `NonFiniteToNaN` adapter wrapping the float codecs in
+`SAMPLE_CODECS` (`spec/xrk_format.py`); `channel_sample_codec(chs)` is the
+complete per-sample decoder for a channel and `decode_channel_values()` its
+vectorised form.
+
+**Sample streams:** a data message's payload is structured in the spec, not
+opaque: an `(M` burst's `samples` are `Array(count, Bytes(CHS.data_size))`,
+and a `(G` payload's `samples` are a `Struct` of its member channels'
+samples in GRP order, each `CHS.data_size` wide, built from the GRP message
+and selected by `group_index` at parse time (`_GroupLayout`). Both are
+`RestreamData` views over the raw `data`, so byte-identical rebuilds are
+unaffected. Because messages interleave channels and may repeat, a channel's
+values exist only after an accumulation pass, which is why both backends
+accumulate first and decode after. The spec does it in the parse hook
+(`_accumulate`): one accumulator per message family (G per group; S, c and M
+per channel), a message accepted only when its timecode is strictly greater
+than the accumulator's last accepted one, and an M burst overlapping the
+accepted stream contributing only its samples past the overlap (section 4).
+The result is `ParseResult.streams`, contiguous bytes per channel in
+`data_size` slots. A stream's grammar is `channel_stream(chs)`:
+`GreedyRange` of the channel's codec padded to the slot; `channel_values()`
+decodes every stream with the vectorised equivalent, and `test_spec.py`
+compares every value of every fixture against both backends.
+`0.0` would be a plausible-looking lie for a lambda or a brake pressure; `NaN`
+is what pandas/pyarrow consumers already treat as missing.
+
 **Special fixups:**
 - Channels named `Calculated_Gear` or `PreCalcGear` use decoder `Q` (uint64)
   with bit extraction: `(value >> 16) & 7` (returns 0 if bit 19 is set).
