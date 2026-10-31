@@ -52,8 +52,9 @@ dc_slots = {'slots': True} if sys.version_info.minor >= 10 else {}
 class Group:
     index: int
     channels: List[int]
-    samples: array = field(default_factory=lambda: array('I'), repr=False)
-    # used during building:
+    # used during building; samples is a view into the decoder's buffers and is
+    # reset to None once decoding finishes:
+    samples: Optional[object] = field(default_factory=lambda: array('I'), repr=False)
     timecodes: Optional[array] = field(default=None, repr=False)
 
 @dataclass(**dc_slots)
@@ -361,7 +362,16 @@ def _decode_sequence(s, progress=None):
     ord_lt_h : cython.int = ord_lt + 256 * ord('h')
     ord_gt: cython.int = ord('>')
     len_s: cython.Py_ssize_t = len(s)
-    cdef vaccum[4] gc_data # [0]: G messages (groups) [1]: S messages (samples?) [2]: c messages (channels from expansion) [3]: M messages
+    # [0]: G messages (groups) [1]: S messages (samples?) [2]: c messages
+    # (channels from expansion) [3]: M messages.
+    #
+    # This MUST be a vector, not a C array (`cdef vaccum[4] gc_data`). The
+    # nested process_group/process_channel closures capture it, which moves it
+    # into Cython's closure scope struct; Cython constructs and destructs a C++
+    # object held there, but it only memsets a C array of C++ objects and never
+    # destroys it -- every sample buffer leaked on each parse (issue #111).
+    cdef vector[vaccum] gc_data
+    gc_data.resize(4)
     time_offset = None
     last_time = None
     t1 = time.perf_counter()
@@ -1112,6 +1122,20 @@ def _decode_sequence(s, progress=None):
         _name_seen[ch.long_name] = _dup_k
         if _dup_k > 1 and ch.long_name not in ('StrtRec', 'Master Clk'):
             ch.long_name = '%s dup %d' % (ch.long_name, _dup_k)
+
+    # Group.samples is a zero-copy view into gc_data[0], about to be freed;
+    # every channel has already copied what it needs out of it. Groups stay
+    # reachable afterwards (messages[GRP], Channel.group), so drop the views
+    # rather than leave them dangling.
+    for g in groups:
+        if g:
+            g.samples = None
+
+    # Free the raw sample buffers now. The closure scope that owns gc_data is
+    # part of a reference cycle (process_group captures process_channel), so
+    # without this it would only be reclaimed at the next cyclic GC pass.
+    gc_data.clear()
+    gc_data.shrink_to_fit()
 
     return DataStream(
         channels={ch.long_name: ch for ch in channels
