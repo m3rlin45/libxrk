@@ -15,6 +15,7 @@ pub fn unit_map(unit_type: u8) -> (&'static str, u8) {
         4 => ("deg", 1),
         5 => ("deg/s", 1),
         6 => ("", 0), // "number"; never exposed by the AIM DLL on the corpus, so unverified
+        8 => ("m", 0), // metres; the AIM DLL reports "m" for the code-8 Mileage channel
         9 => ("Hz", 0),
         11 => ("#", 0), // "number"; the AIM DLL reports "#" (see test below)
         12 => ("mm", 0),
@@ -47,6 +48,7 @@ pub fn is_known_unit(unit_type_byte: u8) -> bool {
             | 4
             | 5
             | 6
+            | 8
             | 9
             | 11
             | 12
@@ -285,6 +287,17 @@ mod tests {
         // The calibrated flag must not turn it into something else: that
         // rewrite exists only for mV -> V.
         assert_eq!(resolve_unit(139), "#");
+    }
+
+    /// Unit code 8 is metres: the AIM DLL reports "m" for the code-8
+    /// `Mileage` channel (odometer, values in the millions). `Distance Lap`
+    /// and `Distance Lap Int` carry the same code. Mirrors `UNIT_MAP` in
+    /// `spec/xrk_format.py`.
+    #[test]
+    fn unit_code_8_is_metres() {
+        assert_eq!(unit_map(8), ("m", 0));
+        assert_eq!(resolve_unit(8), "m");
+        assert!(is_known_unit(8));
     }
 
     #[test]

@@ -113,6 +113,7 @@ UNIT_MAP = {
     4: ("deg", 1),
     5: ("deg/s", 1),
     6: ("", 0),
+    8: ("m", 0),  # metres; the AIM DLL reports "m" for the code-8 Mileage channel
     9: ("Hz", 0),
     11: ("#", 0),  # "number"; the AIM DLL reports "#" (36/36 corpus observations)
     12: ("mm", 0),
