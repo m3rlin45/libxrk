@@ -1268,9 +1268,24 @@ def _decode_gps(gpsmsg, time_offset):
     timecodes_raw = timecodes - time_offset
     timecodes = memoryview(timecodes_raw)
 
-    gpsconv = gps.ecef2lla(np.divide(ecefX_cm, 100),
-                           np.divide(ecefY_cm, 100),
-                           np.divide(ecefZ_cm, 100))
+    # A NAV-SOL record with no fix carries an all-zero ECEF position. Through
+    # ecef2lla that is lat=lon=0 (a real place, 600 km off Ghana) and a
+    # division by zero for altitude. Report the position as unknown instead:
+    # NaN for latitude, longitude and altitude. Loggers write such a record at
+    # power-on before the first fix and, rarely, as a mid-stream dropout.
+    # See spec/docs/companion.md section 5 ("No-fix records").
+    ecefX_arr = np.asarray(ecefX_cm)
+    ecefY_arr = np.asarray(ecefY_cm)
+    ecefZ_arr = np.asarray(ecefZ_cm)
+    nofix = (ecefX_arr == 0) & (ecefY_arr == 0) & (ecefZ_arr == 0)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        gpsconv = gps.ecef2lla(np.divide(ecefX_arr, 100),
+                               np.divide(ecefY_arr, 100),
+                               np.divide(ecefZ_arr, 100))
+    if nofix.any():
+        gpsconv.lat[nofix] = np.nan
+        gpsconv.long[nofix] = np.nan
+        gpsconv.alt[nofix] = np.nan
 
     # Compute GPS speed (m/s)
     speed_ms = np.sqrt(np.square(ecefdX_cms) + np.square(ecefdY_cms) + np.square(ecefdZ_cms)) / 100.0
