@@ -6,6 +6,15 @@ Contains AIM run sessions from multiple cars and tracks plus targeted fixtures f
 
 `CMD_KK-SII_Tsukuba_Car_Generic testing_a_0101.xrz` — KK-SII session at Tsukuba, recorded 2026-04-17. Selected because its logger emits the new `(c)` expansion-channel message variants (V2 long, V3 short) that weren't in the older corpus; referenced by tests verifying issue #68 shock-pot and accelerometer parsing.
 
+## ek9
+
+`CMD_EK9_Motegi_Generic testing_a_0351.xrz` (1.1 MB) — Honda EK9 Civic at Motegi,
+recorded 2025-08-02, Logger Model ID 669, 29 channels, 3 laps. Selected as the
+smallest file in the corpus that carries the logger's internal distance channels
+(`Distance Lap`, `Distance Lap Int`, CHS unit code 8 = metres) and that ends with
+a GPS header record cut short by the file trailer; referenced by
+`tests/test_unit_codes.py` and the bad-byte fragment tests.
+
 ## SFJ
 The SFJ Folder contains data from a run by a beginner in a Super FJ Junior formula car.
 

@@ -113,6 +113,10 @@ UNIT_MAP = {
     4: ("deg", 1),
     5: ("deg/s", 1),
     6: ("", 0),
+    # Distance channels (Mileage, Distance Lap, Distance Lap Int). RaceStudio3
+    # exports Mileage as "m" (20/20 corpus CSV observations); the AIM DLL
+    # does not expose these channels, so it cannot confirm.
+    8: ("m", 0),
     9: ("Hz", 0),
     11: ("#", 0),  # "number"; the AIM DLL reports "#" (36/36 corpus observations)
     12: ("mm", 0),
