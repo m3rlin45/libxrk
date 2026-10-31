@@ -160,6 +160,68 @@ class TestChannels:
             assert back[2] == pytest.approx(lla[2], abs=1e-6)
 
 
+class TestNoFixRecords:
+    """A record written before the receiver has a fix (all-zero ECEF
+    position, gpsFix 0, numSV 0) is position unknown: NaN latitude,
+    longitude and altitude, never 0 deg, 0 deg. Issue #122."""
+
+    @staticmethod
+    def _stream():
+        nofix = gps_record(0, ecef_cm=(0, 0, 0), fix=0, nsat=0)
+        fixed = records([40, 80, 120], ecef_cm=FUJI_ECEF_CM, vel_cms=(300, 400, 0))
+        return nofix + fixed
+
+    def test_position_is_nan_and_the_record_is_kept(self):
+        t = _gps_rs.decode(self._stream(), 0)
+        for name in ("GPS Latitude", "GPS Longitude", "GPS Altitude"):
+            v = _col(t, name)
+            assert len(v) == 4 and np.isnan(v[0]), name
+            assert np.all(np.isfinite(v[1:])), f"{name}: only the no-fix record may be NaN"
+        assert list(_tc(t)) == [0, 40, 80, 120]
+        assert _col(t, "GPS_Fix")[0] == 0 and _col(t, "GPS_Satellites")[0] == 0
+        assert _col(t, "GPS Speed")[0] == 0
+
+    def test_nan_stays_local_to_the_record(self):
+        t = _gps_rs.decode(self._stream(), 0)
+        # Heading differences touch the unknown position at the record and
+        # the one after it; nothing else, and speed-based channels never.
+        for name in ("GPS_Yaw_Rate", "GPS_LateralAcc"):
+            v = _col(t, name)
+            assert np.all(np.isfinite(v[2:])), f"{name}: NaN leaked past the no-fix record"
+        assert np.all(np.isfinite(_col(t, "GPS_InlineAcc")))
+
+    def test_no_runtime_warning(self):
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            _gps_rs.decode(self._stream(), 0)
+
+    def test_mid_stream_dropout_record(self):
+        data = (
+            records([0, 40], ecef_cm=FUJI_ECEF_CM)
+            + self._stream()[:56]
+            + records([120], ecef_cm=FUJI_ECEF_CM)
+        )
+        lat = _col(_gps_rs.decode(data, 0), "GPS Latitude")
+        assert np.isnan(lat[2]) and np.all(np.isfinite(np.delete(lat, 2)))
+
+    def test_unknown_position_does_not_classify_the_last_lap(self, sfj):
+        # A session whose last GPS record has no fix: no evidence the car is
+        # away from the line at the lap end, so "full" stays "full".
+        material, log = sfj
+        gps_data = material["gps_data"][:-56] + gps_record(
+            int.from_bytes(material["gps_data"][-56:-52], "little", signed=True),
+            ecef_cm=(0, 0, 0),
+            fix=0,
+            nsat=0,
+        )
+        rows = _lap_rows(log.laps)
+        unfinished = [(n, s, e, "full" if t == "in" else t) for n, s, e, t in rows]
+        _, laps = _process(**{**material, "gps_data": gps_data}, laps=unfinished)
+        assert laps == unfinished
+
+
 # ---------------------------------------------------------------------------
 # Timecode reconstruction (section 6): only a backwards step close to 65536
 # is a 16-bit rollover.

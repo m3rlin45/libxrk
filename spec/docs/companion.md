@@ -160,6 +160,25 @@ provides high accuracy without iteration.
 Reference: `crates/libxrk-gps/src/geo.rs` (`ecef2lla`); the numpy twin
 `gps.py:ecef2lla_vermeille2003` is kept as a vectorised utility.
 
+### No-fix records
+
+A NAV-SOL record written before the receiver has a fix carries an all-zero
+ECEF position (and `gpsFix = 0`, `numSV = 0`). Loggers write one at power-on
+and, rarely, as a mid-stream dropout (the all-zero record discussed under
+section 6). Fed through `ecef2lla`, zeros come out as latitude 0, longitude 0
+(a real place in the Gulf of Guinea) and a division by zero for altitude.
+
+The pipeline treats an all-zero ECEF position as **position unknown**: `GPS
+Latitude`, `GPS Longitude` and `GPS Altitude` are `NaN` for that record. The
+record is kept (its timecode still anchors the GPS timebase), and the other
+GPS channels decode normally: speed from the velocity fields, `GPS_Fix` and
+`GPS_Satellites` as written. The heading-derived channels (`GPS_Yaw_Rate`,
+`GPS_LateralAcc`) are `NaN` for that record and the one after it, since they
+are differences. An unknown position at a lap's end is no evidence the car is
+away from the line, so it never makes that lap an in-lap.
+
+Reference: `crates/libxrk-gps/src/navsol.rs` (`decode_nav_sol`).
+
 ### Computed GPS Channels
 
 From the raw NAV-SOL fields, the following channels are derived:

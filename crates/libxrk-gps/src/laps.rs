@@ -324,6 +324,19 @@ mod tests {
     }
 
     #[test]
+    fn unknown_position_at_lap_end_does_not_classify() {
+        // The car's position at the lap end is unknown (no-fix record):
+        // there is no evidence it is away from the line, so "full" stays.
+        let mut gps = circuit(2.5, 200.0, 20.0);
+        let last = gps.len() - 1;
+        gps.latitude[last] = f64::NAN;
+        gps.longitude[last] = f64::NAN;
+        let end = *gps.timecodes.last().unwrap();
+        let out = finish_laps(vec![Lap::new(0, 0, end, "full")], Some(&gps), Some(SF));
+        assert_eq!(out[0].lap_type, "full");
+    }
+
+    #[test]
     fn an_out_lap_is_never_reclassified() {
         let gps = circuit(0.5, 200.0, 20.0);
         let end = *gps.timecodes.last().unwrap();

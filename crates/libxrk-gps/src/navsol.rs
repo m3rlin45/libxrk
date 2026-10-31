@@ -262,6 +262,21 @@ pub fn decode_nav_sol(gps_data: &[u8], time_offset: i64) -> Result<Option<GpsCha
     let mut longitude = Vec::with_capacity(n);
     let mut altitude = Vec::with_capacity(n);
     for i in 0..n {
+        // A record written before the receiver has a fix carries an all-zero
+        // ECEF position. Through ecef2lla that is latitude 0, longitude 0 (a
+        // real place in the Gulf of Guinea) and a division by zero for the
+        // altitude; report the position as unknown instead. The record is
+        // kept: its timecode still anchors the GPS timebase, and speed, fix
+        // type and satellite count decode as written. The heading-derived
+        // channels (yaw rate, lateral acceleration) are NaN for this record
+        // and the next, being differences. See companion.md section 5
+        // ("No-fix records").
+        if ecef_x_cm[i] == 0 && ecef_y_cm[i] == 0 && ecef_z_cm[i] == 0 {
+            latitude.push(f64::NAN);
+            longitude.push(f64::NAN);
+            altitude.push(f64::NAN);
+            continue;
+        }
         let (lat, lon, alt) = geo::ecef2lla(
             ecef_x_cm[i] as f64 / 100.0,
             ecef_y_cm[i] as f64 / 100.0,
@@ -478,6 +493,36 @@ mod tests {
         assert!((ch.latitude[0] - 35.3725327).abs() < 1e-6);
         assert!((ch.longitude[0] - 138.9275985).abs() < 1e-6);
         assert!((ch.altitude[0] - 644.1614).abs() < 1e-3);
+    }
+
+    #[test]
+    fn no_fix_record_is_position_unknown() {
+        // All-zero ECEF (gpsFix 0, numSV 0): NaN position, everything else as written.
+        let mut nofix = gps_record(0);
+        nofix[14] = 0;
+        nofix[16..28].fill(0);
+        nofix[51] = 0;
+        let mut moving = gps_record(40);
+        moving[40..44].copy_from_slice(&1000i32.to_le_bytes());
+        let data = [nofix, moving.clone(), {
+            let mut r = moving.clone();
+            r[0..4].copy_from_slice(&80i32.to_le_bytes());
+            r
+        }]
+        .concat();
+        let ch = decode_nav_sol(&data, 0).unwrap().unwrap();
+        assert!(ch.latitude[0].is_nan() && ch.longitude[0].is_nan() && ch.altitude[0].is_nan());
+        assert_eq!(ch.timecodes, vec![0, 40, 80]);
+        assert_eq!(ch.fix[0], 0.0);
+        assert_eq!(ch.satellites[0], 0.0);
+        assert_eq!(ch.speed[0], 0.0);
+        // The next record has a real position again.
+        assert!(ch.latitude[1].abs() < 1e-9 && ch.altitude[1].abs() < 1e-6);
+        // Differences touching the unknown heading are NaN for it and the
+        // next record only; speed-based inline acceleration is unaffected.
+        assert!(ch.yaw_rate[0] == 0.0 && ch.yaw_rate[1].is_nan() && ch.yaw_rate[2] == 0.0);
+        assert!(ch.lateral_acc[1].is_nan() && ch.lateral_acc[2] == 0.0);
+        assert!(ch.inline_acc.iter().all(|v| v.is_finite()));
     }
 
     #[test]
