@@ -70,6 +70,44 @@ common encoding for analog sensor channels.
 **Gear lookup (decoder 15):** The raw uint16 value is an ASCII character code.
 Map `'N'`(0x4E)→0, `'1'`(0x31)→1, ..., `'6'`(0x36)→6.
 
+**Non-finite samples:** loggers write IEEE infinities (and occasionally NaN)
+into float channels as "no value" sentinels — float16 `0x7C00` (+inf) on every
+sample of the official AIM sample's `External Voltage` channel (no external
+supply connected), float32 `0xFF800000` (−inf) on CAN channels such as
+`Lambda` and `P_Brake` during bus dropouts. The official AIM DLL returns `0.0`
+for those samples, and hides a channel whose every sample is non-finite.
+libxrk instead reports them as **`NaN`** on both backends: after decoding and
+the mV→V conversion, any non-finite value in a decoder-6 (float32) or
+decoder-20 (float16) channel becomes `NaN`. Integer channels are untouched.
+`0.0` would be a plausible-looking lie for a lambda or a brake pressure; `NaN`
+is what pandas/pyarrow consumers already treat as missing. In the spec this is
+`NonFiniteToNaN`, an `ExprAdapter` wrapping the float codecs in `SAMPLE_CODECS`
+(`spec/xrk_format.py`), next to `Gear` (decoder 15) and `Volts` (the mV→V
+conversion). Each adapter's decoder is a numpy expression, so the same function
+decodes one sample (`channel_sample_codec(chs).parse(...)`) and a whole stream
+(`decode_channel_values()`).
+
+**Sample streams:** a data message's payload is structured in the spec, not
+opaque: an `(M` burst's `samples` are `Array(count, Bytes(CHS.data_size))`,
+and a `(G` payload's `samples` are an `Array` with one sample per GRP member
+that has a CHS (`members`), in GRP order, each `CHS.data_size` wide. Both are
+`RestreamData` views over the raw `data`, so byte-identical rebuilds are
+unaffected. Because messages interleave channels and may repeat, a channel's
+values exist only after an accumulation pass, which is why both backends
+accumulate first and decode after. Every data message is a list of samples,
+each with a time: S and V1 `(c` carry one at the message timecode, a `(G` one
+per member at the timecode, an `(M` burst `count` samples `Mms` apart from the
+timecode (section 4). The rule is: **a sample is kept iff its time is strictly
+later than the last kept sample of its accumulator**, one accumulator per
+message family and channel (per group member for G). This is what lets an M
+burst that overlaps the accepted stream contribute only its samples past the
+overlap. The spec applies it in the parse hook (`_accumulate`); the result is
+`ParseResult.streams`, contiguous bytes per channel in `data_size` slots. A
+stream's grammar is `channel_stream(chs, width)`, `GreedyRange(Padded(width,
+codec))`; `channel_values()` decodes every stream with its vectorised form,
+and `test_spec.py` compares every value of every fixture against both
+backends.
+
 **Special fixups:**
 - Channels named `Calculated_Gear` or `PreCalcGear` use decoder `Q` (uint64)
   with bit extraction: `(value >> 16) & 7` (returns 0 if bit 19 is set).
