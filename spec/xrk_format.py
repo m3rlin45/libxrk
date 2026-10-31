@@ -52,6 +52,7 @@ from construct import (
     Rebuild,
     RestreamData,
     Select,
+    Sequence,
     Struct,
     Switch,
     this,
@@ -546,6 +547,19 @@ GPSPayload = Struct(
 )
 
 
+def _lla_to_ecef(lat_deg, lon_deg, alt_m=0.0):
+    """WGS-84 latitude/longitude [deg] (and altitude [m]) -> ECEF [m]."""
+    a = 6378137.0
+    e2 = 8.181919084261345e-2**2
+    lat = math.radians(lat_deg)
+    lon = math.radians(lon_deg)
+    n = a / math.sqrt(1 - e2 * math.sin(lat) ** 2)
+    x = (n + alt_m) * math.cos(lat) * math.cos(lon)
+    y = (n + alt_m) * math.cos(lat) * math.sin(lon)
+    z = (n * (1 - e2) + alt_m) * math.sin(lat)
+    return (x, y, z)
+
+
 def reconstruct_gps_timecodes(timecodes):
     """Rebuild GPS timecodes whose upper 16 bits are unreliable.
 
@@ -988,6 +1002,7 @@ def _on_data(obj, ctx):
     result = ctx._params.result
     result.messages.append(ParsedMessage(obj.msg_type, parsed=_container_to_dict(obj)))
     _accumulate(obj, result)
+    _note_data_header(obj, result)
 
 
 def _accumulate(obj, result):
@@ -1031,6 +1046,87 @@ def _accumulate(obj, result):
                     result.streams.setdefault(int(channel_index), bytearray()).extend(sample)
 
 
+def _on_data_header(obj, ctx):
+    """Post-parse hook for a data message header whose body failed to parse."""
+    _note_data_header(obj, ctx._params.result)
+
+
+def _note_data_header(obj, result):
+    """Timekeeping shared by whole data messages and bare headers.
+
+    ``last_data_timecode`` is the header timecode of the most recent data
+    message in FILE ORDER (not the maximum): the AIM DLL ends the session's
+    final partial lap there (companion.md section 7). V3 (c) messages have no
+    timecode of their own and are skipped. ``first_timecodes`` records the
+    first timecode seen per data stream, the inputs to time_offset().
+    """
+    if obj.msg_type == "c" and obj.get("variant") == "V3":
+        return
+    result.last_data_timecode = obj.timecode
+    key = (
+        obj.msg_type,
+        (
+            obj.group_index
+            if obj.msg_type == "G"
+            else obj.channel_field >> 3 if obj.msg_type == "c" else obj.channel_index
+        ),
+    )
+    result.first_timecodes.setdefault(key, obj.timecode)
+
+
+# Data message headers. When a data message's body does not parse (truncated
+# by the trailing header frames, as Suzuka 0090's final (S is; or mis-framed),
+# the header still carries a timecode, and the AIM DLL still counts it for
+# end of data. These structs parse just the header, with the same validity
+# checks the backends apply before they record it, and are Peeked in the
+# fallback branch of XRKMessage so the one-byte bad-byte resync is unchanged.
+_SMessageHeader = Struct(
+    Const(b"\x28\x53"),
+    "msg_type" / Computed("S"),
+    "timecode" / Int32sl,
+    "channel_index" / Int16ul,
+    Check(lambda ctx: ctx.channel_index in ctx._params.channel_sizes),
+)
+_GMessageHeader = Struct(
+    Const(b"\x28\x47"),
+    "msg_type" / Computed("G"),
+    "timecode" / Int32sl,
+    "group_index" / Int16ul,
+    Check(lambda ctx: ctx.group_index in ctx._params.group_sizes),
+)
+_MMessageHeader = Struct(
+    Const(b"\x28\x4d"),
+    "msg_type" / Computed("M"),
+    "timecode" / Int32sl,
+    "channel_index" / Int16ul,
+    Check(lambda ctx: ctx.channel_index in ctx._params.channel_sizes),
+)
+_cMessageHeader = Struct(
+    Const(b"\x28\x63"),
+    "msg_type" / Computed("c"),
+    "unk1" / Int8ul,
+    "channel_field" / Int16ul,
+    "unk3" / Const(b"\x84"),
+    "unk4" / Int8ul,
+    "timecode" / Int32sl,
+    # V1 with a known channel, or V2 (whose channel is resolved post-parse).
+    Check(
+        lambda ctx: (
+            ctx.unk1 == 0
+            and ctx.unk4 == 6
+            and (ctx.channel_field & 7) == 4
+            and (ctx.channel_field >> 3) in ctx._params.channel_sizes
+        )
+        or (ctx.unk1 == 0 and ctx.unk4 == 8)
+    ),
+)
+
+
+def _header_fallback(header_struct):
+    """Note a bare data-message header, then resync by one byte."""
+    return Sequence(Peek(header_struct * _on_data_header), Bytes(1))
+
+
 # ---------------------------------------------------------------------------
 # Declarative protocol: opcode-dispatched Switch with side-effect hooks
 # ---------------------------------------------------------------------------
@@ -1042,14 +1138,21 @@ XRKMessage = Struct(
         this._opcode,
         {
             b"\x3c\x68": Select(HeaderMessage * _on_header, Bytes(1)),
-            b"\x28\x53": Select(SMessageCompiled * _on_data, Bytes(1)),
-            b"\x28\x47": Select(GMessageCompiled * _on_data, Bytes(1)),
-            b"\x28\x4d": Select(MMessageCompiled * _on_data, Bytes(1)),
-            # (c — try V1, then V2, then V3, then fall through to bad-byte recovery.
+            b"\x28\x53": Select(
+                SMessageCompiled * _on_data, _header_fallback(_SMessageHeader), Bytes(1)
+            ),
+            b"\x28\x47": Select(
+                GMessageCompiled * _on_data, _header_fallback(_GMessageHeader), Bytes(1)
+            ),
+            b"\x28\x4d": Select(
+                MMessageCompiled * _on_data, _header_fallback(_MMessageHeader), Bytes(1)
+            ),
+            # (c — try V1, then V2, then V3, then a bare header, then bad-byte recovery.
             b"\x28\x63": Select(
                 cMessageV1Compiled * _on_data,
                 cMessageV2Compiled * _on_data,
                 cMessageV3Compiled * _on_data,
+                _header_fallback(_cMessageHeader),
                 Bytes(1),
             ),
         },
@@ -1511,6 +1614,116 @@ class ParseResult:
     # {channel_index: bytearray}, one CHS.data_size slot per sample.
     streams: dict = field(default_factory=dict)
     _last_accepted: dict = field(default_factory=dict)  # {(family, index): timecode}
+    # Header timecode of the last data message in file order (whole or bare
+    # header), and the first timecode per data stream. See _note_data_header.
+    last_data_timecode: int | None = None
+    first_timecodes: dict = field(default_factory=dict)  # {(msg_type, index): timecode}
+
+    def time_offset(self):
+        """Session start in logger time (companion.md section 2).
+
+        The minimum of: the first LAP message's start (end_time - duration),
+        the first timecode of every data stream, and the first GPS record's
+        timecode. Subtracting it from a timecode gives milliseconds since
+        session start, the timebase both backends expose. 0 for a file with
+        none of those.
+        """
+        candidates = []
+        laps = self.get_laps()
+        if laps:
+            candidates.append(laps[0]["end_time"] - laps[0]["duration"])
+        candidates.extend(self.first_timecodes.values())
+        if self.gps_payloads:
+            candidates.append(Int32sl.parse(self.gps_payloads[0][:4]))
+        return min(candidates, default=0)
+
+    def end_of_data(self):
+        """Session-relative time of the last data message in file order, or None.
+
+        Where the AIM DLL ends the final partial lap (companion.md section 7):
+        the header timecode of the last (S/(G/(M/(c message in the file,
+        counted even when its body is truncated, minus time_offset(). This is
+        not the maximum timecode over channels; loggers buffer per channel.
+        """
+        if self.last_data_timecode is None:
+            return None
+        return self.last_data_timecode - self.time_offset()
+
+    def lap_table(self):
+        """The lap table as both backends expose it (companion.md section 7).
+
+        Built from segment-0 LAP messages: deduplicated by lap number, a
+        single missing number inferred, times made session-relative, the
+        first lap typed "out" when it starts at or before 0, the last typed
+        "in" when GPS puts the car more than 30 m from the TRK start/finish
+        at its end, and a final partial lap appended from the last LAP end to
+        end_of_data() when at least one lap was completed and data continues
+        past it. Lap numbers are normalised to start at 0.
+
+        Returns a list of dicts {num, start_time, end_time, lap_type}. Only
+        the LAP-message path is specified here; files without LAP messages
+        fall back to GPS cross-track detection in the backends and return []
+        from this method.
+        """
+        offset = self.time_offset()
+        nums, starts, ends, types = [], [], [], []
+        for lap in self.get_laps():
+            if lap["segment"] != 0:
+                continue
+            num, duration = lap["lap_num"], lap["duration"]
+            end = lap["end_time"] - offset
+            if nums:
+                if nums[-1] == num:
+                    continue
+                if nums[-1] + 2 == num:  # one lap number missing: infer it
+                    nums.append(num - 1)
+                    starts.append(ends[-1])
+                    ends.append(end - duration)
+                    types.append("full")
+                elif nums[-1] + 1 != num:
+                    raise ValueError(f"Lap gap from {nums[-1]} to {num}")
+            nums.append(num)
+            starts.append(end - duration)
+            ends.append(end)
+            types.append("full")
+        if not nums:
+            return []
+        if starts[0] <= 0:
+            types[0] = "out"
+        if types[-1] != "out" and self._distance_from_start_finish(ends[-1], offset) > 30.0:
+            types[-1] = "in"
+        end_of_data = self.end_of_data()
+        if len(nums) >= 2 and end_of_data is not None and end_of_data > ends[-1]:
+            # The lap that ended at a LAP message was completed, so it is
+            # "full"; the synthesized lap takes the "in" classification.
+            if types[-1] == "in":
+                types[-1] = "full"
+            nums.append(nums[-1] + 1)
+            starts.append(ends[-1])
+            ends.append(end_of_data)
+            types.append("in")
+        base = min(nums)
+        return [
+            {"num": n - base, "start_time": s, "end_time": e, "lap_type": t}
+            for n, s, e, t in zip(nums, starts, ends, types)
+        ]
+
+    def _distance_from_start_finish(self, when, offset):
+        """Metres from the TRK start/finish to the GPS position at session time `when`.
+
+        NaN (which compares False against any threshold) when there is no
+        TRK message, no GPS data, or the position at that time is unknown.
+        """
+        trk = self.messages_by_token("TRK")
+        samples = self.get_gps_samples()
+        if not trk or trk[-1].payload is None or not samples:
+            return math.nan
+        timecodes = reconstruct_gps_timecodes([s.timecode for s in samples])
+        timecodes = [t - offset for t in timecodes]
+        idx = min(sum(1 for t in timecodes if t < when), len(samples) - 1)
+        here = _lla_to_ecef(samples[idx].latitude, samples[idx].longitude)
+        start_finish = _lla_to_ecef(trk[-1].payload.sf_lat, trk[-1].payload.sf_long)
+        return math.dist(here, start_finish)
 
     def header_messages(self):
         """Return only header messages."""
