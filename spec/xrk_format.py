@@ -19,6 +19,7 @@ Usage:
 """
 
 import io
+import math
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -346,7 +347,54 @@ GPSPayload = Struct(
     "reserved1" / Int8ul,  # [50]    u-blox reserved
     "numSV" / Int8ul,  # [51]    Number of satellites used
     "reserved2" / Int32ul,  # [52:56] u-blox reserved
+    # --- Derived fields (not on the wire; Computed is skipped on build) ---
+    # Position: ECEF [cm] -> WGS-84 latitude/longitude [deg], altitude [m]
+    # via Vermeille (2003). An all-zero ECEF position is a record written
+    # before the receiver had a fix; it is reported as position unknown
+    # (NaN, NaN, NaN) rather than as 0 deg, 0 deg. Both backends implement
+    # this rule. See companion.md section 5 ("No-fix records").
+    "_lla" / Computed(lambda ctx: _ecef_to_lla(ctx.ecefX, ctx.ecefY, ctx.ecefZ)),
+    "latitude" / Computed(this._lla[0]),
+    "longitude" / Computed(this._lla[1]),
+    "altitude" / Computed(this._lla[2]),
+    # Speed over ground [m/s]: magnitude of the ECEF velocity vector [cm/s].
+    "speed"
+    / Computed(lambda ctx: math.sqrt(ctx.ecefVX**2 + ctx.ecefVY**2 + ctx.ecefVZ**2) / 100.0),
 )
+
+
+def _ecef_to_lla(x_cm, y_cm, z_cm):
+    """ECEF position [cm] -> (latitude deg, longitude deg, altitude m).
+
+    Closed-form WGS-84 conversion after H. Vermeille, "Direct transformation
+    from geocentric coordinates to geodetic coordinates" (2002/2003), the same
+    formulation both backends use (``gps.py:ecef2lla_vermeille2003``,
+    ``crates/libxrk/src/gps/utils.rs``). An all-zero position is "no fix" and
+    returns NaN for all three; the formula divides by zero there.
+    """
+    if x_cm == 0 and y_cm == 0 and z_cm == 0:
+        return (math.nan, math.nan, math.nan)
+    x, y, z = x_cm / 100.0, y_cm / 100.0, z_cm / 100.0
+    a = 6378137.0
+    e = 8.181919084261345e-2
+    e2 = e**2
+    e4 = e**4
+    p = (x * x + y * y) * (1 / (a * a))
+    q = ((1 - e * e) / (a * a)) * z * z
+    r = (p + q - e4) * (1 / 6)
+    s = (e4 / 4) * p * q / (r**3)
+    t = (1 + s + math.sqrt(s * (2 + s))) ** (1 / 3)
+    u = r * (1 + t + 1 / t)
+    v = math.sqrt(u * u + e4 * q)
+    u += v
+    w = (e2 / 2) * (u - q) / v
+    k = math.sqrt(u + w * w) - w
+    d = k * math.sqrt(x * x + y * y) / (k + e2)
+    rt_dd_zz = math.sqrt(d * d + z * z)
+    lat = (180 / math.pi) * 2 * math.atan2(z, d + rt_dd_zz)
+    lon = (180 / math.pi) * math.atan2(y, x)
+    alt = (k + e2 - 1) / k * rt_dd_zz
+    return (lat, lon, alt)
 
 
 def reconstruct_gps_timecodes(timecodes):
