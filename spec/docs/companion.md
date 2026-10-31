@@ -226,6 +226,29 @@ When LAP messages exist, they define lap boundaries directly:
 - Compute `start_time = end_time - duration`
 - Normalize to 0-based indexing
 
+#### Final partial lap
+
+When the recording runs past the last beacon crossing, the official AIM DLL
+reports one more lap, from the last LAP message's end to the **end of data**.
+Observed on 9 corpus files plus the SFJ 0101 and Suzuka 0090 fixtures:
+
+- it is added whenever at least one lap was completed (7 of 7 files with two
+  or more laps), and never when the out-lap is the only lap (2 of 2);
+- its end is the **header timecode of the last data message in file order**
+  (`(S`/`(G`/`(M`/`(c`), taken even when that message is truncated. Suzuka
+  0090 ends with an `(S` whose payload is cut off by the trailing RCR/VEH
+  frames; both backends discard the sample, but its header timecode is still
+  where the DLL ends the lap. This is not the maximum timecode over channels:
+  loggers buffer per channel, so a channel's final sample can sit earlier in
+  the file than another's and be up to tens of milliseconds later in time
+  (58 ms on Suzuka 0090). Only the file-order rule matches the DLL to the
+  millisecond. For an `(M` burst the header (first-sample) timecode is used;
+  no file in hand ends with one, so that detail is unverified.
+
+libxrk implements the same rule. The synthesized lap is typed `"in"`; the lap
+before it ended at a LAP message, so it is `"full"` even if the GPS-distance
+heuristic would have called it `"in"`.
+
 ### Fallback: GPS Cross-Track
 
 When no LAP messages exist, laps are detected from GPS by computing the
