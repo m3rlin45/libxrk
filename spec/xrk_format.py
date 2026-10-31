@@ -19,20 +19,25 @@ Usage:
 """
 
 import io
+import math
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NamedTuple
 
 from construct import (
+    Adapter,
     Array,
     Bytes,
     Check,
     Computed,
     Const,
+    Construct,
     ConstructError,
     Container,
     ExprAdapter,
+    Float16l,
+    FocusedSeq,
     Float32l,
     GreedyBytes,
     GreedyRange,
@@ -42,8 +47,10 @@ from construct import (
     Int32sl,
     Int32ul,
     PaddedString,
+    Padding,
     Peek,
     Rebuild,
+    RestreamData,
     Select,
     Struct,
     Switch,
@@ -159,6 +166,196 @@ DECODER_TABLE = {
     38: ("i", False),
     39: ("i", False),
 }
+
+
+class NonFiniteToNaN(Adapter):
+    """Float sample sentinel rule (companion.md section 3).
+
+    Loggers write IEEE infinities (and occasionally NaN) into float channels
+    as "no value": float16 0x7C00 on every sample of the official AIM
+    sample's External Voltage, float32 0xFF800000 on CAN channels during a bus
+    dropout. The AIM DLL returns 0.0 for those; libxrk reports NaN. Decoding
+    maps any non-finite value to NaN; encoding is the identity (the original
+    sentinel is not recoverable from NaN, and nothing builds sample values).
+    """
+
+    def _decode(self, obj, context, path):
+        return obj if math.isfinite(obj) else math.nan
+
+    def _encode(self, obj, context, path):
+        return obj
+
+    def vectorized(self, values):
+        import numpy as np
+
+        return np.where(np.isfinite(values), values, np.nan)
+
+
+class GearLookup(Adapter):
+    """Decoder 15: the raw uint16 is an ASCII gear character ('N', '1'..'6')."""
+
+    _DECODE = {ord("N"): 0, **{ord(c): int(c) for c in "123456"}}
+    _ENCODE = {v: k for k, v in _DECODE.items()}
+
+    def _decode(self, obj, context, path):
+        return self._DECODE.get(obj, obj)
+
+    def _encode(self, obj, context, path):
+        return self._ENCODE.get(obj, obj)
+
+    def vectorized(self, values):
+        import numpy as np
+
+        lut = np.arange(65536, dtype=np.float64)
+        for raw, gear in self._DECODE.items():
+            lut[raw] = gear
+        return lut[values.astype(np.uint16)]
+
+
+class MilliToUnit(Adapter):
+    """Unit type 21 with the calibrated flag: stored in mV, displayed in V."""
+
+    def _decode(self, obj, context, path):
+        return obj / 1000.0
+
+    def _encode(self, obj, context, path):
+        return obj * 1000.0
+
+    def vectorized(self, values):
+        return values / 1000.0
+
+
+# Sample codecs: decoder_type -> Construct that parses ONE raw sample into its
+# displayed value. This is the executable form of DECODER_TABLE's struct
+# column plus the fixups companion.md section 3 describes; both backends
+# conform to it (test_spec.py compares every sample of every fixture).
+_I32 = Int32sl
+SAMPLE_CODECS = {
+    0: _I32,  # Master Clock (M4GT4)
+    1: Int16ul,  # plain uint16 (e.g. StartRec)
+    3: _I32,  # Master Clock (ScottE46)
+    4: Int16sl,
+    6: NonFiniteToNaN(Float32l),  # standard float
+    8: _I32,  # iGPS reference
+    11: Int16sl,
+    12: _I32,  # Predictive Time
+    13: Int8ul,  # status field
+    15: GearLookup(Int16ul),  # gear as ASCII character
+    20: NonFiniteToNaN(Float16l),  # float16, the common analog encoding
+    22: _I32,  # Lap Time (variant)
+    24: _I32,  # Best Run Diff
+    26: _I32,  # Total Odometer
+    27: _I32,  # Reset Odometer
+    31: _I32,  # Lap Time
+    32: _I32,  # Roll Time
+    33: _I32,  # Best Time
+    37: _I32,  # GPS_Hours
+    38: _I32,  # GPS_Date
+    39: _I32,  # GPS_Time
+}
+
+
+def channel_sample_codec(chs):
+    """The Construct that decodes one raw sample of a CHS channel, or None.
+
+    Wraps the decoder's codec in MilliToUnit when the channel's resolved unit
+    is "V" (unit type 21 with the calibrated flag), matching both backends.
+    """
+    codec = SAMPLE_CODECS.get(chs.decoder_type)
+    if codec is None:
+        return None
+    if chs.units == "V":
+        codec = MilliToUnit(codec)
+    return codec
+
+
+def _codec_layers(codec):
+    """Split a sample codec into (base FormatField, adapters innermost-first)."""
+    adapters = []
+    while isinstance(codec, Adapter):
+        adapters.append(codec)
+        codec = codec.subcon
+    return codec, list(reversed(adapters))
+
+
+def _numpy_dtype(formatfield):
+    """numpy dtype for a little-endian Construct FormatField.
+
+    Not ``np.dtype(fmtstr)``: struct's "l" is 4 bytes but numpy's "l" is the
+    platform C long (8 bytes on 64-bit Linux). Width comes from sizeof(),
+    kind from the format character.
+    """
+    import numpy as np
+
+    char = formatfield.fmtstr[-1]
+    kind = "f" if char in "efd" else ("i" if char.islower() else "u")
+    return np.dtype(f"<{kind}{formatfield.sizeof()}")
+
+
+def channel_stream(chs, width=None):
+    """The Construct that parses a channel's whole sample stream.
+
+    A stream is ``GreedyRange`` of the channel's sample codec, each sample in
+    a slot ``width`` bytes wide (``CHS.data_size``; a slot may be wider than
+    the codec, e.g. Lap Time has data_size 20 with an int32 codec, and the
+    trailing bytes are padding). ``decode_channel_values`` is the vectorised
+    equivalent; test_spec.py asserts they agree.
+    """
+    codec = channel_sample_codec(chs)
+    if codec is None:
+        return None
+    width = width or codec.sizeof()
+    pad = width - codec.sizeof()
+    if pad < 0:
+        return None
+    return GreedyRange(FocusedSeq("value", "value" / codec, Padding(pad)))
+
+
+def decode_channel_values(raw_samples, chs, width=None):
+    """Decode a channel's samples to a float64 numpy array, in bulk.
+
+    Semantically ``channel_stream(chs, width).parse(stream)`` (test_spec.py
+    asserts the two agree), but vectorised: the base FormatField gives the
+    numpy dtype and each Adapter layer supplies its ``vectorized`` form. The
+    86 fixture has ~40M samples.
+
+    ``raw_samples`` is either the contiguous stream (bytes/bytearray; slot
+    width ``width``, default the codec width) or a list of per-sample byte
+    strings. Returns None if the decoder is unknown or a sample is shorter
+    than the codec; wider samples decode their leading bytes.
+    """
+    import numpy as np
+
+    codec = channel_sample_codec(chs)
+    if codec is None:
+        return None
+    base, adapters = _codec_layers(codec)
+    size = base.sizeof()
+    dtype = _numpy_dtype(base)
+    if isinstance(raw_samples, (bytes, bytearray, memoryview)):
+        width = width or size
+        buf = bytes(raw_samples)
+        if width < size or len(buf) % width:
+            return None
+        rows = np.frombuffer(buf, dtype=np.uint8).reshape(-1, width)
+        raw = np.ascontiguousarray(rows[:, :size]).view(dtype).reshape(-1)
+    else:
+        if not raw_samples:
+            return np.zeros(0, dtype=np.float64)
+        lengths = set(map(len, raw_samples))
+        if min(lengths) < size:
+            return None
+        if len(lengths) == 1:
+            slot = lengths.pop()
+            rows = np.frombuffer(b"".join(raw_samples), dtype=np.uint8).reshape(-1, slot)
+            raw = np.ascontiguousarray(rows[:, :size]).view(dtype).reshape(-1)
+        else:
+            raw = np.frombuffer(b"".join(s[:size] for s in raw_samples), dtype=dtype)
+    values = raw.astype(np.float64)
+    for adapter in adapters:
+        values = adapter.vectorized(values)
+    return values
+
 
 # Logger model ID to name mapping (from _aim_xrk_cy.pyx:141-144)
 LOGGER_MODELS = {
@@ -606,10 +803,34 @@ HeaderMessage = Struct(
 # Data Message Structs (complete, self-contained with opcode + terminator)
 # ---------------------------------------------------------------------------
 
+
 # (S — Single channel sample
 # Reference: _aim_xrk_cy.pyx data handling
 # Note: Check removed and Bytes uses `this` expressions to enable Construct .compile().
 # Invalid channel_index raises KeyError (caught alongside ConstructError in _parse_sequence).
+class _GroupLayout(Construct):
+    """A G payload's member layout, selected by ``group_index`` at parse time.
+
+    Equivalent to ``Switch(this.group_index, cases)`` whose cases are the
+    GRP messages seen so far in this parse: ``_register_grp`` builds, for each
+    group, ``Struct("<channel_index>" / Bytes(CHS.data_size), ...)`` in GRP
+    order and stores it in ``_params.group_layouts``. A plain Switch cannot
+    express this because the layouts only exist once the CNF has been parsed.
+    """
+
+    def _layout(self, context):
+        return context._params.group_layouts[context.group_index]
+
+    def _parse(self, stream, context, path):
+        return self._layout(context)._parsereport(stream, context, path)
+
+    def _build(self, obj, stream, context, path):
+        return self._layout(context)._build(obj, stream, context, path)
+
+    def _sizeof(self, context, path):
+        return self._layout(context)._sizeof(context, path)
+
+
 SMessage = Struct(
     Const(b"\x28\x53"),  # '(S'
     "msg_type" / Computed("S"),
@@ -627,6 +848,10 @@ GMessage = Struct(
     "timecode" / Int32sl,
     "group_index" / Int16ul,
     "data" / Bytes(this._params.group_sizes[this.group_index]),
+    # The payload is the group's member channels' samples concatenated in GRP
+    # order, each CHS.data_size wide: a Struct built from the GRP message
+    # (see _register_grp) and selected by group_index at parse time.
+    "samples" / RestreamData(this.data, _GroupLayout()),
     Const(b"\x29"),  # ')'
 )
 GMessageCompiled = GMessage.compile()
@@ -639,6 +864,14 @@ MMessage = Struct(
     "channel_index" / Int16ul,
     "count" / Int16ul,
     "data" / Bytes(this._params.channel_sizes[this.channel_index] * this.count),
+    # The burst is `count` consecutive samples of the channel, each
+    # CHS.data_size wide, at Mms intervals from `timecode` (companion.md
+    # section 4). RestreamData re-reads `data` so the raw bytes stay available
+    # for byte-identical rebuilds.
+    "samples"
+    / RestreamData(
+        this.data, Array(this.count, Bytes(this._params.channel_sizes[this.channel_index]))
+    ),
     Const(b"\x29"),  # ')'
 )
 MMessageCompiled = MMessage.compile()
@@ -754,6 +987,48 @@ def _on_data(obj, ctx):
     """Post-parse hook: collect data message into result."""
     result = ctx._params.result
     result.messages.append(ParsedMessage(obj.msg_type, parsed=_container_to_dict(obj)))
+    _accumulate(obj, result)
+
+
+def _accumulate(obj, result):
+    """Route a data message's samples into per-channel streams.
+
+    Data messages interleave channels and may repeat, so a channel's samples
+    exist only after this pass (companion.md section 3, "Sample streams").
+    One accumulator per message family, G per group and S, c, M per channel;
+    a message is accepted only when its timecode is strictly greater than
+    the accumulator's last accepted one. An M burst overlapping the accepted
+    stream contributes only its samples past the overlap. The streams are
+    contiguous bytes, one CHS.data_size slot per sample, decoded by
+    ParseResult.channel_values() with the channel's codec. V2/V3 (c) messages
+    are not streamed here: their channel is only known after
+    _resolve_c_variants.
+    """
+    tc = obj.timecode
+    last = result._last_accepted
+    if obj.msg_type == "S" or (obj.msg_type == "c" and obj.variant == "V1"):
+        key = (obj.msg_type, obj.channel_index)
+        if tc > last.get(key, -1):
+            last[key] = tc
+            result.streams.setdefault(obj.channel_index, bytearray()).extend(obj.data)
+    elif obj.msg_type == "M":
+        key = ("M", obj.channel_index)
+        mms = result.channel_mms.get(obj.channel_index, 0)
+        prev = last.get(key, -1)
+        skip = (prev - tc) // mms + 1 if tc <= prev and mms > 0 else 0
+        if skip >= obj.count:
+            return
+        last[key] = tc + (obj.count - 1) * mms
+        stream = result.streams.setdefault(obj.channel_index, bytearray())
+        for sample in obj.samples[skip:]:
+            stream.extend(sample)
+    elif obj.msg_type == "G":
+        key = ("G", obj.group_index)
+        if tc > last.get(key, -1):
+            last[key] = tc
+            for channel_index, sample in obj.samples.items():
+                if not channel_index.startswith("_"):
+                    result.streams.setdefault(int(channel_index), bytearray()).extend(sample)
 
 
 # ---------------------------------------------------------------------------
@@ -802,6 +1077,15 @@ def _register_grp(parsed, result):
     idx = parsed.index
     result.groups[idx] = parsed
     result.group_sizes[idx] = sum(result.channel_sizes.get(ch, 0) for ch in parsed.channel_indices)
+    # Member layout of this group's G payloads, consumed by _GroupLayout.
+    # Members without a CHS contribute no bytes, as in both backends.
+    result.group_layouts[idx] = Struct(
+        *(
+            str(ch) / Bytes(result.channel_sizes[ch])
+            for ch in parsed.channel_indices
+            if ch in result.channel_sizes
+        )
+    )
 
 
 def _merge_cnf_result(sub, result):
@@ -1221,6 +1505,12 @@ class ParseResult:
     # channel_field observed in a V2 or V3 message to the CHS channel index
     # it carries data for. See _resolve_c_variants() below for the rule.
     expansion_channel_map: dict = field(default_factory=dict)  # {channel_field: channel_index}
+    # G payload layouts by group_index (Structs built by _register_grp).
+    group_layouts: dict = field(default_factory=dict)
+    # Per-channel sample streams from the accumulation pass (_accumulate):
+    # {channel_index: bytearray}, one CHS.data_size slot per sample.
+    streams: dict = field(default_factory=dict)
+    _last_accepted: dict = field(default_factory=dict)  # {(family, index): timecode}
 
     def header_messages(self):
         """Return only header messages."""
@@ -1283,6 +1573,36 @@ class ParseResult:
             out[idx] = base if k == 1 else f"{base} dup {k}"
         return out
 
+    def channel_samples(self):
+        """Each channel's raw samples in order: {channel_index: [bytes]}.
+
+        The accumulated stream (see _accumulate) split into CHS.data_size
+        slots. channel_values() is the decoded form.
+        """
+        out = {}
+        for idx, stream in self.streams.items():
+            width = self.channel_sizes[idx]
+            data = bytes(stream)
+            out[idx] = [data[i : i + width] for i in range(0, len(data), width)]
+        return out
+
+    def channel_values(self):
+        """Each channel's decoded values as a float64 numpy array.
+
+        The accumulated stream of each channel through its sample codec
+        (channel_sample_codec / decode_channel_values). Channels whose
+        decoder type has no codec are omitted. Returns {channel_index: array}.
+        """
+        out = {}
+        for idx, stream in self.streams.items():
+            chs = self.channels.get(idx)
+            if chs is None:
+                continue
+            values = decode_channel_values(stream, chs, width=self.channel_sizes[idx])
+            if values is not None:
+                out[idx] = values
+        return out
+
     def get_gps_samples(self):
         """Return parsed GPS samples as list of Containers."""
         return [p for raw in self.gps_payloads if (p := _parse_payload(GPSPayload, raw))]
@@ -1317,6 +1637,7 @@ def _parse_sequence(data, _depth=0):
         result=result,
         channel_sizes=result.channel_sizes,
         group_sizes=result.group_sizes,
+        group_layouts=result.group_layouts,
         depth=_depth,
     )
     result.leftover_bytes = len(data) - stream.tell()
