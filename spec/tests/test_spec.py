@@ -331,6 +331,67 @@ class TestLAPCrossValidation:
         # the backends read the absolute end time at [28:32].
         assert len(_unique_seg0_laps(aim_official_parsed)) == len(aim_official_backend.laps)
 
+    _LAP_TABLE_FIXTURES = [
+        "sfj",
+        "sfj_0101",
+        "sfj_suzuka",
+        "file_86",
+        "aim_official",
+        "issue49",
+        "issue68",
+        "issue84",
+    ]
+
+    @staticmethod
+    def _backend_lap_table(log):
+        t = log.laps
+        return [
+            {"num": n, "start_time": s, "end_time": e, "lap_type": k}
+            for n, s, e, k in zip(
+                t.column("num").to_pylist(),
+                t.column("start_time").to_pylist(),
+                t.column("end_time").to_pylist(),
+                t.column("lap_type").to_pylist(),
+            )
+        ]
+
+    @pytest.mark.parametrize("name", _LAP_TABLE_FIXTURES)
+    def test_lap_table_matches_backend(self, name, backend, request):
+        # `backend` is requested directly so its session params are defined
+        # for this test; getfixturevalue alone cannot parametrize.
+        """ParseResult.lap_table() is the lap table both backends expose:
+        numbers, session-relative times and out/full/in types, including the
+        final partial lap on SFJ 0101 and Suzuka 0090 (companion.md
+        section 7). Runs once per backend via the session `backend` param."""
+        parsed = request.getfixturevalue(f"{name}_parsed")
+        log = request.getfixturevalue(f"{name}_backend")
+        spec = parsed.lap_table()
+        if not spec:
+            pytest.skip("no LAP messages: GPS cross-track fallback is not specified")
+        assert spec == self._backend_lap_table(log)
+
+    @pytest.mark.parametrize("name", ["sfj", "file_86", "aim_official", "sfj_0101", "sfj_suzuka"])
+    def test_lap_table_matches_dll(self, name, request):
+        """The spec's lap table reproduces the official DLL's lap table to the
+        millisecond, including the trailing partial lap the DLL adds on SFJ
+        0101 and Suzuka 0090 and omits on files that end at a crossing."""
+        parsed = request.getfixturevalue(f"{name}_parsed")
+        dll = request.getfixturevalue(f"{name}_dll")
+        spec = [(l["start_time"], l["end_time"]) for l in parsed.lap_table()]
+        assert spec == [(l["start_ms"], l["end_ms"]) for l in dll["laps"]]
+
+    def test_end_of_data_counts_a_truncated_trailing_header(self, sfj_suzuka_parsed):
+        """Suzuka 0090 ends with an (S whose body is cut off by the trailing
+        RCR/VEH frames. No whole message carries that timecode (the last
+        complete data message is 58 ms later in time but earlier in the
+        file), yet the DLL ends the final lap exactly there. The header-only
+        fallback in XRKMessage makes the spec agree."""
+        parsed = sfj_suzuka_parsed
+        assert parsed.end_of_data() == 1823303
+        whole = [m.parsed["timecode"] for m in parsed.messages if m.msg_type in "SGMc"]
+        assert whole[-1] - parsed.time_offset() == 1823361
+        assert max(whole) - parsed.time_offset() > parsed.end_of_data()
+
     def test_sfj_lap_times(self, sfj_parsed, sfj_backend):
         """SFJ lap end_time and duration should produce matching start/end times."""
         unique = _unique_seg0_laps(sfj_parsed)

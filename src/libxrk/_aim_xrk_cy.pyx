@@ -18,6 +18,7 @@ import zlib
 
 import cython
 from cython.operator cimport dereference
+from libcpp.optional cimport nullopt, optional
 from libcpp.vector cimport vector
 
 import pyarrow as pa
@@ -386,6 +387,10 @@ def _decode_sequence(s, progress=None):
     last_v2_base_tc = {}   # base_cf -> (tc, file_pos)
     last_v2_plus4_tc = {}  # plus4_cf -> (tc, file_pos)
     c_var_pos: cython.int = 0
+    # Timecode of the last data message in file order (S/G/M/c). The AIM DLL
+    # ends its final, partial lap here -- not at the max timecode over
+    # channels. See spec/docs/companion.md section 7.
+    last_data_tc: optional[cython.int] = nullopt
     while pos < len_s:
         try:
             while True:
@@ -399,6 +404,11 @@ def _decode_sequence(s, progress=None):
                     data_p = &dereference(data_cat)[msg.s.index]
                     if data_p >= &dereference(data_cat.end()):
                         raise IndexError
+                    # End-of-data bookkeeping happens before the size/framing
+                    # check on purpose: the AIM DLL takes the header timecode of
+                    # the final message in the file even when that message is
+                    # truncated (the Suzuka 0090 fixture ends mid-sample).
+                    last_data_tc = msg.s.timecode
                     pos += data_p.add_helper
                     last = &sv[pos-1]
                     if last[0] != ord_cp:
@@ -416,6 +426,7 @@ def _decode_sequence(s, progress=None):
                     if data_p.Mms == 0:
                         raise ValueError('No ms understood for channel %s' %
                                          channels[msg.s.index].long_name)
+                    last_data_tc = msg.s.timecode  # header tc; see the S/G note above
                     pos += data_p.add_helper * msg.s.count + 10
                     if sv[pos] != ord_cp:
                         raise ValueError("%s at %x" % (chr(s[pos]), pos))
@@ -446,6 +457,7 @@ def _decode_sequence(s, progress=None):
                         data_p = &dereference(data_cat)[msg.c.channel >> 3]
                         if data_p >= &dereference(data_cat.end()):
                             raise IndexError
+                        last_data_tc = msg.c.timecode
                         pos += data_p.add_helper
                         last = &sv[pos-1]
                         if last[0] != ord_cp:
@@ -461,6 +473,7 @@ def _decode_sequence(s, progress=None):
                         # for base ch_field (low nibble 0/8), or (tc-2, tc-4)
                         # for +4 ch_field (low nibble 4/c). See
                         # spec/docs/unknown_regions.md for the derivation.
+                        last_data_tc = msg.c.timecode
                         if pos + 16 > len_s:
                             raise IndexError
                         if sv[pos+15] != ord_cp:
@@ -929,6 +942,7 @@ def _decode_sequence(s, progress=None):
                 for data_byte in samples_dict[row_tc][0]:
                     data_p.data.push_back(data_byte)
 
+    end_of_data = None
     # Compute time_offset and last_time from raw gc_data buffers and GPS data.
     # Channel timecodes are not yet populated (process_channel runs later), so we
     # scan the accumulated raw data vectors directly.
@@ -958,6 +972,8 @@ def _decode_sequence(s, progress=None):
             tc_max_candidates.append(tc_ptr[0])
         time_offset = int(min(tc_min_candidates, default=0))
         last_time = int(max(tc_max_candidates, default=0))
+        if last_data_tc.has_value():
+            end_of_data = int(last_data_tc.value()) - time_offset
     def process_group(g):
         g.samples = np.array([], dtype=np.int32)
         g.timecodes = g.samples.data
@@ -1050,7 +1066,7 @@ def _decode_sequence(s, progress=None):
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(2, os.cpu_count())) as worker:
             bg_work = worker.submit(_bg_gps_laps, <cython.uchar[:gpsmsg.size()]> &gpsmsg[0],
                                     <cython.uchar[:gnfimsg.size()]> &gnfimsg[0] if gnfimsg.size() else None,
-                                    messages, time_offset, last_time)
+                                    messages, time_offset, last_time, end_of_data)
             group_work = worker.map(process_group, [x for x in groups if x])
             channel_work = worker.map(process_channel,
                                       [x for x in channels if x and not x.group])
@@ -1070,7 +1086,7 @@ def _decode_sequence(s, progress=None):
         gps_ch, laps, has_lap_messages, gnfi_timecodes = _bg_gps_laps(
             <cython.uchar[:gpsmsg.size()]> &gpsmsg[0],
             <cython.uchar[:gnfimsg.size()]> &gnfimsg[0] if gnfimsg.size() else None,
-            messages, time_offset, last_time)
+            messages, time_offset, last_time, end_of_data)
         channels.extend(gps_ch)
 
     # Disambiguate duplicate long_names following the AIM DLL convention:
@@ -1200,7 +1216,7 @@ def _get_metadata(msg_by_type, channels=None):
             ret['Calibrations'] = calibrations
     return ret
 
-def _bg_gps_laps(gpsmsg, gnfimsg, msg_by_type, time_offset, last_time):
+def _bg_gps_laps(gpsmsg, gnfimsg, msg_by_type, time_offset, last_time, end_of_data=None):
     channels = _decode_gps(gpsmsg, time_offset)
     gnfi_timecodes = _decode_gnfi(gnfimsg, time_offset)
     lat_ch = None
@@ -1208,7 +1224,8 @@ def _bg_gps_laps(gpsmsg, gnfimsg, msg_by_type, time_offset, last_time):
     for ch in channels:
         if ch.long_name == 'GPS Latitude': lat_ch = ch
         if ch.long_name == 'GPS Longitude': lon_ch = ch
-    laps, has_lap_messages = _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time)
+    laps, has_lap_messages = _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time,
+                                       end_of_data)
     return channels, laps, has_lap_messages, gnfi_timecodes
 
 def _decode_gps(gpsmsg, time_offset):
@@ -1378,7 +1395,7 @@ def _decode_gnfi(gnfimsg, time_offset):
     return timecodes
 
 
-def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
+def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time, end_of_data=None):
     lap_nums = []
     start_times = []
     end_times = []
@@ -1439,6 +1456,23 @@ def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time):
                 dist = float(np.linalg.norm(sf_xyz - end_xyz))
                 if dist > 30.0:
                     lap_types[-1] = 'in'
+
+        # Final partial lap. When the recording runs past the last beacon
+        # crossing, the AIM DLL reports one more lap from that crossing to
+        # the end of data -- provided at least one lap was completed (it adds
+        # nothing when the out-lap is the only lap). "End of data" is the
+        # timecode of the last data message in file order, not the max over
+        # channels (they differ by tens of ms on buffered loggers). A lap that
+        # ends at a LAP message is complete, so it is "full" and the
+        # synthesized lap takes the "in" classification. See
+        # spec/docs/companion.md section 7 ("Final partial lap").
+        if len(lap_nums) >= 2 and end_of_data is not None and end_of_data > end_times[-1]:
+            if lap_types[-1] == 'in':
+                lap_types[-1] = 'full'
+            lap_nums.append(lap_nums[-1] + 1)
+            start_times.append(end_times[-1])
+            end_times.append(end_of_data)
+            lap_types.append('in')
 
     elif lat_ch and lon_ch:
         # Fall back to GPS-based lap detection only when no LAP messages exist
