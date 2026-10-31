@@ -14,11 +14,11 @@ from setuptools.command.build_ext import build_ext as _build_ext
 
 import numpy as np
 
-# MSVC (Windows) defaults to C++14, GCC/Clang need explicit flag
+# C++17 for std::optional (MSVC defaults to C++14; GCC/Clang need the flag too).
 if platform.system() == "Windows":
-    extra_compile_args = []
+    extra_compile_args = ["/std:c++17"]
 else:
-    extra_compile_args = ["-std=c++11"]
+    extra_compile_args = ["-std=c++17"]
 
 extensions = [
     Extension(
