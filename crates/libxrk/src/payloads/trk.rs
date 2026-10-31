@@ -1,6 +1,6 @@
 //! TRK — Track Info (min 44 bytes).
 //!
-//! Reference: aim_xrk.pyx:618-621, spec/xrk_format.py:335-347.
+//! Reference: _aim_xrk_cy.pyx:618-621, spec/xrk_format.py:335-347.
 
 use crate::messages::nullterm_string;
 

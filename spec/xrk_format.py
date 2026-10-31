@@ -10,7 +10,7 @@ serves as:
 
 The format is reverse-engineered from AIM MXP/MXm data loggers. Field names and
 semantics are inferred from observed data and cross-referenced with the Cython
-parser in src/libxrk/aim_xrk.pyx.
+parser in src/libxrk/_aim_xrk_cy.pyx.
 
 Usage:
     from spec.xrk_format import parse_xrk_file, parse_xrk_bytes
@@ -58,7 +58,7 @@ from construct import (
 def _tokdec(s):
     """Encode a token string to a uint32 LE integer.
 
-    Matches aim_xrk.pyx:181-183.  Token strings are 3 or 4 ASCII characters
+    Matches _aim_xrk_cy.pyx:181-183.  Token strings are 3 or 4 ASCII characters
     stored as little-endian uint32.  3-char tokens are padded with a trailing
     space (0x20) by the logger; we strip that on decode.
     """
@@ -70,7 +70,7 @@ def _tokdec(s):
 def _tokenc(i):
     """Decode a uint32 LE integer to a token string.
 
-    Matches aim_xrk.pyx:185-190.
+    Matches _aim_xrk_cy.pyx:185-190.
     """
     s = ""
     while i:
@@ -106,7 +106,7 @@ _STRING = object()  # Sentinel for null-terminated string decode
 
 
 # Unit type map: unit_type_byte -> (unit_string, decimal_points)
-# From aim_xrk.pyx:146-171
+# From _aim_xrk_cy.pyx:146-171
 UNIT_MAP = {
     1: ("%", 2),
     3: ("g", 2),
@@ -135,7 +135,7 @@ UNIT_MAP = {
 }
 
 # Decoder type table: decoder_type -> (struct_format, interpolate)
-# From aim_xrk.pyx:111-137
+# From _aim_xrk_cy.pyx:111-137
 DECODER_TABLE = {
     0: ("i", False),
     1: ("H", True),  # float16 encoded as uint16
@@ -160,7 +160,7 @@ DECODER_TABLE = {
     39: ("i", False),
 }
 
-# Logger model ID to name mapping (from aim_xrk.pyx:141-144)
+# Logger model ID to name mapping (from _aim_xrk_cy.pyx:141-144)
 LOGGER_MODELS = {
     649: "MXP 1.3",
     793: "MXm",
@@ -247,7 +247,7 @@ def _nullterm(data, encoding="ascii"):
 
 
 # CHS — Channel Definition (112 bytes)
-# Reference: aim_xrk.pyx:424-516, CHS layout comment at :439-472
+# Reference: _aim_xrk_cy.pyx:424-516, CHS layout comment at :439-472
 CHSPayload = Struct(
     "index" / Int16ul,  # [0:2]    channel index
     "_pad_2_4" / Bytes(2),  # [2:4]    padding (expected zero)
@@ -316,7 +316,7 @@ CHSPayload = Struct(
 
 
 # GRP — Group Definition (variable size)
-# Reference: aim_xrk.pyx:418-421
+# Reference: _aim_xrk_cy.pyx:418-421
 GRPPayload = Struct(
     "index" / Int16ul,
     "count" / Int16ul,
@@ -325,7 +325,7 @@ GRPPayload = Struct(
 
 
 # GPS — GPS Message (56 bytes)
-# Reference: aim_xrk.pyx:884-911
+# Reference: _aim_xrk_cy.pyx:884-911
 # 4-byte AIM timecode + 52-byte u-blox NAV-SOL payload
 GPSPayload = Struct(
     "timecode" / Int32sl,  # [0:4]   AIM logger time [ms]
@@ -397,7 +397,7 @@ def reconstruct_gps_timecodes(timecodes):
 
 
 # GNFI — Logger Internal Clock (32 bytes)
-# Reference: aim_xrk.pyx:1012-1035
+# Reference: _aim_xrk_cy.pyx:1012-1035
 GNFIPayload = Struct(
     "timecode" / Int32sl,  # [0:4]   Logger timecode
     "_unknown" / Bytes(28),  # [4:32]  Other data (not used for timing)
@@ -405,7 +405,7 @@ GNFIPayload = Struct(
 
 
 # LAP — Lap Marker (20 bytes for version 0/1, 32 bytes for version 2)
-# Reference: aim_xrk.pyx:517-521, 1038-1047
+# Reference: _aim_xrk_cy.pyx:517-521, 1038-1047
 #
 # Version 2 (observed on the AIM official sample, message version byte = 2)
 # extends the payload to 32 bytes and MOVES the absolute lap end time to
@@ -433,7 +433,7 @@ LAPPayload = Struct(
 
 
 # CDE — Channel-Device Entry (6 bytes)
-# Reference: aim_xrk.pyx:422-423
+# Reference: _aim_xrk_cy.pyx:422-423
 CDEPayload = Struct(
     "channel_index" / Int16ul,  # [0:2]
     "session_uid" / Int32ul,  # [2:6]
@@ -441,7 +441,7 @@ CDEPayload = Struct(
 
 
 # CAL — Calibration (40-byte fixed prefix + variable rest)
-# Reference: aim_xrk.pyx:585-603
+# Reference: _aim_xrk_cy.pyx:585-603
 CALPayload = Struct(
     "_prefix" / Bytes(8),  # [0:8]   unknown prefix
     "_u32_8" / Int32ul,  # [8:12]  expected to be 1
@@ -456,7 +456,7 @@ CALPayload = Struct(
 
 
 # idn — Logger Identity (min 10 bytes)
-# Reference: aim_xrk.pyx:527-534
+# Reference: _aim_xrk_cy.pyx:527-534
 IDNPayload = Struct(
     "model_id" / Int16ul,  # [0:2]   model ID
     "_pad_2_6" / Bytes(4),  # [2:6]   unknown
@@ -466,7 +466,7 @@ IDNPayload = Struct(
 
 
 # TRK — Track Info (min 44 bytes)
-# Reference: aim_xrk.pyx:606-609
+# Reference: _aim_xrk_cy.pyx:606-609
 TRKPayload = Struct(
     "name" / PaddedString(32, "ascii"),  # [0:32]  track name, null-terminated ASCII
     "_pad" / Bytes(4),  # [32:36] unknown
@@ -483,7 +483,7 @@ TRKPayload = Struct(
 
 
 # GPSR — GPS Receiver (36 bytes)
-# Reference: aim_xrk.pyx:548-558
+# Reference: _aim_xrk_cy.pyx:548-558
 GPSRPayload = Struct(
     "_prefix" / Bytes(4),  # [0:4]   unknown
     "type" / PaddedString(4, "ascii"),  # [4:8]   GPS type string
@@ -495,7 +495,7 @@ GPSRPayload = Struct(
 
 
 # ODO — Odometer Record (64 bytes per record)
-# Reference: aim_xrk.pyx:610-619
+# Reference: _aim_xrk_cy.pyx:610-619
 ODORecord = Struct(
     "name" / PaddedString(16, "ascii"),  # [0:16]  record name, null-terminated ASCII
     "time" / Int32ul,  # [16:20] time value
@@ -512,7 +512,7 @@ ODOPayload = Struct(
 
 
 # EmbeddedIDNPayload — Shared by iSLV and SRC (embedded idn at offset 6)
-# Reference: aim_xrk.pyx:535-545 (iSLV), :560-567 (SRC)
+# Reference: _aim_xrk_cy.pyx:535-545 (iSLV), :560-567 (SRC)
 EmbeddedIDNPayload = Struct(
     "_idn_tag" / Const(b"idn"),  # [0:3]  "idn" ASCII marker
     "_gap" / Bytes(3),  # [3:6]  gap
@@ -524,7 +524,7 @@ EmbeddedIDNPayload = Struct(
 
 
 # RACM — Race Mode (string or flag byte)
-# Reference: aim_xrk.pyx race mode handling
+# Reference: _aim_xrk_cy.pyx race mode handling
 RACMPayload = Struct(
     "_raw" / GreedyBytes,
     "mode"
@@ -542,7 +542,7 @@ RACMPayload = Struct(
 )
 
 # VET — Vehicle Electronics Type (string or value byte)
-# Reference: aim_xrk.pyx VET handling (mirrors RACM dual-form pattern)
+# Reference: _aim_xrk_cy.pyx VET handling (mirrors RACM dual-form pattern)
 VETPayload = Struct(
     "_raw" / GreedyBytes,
     "mode"
@@ -564,7 +564,7 @@ VETPayload = Struct(
 # Header Message (self-validating Struct with inline checks)
 # ---------------------------------------------------------------------------
 
-# Reference: aim_xrk.pyx:215-226
+# Reference: _aim_xrk_cy.pyx:215-226
 #   '<h'          opcode (2 bytes: 0x3C 0x68)
 #   token         uint32 LE (3-char tokens have trailing space 0x20)
 #   payload_len   int32 LE
@@ -607,7 +607,7 @@ HeaderMessage = Struct(
 # ---------------------------------------------------------------------------
 
 # (S — Single channel sample
-# Reference: aim_xrk.pyx data handling
+# Reference: _aim_xrk_cy.pyx data handling
 # Note: Check removed and Bytes uses `this` expressions to enable Construct .compile().
 # Invalid channel_index raises KeyError (caught alongside ConstructError in _parse_sequence).
 SMessage = Struct(

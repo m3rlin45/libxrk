@@ -1,7 +1,7 @@
 //! Metadata extraction from parsed header messages.
 //!
 //! Returns typed Rust structs instead of PyDict.
-//! Equivalent to `_get_metadata()` in aim_xrk.pyx:805-897.
+//! Equivalent to `_get_metadata()` in _aim_xrk_cy.pyx:805-897.
 
 use std::collections::HashMap;
 

@@ -19,6 +19,14 @@ Main Components:
 Backend Selection:
     Set LIBXRK_BACKEND=rust to use the Rust parser (preview).
     Default is Cython.
+
+    The two parsers are the private modules ``libxrk._aim_xrk_cy`` and
+    ``libxrk._aim_xrk_rs``; only the selected one is imported. The public
+    name ``libxrk.aim_xrk`` is always the function, never a module: if a
+    submodule shared that name, its first import would rebind the package
+    attribute to the module object (Python binds a submodule to its parent on
+    first load), silently breaking ``from libxrk import aim_xrk`` for every
+    later importer in the process.
 """
 
 import os as _os
@@ -28,7 +36,7 @@ _backend = _os.environ.get("LIBXRK_BACKEND", "").lower()
 if _backend == "rust":
     from ._aim_xrk_rs import aim_xrk, aim_track_dbg
 else:
-    from .aim_xrk import aim_xrk, aim_track_dbg
+    from ._aim_xrk_cy import aim_xrk, aim_track_dbg
 
 from .base import ChannelMetadata, LogFile
 from .gps import GPS_CHANNEL_NAMES

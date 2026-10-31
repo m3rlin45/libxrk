@@ -10,6 +10,8 @@ import numpy as np
 
 from libxrk import aim_xrk
 from libxrk.base import LogFile
+from libxrk._aim_xrk_cy import aim_xrk as cython_aim_xrk
+from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
 
 
 # Path to test data
@@ -214,17 +216,6 @@ class TestFileInput(unittest.TestCase):
         self.assertGreater(len(log.channels), 0)
 
 
-def _rust_backend_available() -> bool:
-    """Check if the Rust backend extension is importable."""
-    try:
-        import libxrk._aim_xrk_rs  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
-
-
-@unittest.skipUnless(_rust_backend_available(), "Rust backend not available")
 class TestBytesInputCrossBackend(unittest.TestCase):
     """Cross-backend comparison for bytes/BytesIO input."""
 
@@ -234,8 +225,6 @@ class TestBytesInputCrossBackend(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
-        from libxrk.aim_xrk import aim_xrk as cython_aim_xrk
 
         cls.file_bytes = XRK_86_FILE.read_bytes()
         cls.rust_log = rust_aim_xrk(cls.file_bytes)
@@ -311,7 +300,6 @@ class TestBytesInputCrossBackend(unittest.TestCase):
 
     def test_bytesio_matches_bytes(self) -> None:
         """BytesIO input should produce same result as raw bytes for Rust backend."""
-        from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
 
         bio_log = rust_aim_xrk(io.BytesIO(self.file_bytes))
         self.assertEqual(

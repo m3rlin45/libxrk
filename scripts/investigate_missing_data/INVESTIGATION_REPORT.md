@@ -189,7 +189,7 @@ These could be computed from our existing GPS data.
 
 ## Phase 5: ODO/Fuel Data Gap
 
-Current handling (aim_xrk.pyx:481-490):
+Current handling (_aim_xrk_cy.pyx:481-490):
 ```python
 elif tok == _tokdec('ODO'):
     # not sure how to map fuel.

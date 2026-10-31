@@ -1,6 +1,6 @@
 //! GPS — 56-byte u-blox NAV-SOL payload.
 //!
-//! Reference: aim_xrk.pyx:910-937, spec/xrk_format.py:258-277.
+//! Reference: _aim_xrk_cy.pyx:910-937, spec/xrk_format.py:258-277.
 
 use binrw::BinRead;
 

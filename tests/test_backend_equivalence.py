@@ -24,16 +24,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from libxrk._aim_xrk_cy import aim_xrk as cython_aim_xrk
+from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
+
 TEST_DATA_DIR = Path(__file__).parent / "test_data"
-
-try:
-    import libxrk._aim_xrk_rs  # noqa: F401
-
-    _RUST_AVAILABLE = True
-except ImportError:
-    _RUST_AVAILABLE = False
-
-pytestmark = pytest.mark.skipif(not _RUST_AVAILABLE, reason="Rust backend not available")
 
 
 # Tight tolerances for GPS channels derived through libm transcendentals
@@ -64,9 +58,6 @@ FIXTURES = [
 
 
 def _load_both(path: Path):
-    from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
-    from libxrk.aim_xrk import aim_xrk as cython_aim_xrk
-
     return cython_aim_xrk(str(path)), rust_aim_xrk(str(path))
 
 

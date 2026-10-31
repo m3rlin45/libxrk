@@ -1,6 +1,6 @@
 //! idn — Logger Identity (min 10 bytes).
 //!
-//! Reference: aim_xrk.pyx:539-546, spec/xrk_format.py:325-330.
+//! Reference: _aim_xrk_cy.pyx:539-546, spec/xrk_format.py:325-330.
 
 /// idn payload — extracted fields from min 10-byte payload.
 #[derive(Debug, Clone)]

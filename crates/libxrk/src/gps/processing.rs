@@ -1,6 +1,6 @@
 //! GPS processing: decode NAV-SOL messages, compute derived channels.
 //!
-//! Port of `_decode_gps()` from aim_xrk.pyx.
+//! Port of `_decode_gps()` from _aim_xrk_cy.pyx.
 //! Decodes 56-byte GPS NAV-SOL records into 14 GPS channels.
 
 use std::f64::consts::PI;

@@ -1,6 +1,6 @@
 //! Header message framing: parse `<h` ... `>` wrapper with token, checksum, payload.
 //!
-//! Reference: aim_xrk.pyx:213-226, spec/xrk_format.py:430-455.
+//! Reference: _aim_xrk_cy.pyx:213-226, spec/xrk_format.py:430-455.
 //!
 //! Wire format:
 //!   `<h`          opcode (2 bytes: 0x3C 0x68)
@@ -21,7 +21,7 @@ use binrw::BinRead;
 use crate::payloads;
 
 /// Encode a token string to a uint32 LE integer.
-/// Matches aim_xrk.pyx:179-181.
+/// Matches _aim_xrk_cy.pyx:179-181.
 pub fn tokdec(s: &str) -> u32 {
     let mut result: u32 = 0;
     for (i, b) in s.bytes().enumerate() {
@@ -31,7 +31,7 @@ pub fn tokdec(s: &str) -> u32 {
 }
 
 /// Decode a uint32 LE integer to a token string.
-/// Matches aim_xrk.pyx:183-188.
+/// Matches _aim_xrk_cy.pyx:183-188.
 pub fn tokenc(mut i: u32) -> String {
     let mut s = String::new();
     while i != 0 {

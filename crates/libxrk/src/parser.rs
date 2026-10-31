@@ -1,6 +1,6 @@
 //! Streaming state machine: scan for opcodes, accumulate channel data.
 //!
-//! Equivalent to `_decode_sequence()` in aim_xrk.pyx.
+//! Equivalent to `_decode_sequence()` in _aim_xrk_cy.pyx.
 //! This is the core parsing engine that processes the XRK binary stream.
 
 use std::collections::HashMap;
@@ -1544,7 +1544,7 @@ struct RawLapData {
 ///
 /// This is the shared core logic used by both `process_laps` (internal `LapInfo`)
 /// and `get_processed_laps` (public `ProcessedLap`).
-/// Matches aim_xrk.pyx:_get_laps (LAP message branch).
+/// Matches _aim_xrk_cy.pyx:_get_laps (LAP message branch).
 fn parse_lap_messages(
     header_messages: &HashMap<u32, Vec<HeaderMessage>>,
     time_offset: i64,

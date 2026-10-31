@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-# Known decoder types from aim_xrk.pyx
+# Known decoder types from _aim_xrk_cy.pyx
 KNOWN_DECODERS = {
     0: {"type": "i", "desc": "Master Clock on M4GT4?"},
     1: {"type": "H", "desc": "float16, interpolate=True"},
@@ -98,7 +98,7 @@ def tokenc(i: int) -> str:
     return s
 
 
-# Unit map from aim_xrk.pyx
+# Unit map from _aim_xrk_cy.pyx
 UNIT_MAP = {
     1: ("%", 2),
     3: ("g", 2),

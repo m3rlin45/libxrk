@@ -1,6 +1,6 @@
 //! CAL — Calibration (40-byte prefix + variable rest).
 //!
-//! Reference: aim_xrk.pyx:597-615, spec/xrk_format.py:310-320.
+//! Reference: _aim_xrk_cy.pyx:597-615, spec/xrk_format.py:310-320.
 
 /// CAL payload — calibration data.
 #[derive(Debug, Clone)]

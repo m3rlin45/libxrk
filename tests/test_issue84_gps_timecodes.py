@@ -18,14 +18,10 @@ from pathlib import Path
 
 import pytest
 
-import libxrk
+from libxrk._aim_xrk_cy import _decode_gps  # type: ignore[attr-defined]
+from libxrk._aim_xrk_cy import aim_xrk as cython_aim_xrk
+from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
 
-# The `aim_xrk` function shadows the `aim_xrk` submodule on the package, so
-# importing the submodule replaces the function. Put it back.
-_entry = libxrk.aim_xrk
-from libxrk.aim_xrk import _decode_gps  # type: ignore[attr-defined]  # noqa: E402
-
-libxrk.aim_xrk = _entry
 
 ISSUE84_XRZ = (
     Path(__file__).parent
@@ -118,17 +114,11 @@ class TestCythonTimecodeReconstruction:
 
 @pytest.fixture(scope="module")
 def cython_log():
-    from libxrk import aim_xrk
-
-    return aim_xrk(str(ISSUE84_XRZ))
+    return cython_aim_xrk(str(ISSUE84_XRZ))
 
 
 @pytest.fixture(scope="module")
 def rust_log():
-    try:
-        from libxrk._aim_xrk_rs import aim_xrk as rust_aim_xrk
-    except ImportError:
-        pytest.skip("Rust backend not available")
     return rust_aim_xrk(str(ISSUE84_XRZ))
 
 

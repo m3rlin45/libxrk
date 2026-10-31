@@ -30,8 +30,8 @@ When you find data parsing differs from AIM's RaceStudio output, start by readin
 - `spec/tests/` - spec tests: round-trip + cross-impl vs Cython and the AIM DLL
 - `spec/docs/companion.md` - application-level algorithms (GPS timing, lap detection, decoder dispatch)
 - `spec/docs/unknown_regions.md` - catalog of under-reverse-engineered byte ranges per message type
-- `src/libxrk/aim_xrk.pyx` - Cython binary parser (default backend, conforms to spec)
-- `src/libxrk/aim_xrk.pyi` - Type stubs for Cython module
+- `src/libxrk/_aim_xrk_cy.pyx` - Cython binary parser (default backend, conforms to spec)
+- `src/libxrk/_aim_xrk_cy.pyi` - Type stubs for Cython module
 - `crates/` - Rust+PyO3 parser (~2x faster, conforms to spec)
 - `src/libxrk/_aim_xrk_rs.pyi` - Type stubs for Rust module
 - `src/libxrk/base.py` - LogFile dataclass, channel merging
@@ -43,8 +43,15 @@ When you find data parsing differs from AIM's RaceStudio output, start by readin
 
 The library has two parser backends with identical APIs. Both are included in all published wheels. **Both backends implement the wire format defined by `spec/xrk_format.py` — the Construct spec is the reference. If parsing changes, update the spec first.**
 
-- **Cython** (default): `src/libxrk/aim_xrk.pyx` — mature, well-tested
+- **Cython** (default): `src/libxrk/_aim_xrk_cy.pyx` — mature, well-tested
 - **Rust**: `crates/` — ~2x faster
+
+The compiled modules are `libxrk._aim_xrk_cy` and `libxrk._aim_xrk_rs`; the
+package imports only the selected one. The public name `libxrk.aim_xrk` is
+always the function. Never add a submodule with that name: Python binds a
+submodule to its parent package on first load, so importing it would rebind
+`libxrk.aim_xrk` to the module and break every later `from libxrk import
+aim_xrk` in the process (this bit the Rust-backend test run once).
 
 Both backends are always included in all build types (CPython wheels, Pyodide/WASM wheels, sdist).
 A failure to build either backend fails the whole build. There is no automatic fallback.
@@ -137,7 +144,7 @@ and dies with `MemoryError`.
 
 ## Cython Rebuild
 
-After modifying `src/libxrk/aim_xrk.pyx`, you **must** run `uv sync --reinstall-package libxrk` to recompile the Cython extension before running tests. A plain `uv sync` may skip the rebuild if it thinks nothing changed. Stale `.so` files will cause incorrect test results without any obvious error.
+After modifying `src/libxrk/_aim_xrk_cy.pyx`, you **must** run `uv sync --reinstall-package libxrk` to recompile the Cython extension before running tests. A plain `uv sync` may skip the rebuild if it thinks nothing changed. Stale `.so` files will cause incorrect test results without any obvious error.
 
 ## Rust Rebuild
 

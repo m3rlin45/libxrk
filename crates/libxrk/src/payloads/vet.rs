@@ -1,6 +1,6 @@
 //! VET — Vehicle Electronics Type (string or value byte).
 //!
-//! Reference: aim_xrk.pyx:584-589.
+//! Reference: _aim_xrk_cy.pyx:584-589.
 
 use crate::messages::nullterm_string;
 

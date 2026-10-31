@@ -1,6 +1,6 @@
 //! LAP — Lap Marker (20 bytes for v0/v1, 32 bytes for v2).
 //!
-//! Reference: aim_xrk.pyx:529-531, spec/xrk_format.py (LAPPayload).
+//! Reference: _aim_xrk_cy.pyx:529-531, spec/xrk_format.py (LAPPayload).
 
 use binrw::BinRead;
 

@@ -1,6 +1,6 @@
 //! RACM — Race Mode (string or flag byte).
 //!
-//! Reference: aim_xrk.pyx:571-583.
+//! Reference: _aim_xrk_cy.pyx:571-583.
 
 use crate::messages::nullterm_string;
 

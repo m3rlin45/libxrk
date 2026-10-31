@@ -11,6 +11,9 @@ import statistics
 import sys
 import time
 
+from libxrk._aim_xrk_cy import aim_xrk as cython_parse
+from libxrk._aim_xrk_rs import aim_xrk as rust_parse
+
 # Ensure we can import both backends
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -47,27 +50,6 @@ def benchmark_backend(parse_fn, fname, warmup=1, iterations=10):
 
 
 def main():
-    # Import backends
-    try:
-        from libxrk.aim_xrk import aim_xrk as cython_parse
-
-        has_cython = True
-    except ImportError:
-        has_cython = False
-        print("WARNING: Cython backend not available")
-
-    try:
-        from libxrk._aim_xrk_rs import aim_xrk as rust_parse
-
-        has_rust = True
-    except ImportError:
-        has_rust = False
-        print("WARNING: Rust backend not available")
-
-    if not has_cython and not has_rust:
-        print("ERROR: No backends available")
-        sys.exit(1)
-
     iterations = 10
     print(f"Benchmarking {iterations} iterations per file per backend\n")
     print(
@@ -82,29 +64,26 @@ def main():
 
         results = {}
 
-        if has_cython:
-            times = benchmark_backend(cython_parse, fname, iterations=iterations)
-            results["Cython"] = times
-            mean = statistics.mean(times)
-            med = statistics.median(times)
-            sd = statistics.stdev(times) if len(times) > 1 else 0
-            print(
-                f"{label:<16} {'Cython':<10} {mean:>7.3f}s {med:>7.3f}s {sd:>7.3f}s {min(times):>7.3f}s {max(times):>7.3f}s"
-            )
+        times = benchmark_backend(cython_parse, fname, iterations=iterations)
+        results["Cython"] = times
+        mean = statistics.mean(times)
+        med = statistics.median(times)
+        sd = statistics.stdev(times) if len(times) > 1 else 0
+        print(
+            f"{label:<16} {'Cython':<10} {mean:>7.3f}s {med:>7.3f}s {sd:>7.3f}s {min(times):>7.3f}s {max(times):>7.3f}s"
+        )
 
-        if has_rust:
-            times = benchmark_backend(rust_parse, fname, iterations=iterations)
-            results["Rust"] = times
-            mean = statistics.mean(times)
-            med = statistics.median(times)
-            sd = statistics.stdev(times) if len(times) > 1 else 0
-            print(
-                f"{'':<16} {'Rust':<10} {mean:>7.3f}s {med:>7.3f}s {sd:>7.3f}s {min(times):>7.3f}s {max(times):>7.3f}s"
-            )
+        times = benchmark_backend(rust_parse, fname, iterations=iterations)
+        results["Rust"] = times
+        mean = statistics.mean(times)
+        med = statistics.median(times)
+        sd = statistics.stdev(times) if len(times) > 1 else 0
+        print(
+            f"{'':<16} {'Rust':<10} {mean:>7.3f}s {med:>7.3f}s {sd:>7.3f}s {min(times):>7.3f}s {max(times):>7.3f}s"
+        )
 
-        if has_cython and has_rust:
-            speedup = statistics.median(results["Cython"]) / statistics.median(results["Rust"])
-            print(f"{'':<16} {'Speedup':<10} {speedup:>7.2f}x")
+        speedup = statistics.median(results["Cython"]) / statistics.median(results["Rust"])
+        print(f"{'':<16} {'Speedup':<10} {speedup:>7.2f}x")
 
         print()
 

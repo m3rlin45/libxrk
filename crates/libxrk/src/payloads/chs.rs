@@ -1,6 +1,6 @@
 //! CHS — Channel Definition (112 bytes).
 //!
-//! Reference: aim_xrk.pyx:434-524, spec/xrk_format.py:185-243.
+//! Reference: _aim_xrk_cy.pyx:434-524, spec/xrk_format.py:185-243.
 
 use binrw::BinRead;
 

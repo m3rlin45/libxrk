@@ -787,7 +787,7 @@ class TestExhaustiveChannelValues:
 
         Matches Cython deduplication: only accepts messages whose timecode is
         strictly greater than the last seen timecode for that accumulator.
-        The Cython parser (aim_xrk.pyx:303,320,343) uses separate accumulators
+        The Cython parser (_aim_xrk_cy.pyx:303,320,343) uses separate accumulators
         per message type, but since a channel is delivered by exactly one type
         (G xor S/c xor M), we track last_timecode per (msg_type_bucket, index).
         """
