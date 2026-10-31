@@ -98,11 +98,47 @@ def ecef2lla_vermeille2003(x, y, z):
     k = np.sqrt(u + w * w) - w
     D = k * np.sqrt(x * x + y * y) / (k + e**2)
     rtDDzz = np.sqrt(D * D + z * z)
+    # k is 0 only at the centre of the Earth, which is where a receiver with
+    # no fix puts its position (x = y = z = 0). Altitude is undefined there:
+    # NaN, stated explicitly rather than reached through (-1 / 0) * 0.
+    k = np.asarray(k, dtype=float)
+    alt = np.full(k.shape, np.nan)
+    np.divide(k + e**2 - 1, k, out=alt, where=k != 0)
     return GPS(
         (180 / np.pi) * 2 * np.arctan2(z, D + rtDDzz),
         (180 / np.pi) * np.arctan2(y, x),
-        (k + e**2 - 1) / k * rtDDzz,
+        alt * rtDDzz,
     )
+
+
+def _plane_crossing_parameter(
+    SN: np.ndarray, O: np.ndarray, D: np.ndarray, axis: int, keepdims: bool = False
+) -> np.ndarray:
+    """Where each segment O + t*D meets the plane through the origin with normal SN.
+
+    SN is built from the segment itself (SN = |SD|^2 D - (SD.D) SD), so the
+    denominator SN.D = |SD|^2 |D|^2 - (SD.D)^2 vanishes only when D is zero
+    or vertical, and then SN and the numerator vanish with it. Such a segment
+    -- a stationary car, which GPS produces whenever it repeats a fix -- has
+    no crossing at all, not a crossing at 0/0: it gets NaN, which every
+    comparison downstream reads as "no crossing". Spelled out so numpy does
+    not have to divide by zero to get there.
+    """
+    num = -np.sum(SN * O, axis=axis, keepdims=keepdims)
+    den = np.sum(SN * D, axis=axis, keepdims=keepdims)
+    t = np.full(den.shape, np.nan)
+    np.divide(num, den, out=t, where=den != 0)
+    return t
+
+
+def _distance_at_crossing(O: np.ndarray, D: np.ndarray, t: np.ndarray) -> np.ndarray:
+    """Squared distance from the marker of the point where each segment meets the plane.
+
+    A zero-length segment has no crossing (t is NaN) and only one point, so
+    it is measured there instead of propagating the NaN.
+    """
+    t_on_segment = np.where(np.isfinite(t), t, 0).reshape((len(t), 1))
+    return np.asarray(np.sum(np.square(O + t_on_segment * D), axis=1))
 
 
 def find_crossing_idx(
@@ -132,11 +168,11 @@ def find_crossing_idx(
     O = O[:-1] - SO
 
     SN = np.sum(SD * SD, axis=2, keepdims=True) * D - np.sum(SD * D, axis=2, keepdims=True) * SD
-    t = np.clip(
-        -np.sum(SN * O, axis=2, keepdims=True) / np.sum(SN * D, axis=2, keepdims=True),
-        0,
-        1,
-    )
+    t = np.clip(_plane_crossing_parameter(SN, O, D, axis=2, keepdims=True), 0, 1)
+    # A zero-length segment (repeated fix) has no crossing and a single point;
+    # measure it there. Left as NaN it would poison argmin below and the
+    # function returned a NaN index (and find_crossing_dist raised on int()).
+    t = np.where(np.isfinite(t), t, 0)
 
     # XXX This won't work with rally stages (anything not a circuit)
     distsq = np.sum(np.square(O + t * D), axis=2)
@@ -203,9 +239,9 @@ def find_laps(
         np.sum(SD * SD, axis=1).reshape((len(SD), 1)) * D
         - np.sum(SD * D, axis=1).reshape((len(D), 1)) * SD
     )
-    t = np.maximum(-np.sum(SN * O, axis=1) / np.sum(SN * D, axis=1), 0)
+    t = np.maximum(_plane_crossing_parameter(SN, O, D, axis=1), 0)
     # This only works because the track is considered at altitude 0
-    dist = np.sum(np.square(O + t.reshape((len(t), 1)) * D), axis=1)
+    dist = _distance_at_crossing(O, D, t)
     pick = (t[1:] <= 1) & (t[:-1] > 1) & (dist[1:] < marker_size**2)
 
     # Now that we have a decent candidate selection of lap
@@ -216,8 +252,8 @@ def find_laps(
     # already weighted by velocity...
     SN = np.sum(SN[1:][pick & minspeed[1:]], axis=0).reshape((1, 3))
     # recompute t, dist, pick
-    t = np.maximum(-np.sum(SN * O, axis=1) / np.sum(SN * D, axis=1), 0)
-    dist = np.sum(np.square(O + t.reshape((len(t), 1)) * D), axis=1)
+    t = np.maximum(_plane_crossing_parameter(SN, O, D, axis=1), 0)
+    dist = _distance_at_crossing(O, D, t)
     pick = (t[1:] <= 1) & (t[:-1] > 1) & (dist[1:] < marker_size**2)
 
     lap_markers = [0]
