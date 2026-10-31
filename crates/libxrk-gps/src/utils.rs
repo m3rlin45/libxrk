@@ -1,6 +1,4 @@
-//! GPS utilities: coordinate conversion, lap detection, Web Mercator projection.
-//!
-//! Port of gps.py functions.
+//! GPS utilities: WGS-84 coordinate conversion and GPS lap detection.
 
 use std::f64::consts::PI;
 

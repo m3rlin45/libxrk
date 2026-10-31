@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/libxrk", "crates/libxrk-python"]
+members = ["crates/libxrk-gps", "crates/libxrk", "crates/libxrk-python"]
 resolver = "2"
 
 [workspace.dependencies]

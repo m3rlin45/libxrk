@@ -23,9 +23,9 @@ from libcpp.vector cimport vector
 
 import pyarrow as pa
 
-from . import gps
-from .gps import fix_gps_timing_gaps
+from . import _aim_xrk_rs
 from . import base
+from .gps import GPS_CHANNEL_NAMES
 
 # 1,2,5,10,20,25,50 Hz
 # units
@@ -91,12 +91,13 @@ class Message:
 
 @dataclass(**dc_slots)
 class DataStream:
+    """What the parser hands over; GPS processing happens afterwards in _aim_xrk_rs.process_gps()."""
     channels: Dict[str, Channel]
     messages: Dict[str, List[Message]]
-    laps: pa.Table
-    time_offset: int
-    gnfi_timecodes: Optional[object] = None
-    has_lap_messages: bool = False
+    laps: Optional[list]  # (num, start, end, type) rows from LAP messages only; GPS finishes it
+    time_offset: Optional[int]
+    gps_data: bytes = b""  # raw 56-byte GPS records (GPS/GPS1), file order
+    gnfi_data: bytes = b""  # raw 32-byte GNFI records, file order
 
 @dataclass(**dc_slots)
 class Decoder:
@@ -363,7 +364,6 @@ def _decode_sequence(s, progress=None):
     len_s: cython.Py_ssize_t = len(s)
     cdef vaccum[4] gc_data # [0]: G messages (groups) [1]: S messages (samples?) [2]: c messages (channels from expansion) [3]: M messages
     time_offset = None
-    last_time = None
     t1 = time.perf_counter()
     cdef vaccum * data_cat
     cdef accum * data_p
@@ -734,7 +734,6 @@ def _decode_sequence(s, progress=None):
                                 duration, end_time = struct.unpack('<4xI8xI', data)
                             if time_offset is None:
                                 time_offset = end_time - duration
-                            last_time = end_time
                         elif tok in (_tokdec('RCR'), _tokdec('VEH'), _tokdec('CMP'), _tokdec('VTY'), _tokdec('NDV'), _tokdec('TMD'), _tokdec('TMT'),
                                      _tokdec('DBUN'), _tokdec('DBUT'), _tokdec('DVER'), _tokdec('MANL'), _tokdec('MODL'), _tokdec('MANI'),
                                      _tokdec('MODI'), _tokdec('HWNF'), _tokdec('PDLT'), _tokdec('NTE'),
@@ -943,35 +942,26 @@ def _decode_sequence(s, progress=None):
                     data_p.data.push_back(data_byte)
 
     end_of_data = None
-    # Compute time_offset and last_time from raw gc_data buffers and GPS data.
-    # Channel timecodes are not yet populated (process_channel runs later), so we
-    # scan the accumulated raw data vectors directly.
+    # Compute time_offset from raw gc_data buffers and GPS data. Channel
+    # timecodes are not yet populated (process_channel runs later), so we scan
+    # the accumulated raw data vectors directly.
     if channels:
         tc_min_candidates = [time_offset] if time_offset is not None else []
-        tc_max_candidates = [last_time] if last_time is not None else []
-        # gc_data[0..2]: first/last 4 bytes of .data are int32 timecodes
+        # gc_data[0..2]: first 4 bytes of .data are an int32 timecode
         for cat_idx in range(3):
             for acc_idx in range(gc_data[cat_idx].size()):
                 if gc_data[cat_idx][acc_idx].data.size():
                     tc_ptr = <cython.int *>&gc_data[cat_idx][acc_idx].data[0]
                     tc_min_candidates.append(tc_ptr[0])
-                    stride = gc_data[cat_idx][acc_idx].add_helper - (3 if cat_idx < 2 else 8)
-                    n_rows = gc_data[cat_idx][acc_idx].data.size() // stride
-                    tc_ptr = <cython.int *>&gc_data[cat_idx][acc_idx].data[(n_rows - 1) * stride]
-                    tc_max_candidates.append(tc_ptr[0])
         # gc_data[3] (M messages): timecodes stored in separate vector
         for acc_idx in range(gc_data[3].size()):
             if gc_data[3][acc_idx].timecodes.size():
                 tc_min_candidates.append(gc_data[3][acc_idx].timecodes[0])
-                tc_max_candidates.append(gc_data[3][acc_idx].timecodes[gc_data[3][acc_idx].timecodes.size() - 1])
         # GPS messages: 56-byte records, first 4 bytes = int32 timecode
         if gpsmsg.size():
             tc_ptr = <cython.int *>&gpsmsg[0]
             tc_min_candidates.append(tc_ptr[0])
-            tc_ptr = <cython.int *>&gpsmsg[gpsmsg.size() - 56]
-            tc_max_candidates.append(tc_ptr[0])
         time_offset = int(min(tc_min_candidates, default=0))
-        last_time = int(max(tc_max_candidates, default=0))
         if last_data_tc.has_value():
             end_of_data = int(last_data_tc.value()) - time_offset
     def process_group(g):
@@ -1056,38 +1046,31 @@ def _decode_sequence(s, progress=None):
                 _vals[~_finite] = np.nan
                 c.sampledata = _vals.data
 
+    # GPS records are not decoded here: the parser only collects them, and
+    # aim_xrk() hands them (with the LAP-message lap table) to the Rust GPS
+    # pipeline (_aim_xrk_rs.process_gps), shared with the Rust backend.
     laps = None
-    has_lap_messages = False
-    gnfi_timecodes = None
     if not channels:
         t4 = time.perf_counter()
         pass # nothing to do
     elif progress and _THREADS_AVAILABLE:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(2, os.cpu_count())) as worker:
-            bg_work = worker.submit(_bg_gps_laps, <cython.uchar[:gpsmsg.size()]> &gpsmsg[0],
-                                    <cython.uchar[:gnfimsg.size()]> &gnfimsg[0] if gnfimsg.size() else None,
-                                    messages, time_offset, last_time, end_of_data)
             group_work = worker.map(process_group, [x for x in groups if x])
             channel_work = worker.map(process_channel,
                                       [x for x in channels if x and not x.group])
-            gps_ch, laps, has_lap_messages, gnfi_timecodes = bg_work.result()
+            laps = _get_laps(messages, time_offset, end_of_data)
             t4 = time.perf_counter()
             for i in group_work:
                 pass
             for i in channel_work:
                 pass
-            channels.extend(gps_ch)
     else:
         for g in groups:
             if g: process_group(g)
         for c in channels:
             if c and not c.group: process_channel(c)
         t4 = time.perf_counter()
-        gps_ch, laps, has_lap_messages, gnfi_timecodes = _bg_gps_laps(
-            <cython.uchar[:gpsmsg.size()]> &gpsmsg[0],
-            <cython.uchar[:gnfimsg.size()]> &gnfimsg[0] if gnfimsg.size() else None,
-            messages, time_offset, last_time, end_of_data)
-        channels.extend(gps_ch)
+        laps = _get_laps(messages, time_offset, end_of_data)
 
     # Disambiguate duplicate long_names following the AIM DLL convention:
     # the first CHS occurrence (by channel index) keeps the plain name and
@@ -1095,16 +1078,16 @@ def _decode_sequence(s, progress=None):
     # over ALL CHS entries in index order, data-bearing or not, matching
     # the DLL (observed: "Right_Btn_4_led dup 2" on the issue84 fixture).
     # Duplicates are genuinely distinct channels (own source_channel_id and
-    # data stream), so none of them may be dropped. The synthesized GPS
-    # channels (Channel.index == -1) own their canonical names — a CHS
-    # channel colliding with one (e.g. GPS_InlineAcc on SFJ/86) gets the
-    # suffix, keeping GPS_CHANNEL_NAMES semantics stable. Internal channels
-    # keep their base name so the exclusion filter below still applies.
-    # Reference: spec/xrk_format.py ParseResult.channel_display_names().
+    # data stream), so none of them may be dropped. When the file carries GPS
+    # data, the 14 GPS channels process_gps() will add own their canonical
+    # names — a CHS channel colliding with one (e.g. GPS_InlineAcc on SFJ/86)
+    # gets the suffix, keeping GPS_CHANNEL_NAMES semantics stable. Internal
+    # channels keep their base name so the exclusion filter below still
+    # applies. Reference: spec/xrk_format.py ParseResult.channel_display_names().
     _name_seen = {}
-    for ch in channels:
-        if ch and ch.index < 0:
-            _name_seen[ch.long_name] = 1
+    if gpsmsg.size():
+        for _gps_name in GPS_CHANNEL_NAMES:
+            _name_seen[_gps_name] = 1
     for ch in channels:
         if not ch or ch.index < 0:
             continue
@@ -1120,8 +1103,8 @@ def _decode_sequence(s, progress=None):
         messages=messages,
         laps=laps,
         time_offset=time_offset,
-        gnfi_timecodes=gnfi_timecodes,
-        has_lap_messages=has_lap_messages)
+        gps_data=bytes(<cython.uchar[:gpsmsg.size()]> &gpsmsg[0]) if gpsmsg.size() else b"",
+        gnfi_data=bytes(<cython.uchar[:gnfimsg.size()]> &gnfimsg[0]) if gnfimsg.size() else b"")
 
 def _get_metadata(msg_by_type, channels=None):
     ret = {}
@@ -1216,195 +1199,29 @@ def _get_metadata(msg_by_type, channels=None):
             ret['Calibrations'] = calibrations
     return ret
 
-def _bg_gps_laps(gpsmsg, gnfimsg, msg_by_type, time_offset, last_time, end_of_data=None):
-    channels = _decode_gps(gpsmsg, time_offset)
-    gnfi_timecodes = _decode_gnfi(gnfimsg, time_offset)
-    lat_ch = None
-    lon_ch = None
-    for ch in channels:
-        if ch.long_name == 'GPS Latitude': lat_ch = ch
-        if ch.long_name == 'GPS Longitude': lon_ch = ch
-    laps, has_lap_messages = _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time,
-                                       end_of_data)
-    return channels, laps, has_lap_messages, gnfi_timecodes
+def _get_laps(msg_by_type, time_offset, end_of_data=None):
+    """The lap table from LAP messages (companion.md section 7).
 
-def _decode_gps(gpsmsg, time_offset):
-    """Decode GPS messages from XRK data stream.
+    Segment-0 LAP messages, deduplicated by lap number, one missing number
+    inferred, times made session-relative, the first lap typed "out" when
+    it starts at or before 0, a final partial lap appended when the data
+    runs past the last crossing, numbers normalised to start at 0.
 
-    Each GPS message is 56 bytes: a 4-byte AIM logger timecode followed by a
-    52-byte u-blox NAV-SOL (Navigation Solution) payload.
-
-    56-byte layout:
-
-        Offset  NAV-SOL  Field      Type    Notes
-        0       -        timecode   int32   AIM logger time [ms]
-        4       0        iTOW       uint32  GPS time of week [ms]
-        8       4        fTOW       int32   Fractional TOW [ns], +/-500000
-        12      8        week       uint16  GPS week number
-        14      10       gpsFix     uint8   Fix type (0=none, 2=2D, 3=3D)
-        15      11       flags      uint8   Validity bitmask
-        16      12       ecefX      int32   ECEF X position [cm]
-        20      16       ecefY      int32   ECEF Y position [cm]
-        24      20       ecefZ      int32   ECEF Z position [cm]
-        28      24       pAcc       uint32  Position accuracy [cm]
-        32      28       ecefVX     int32   ECEF X velocity [cm/s]
-        36      32       ecefVY     int32   ECEF Y velocity [cm/s]
-        40      36       ecefVZ     int32   ECEF Z velocity [cm/s]
-        44      40       sAcc       uint32  Speed accuracy [cm/s]
-        48      44       pDOP       uint16  Position DOP [*0.01]
-        50      46       reserved1  uint8   u-blox reserved
-        51      47       numSV      uint8   Number of satellites used
-        52      48       reserved2  uint32  u-blox reserved (non-zero in some firmware)
-    """
-    if not gpsmsg: return []
-    alldata = memoryview(gpsmsg)
-    if len(alldata) % 56 != 0:
-        raise ValueError("GPS data length %d is not a multiple of 56" % len(alldata))
-    timecodes = np.asarray(alldata[0:].cast('i')[::56//4])
-    # certain old MXP firmware (and maybe others) would periodically
-    # butcher the upper 16-bits of the timecode field.  If necessary,
-    # reconstruct it using only the bottom 16-bits and assuming time
-    # never skips ahead too far.
-    if np.any(timecodes[1:] < timecodes[:-1]):
-        # Phase unwrap: place each sample at the multiple of 65536 CLOSEST to
-        # its predecessor, i.e. fold the low-16 delta into [-32768, +32767].
-        # A backwards step therefore only reads as a rollover when it is near
-        # 65536; smaller ones (out-of-order records, a replayed block, an
-        # all-zero dropout record) keep their true time instead of inflating
-        # every later sample by 65536ms.  See spec/xrk_format.py
-        # reconstruct_gps_timecodes() and spec/docs/companion.md section 6.
-        deltas = (((np.diff(timecodes.astype(np.int64)) & 0xFFFF) ^ 0x8000) - 0x8000)
-        timecodes = (timecodes[0] + np.concatenate(([0], deltas.cumsum()))).astype(timecodes.dtype)
-    # NAV-SOL fields (known, used for position/velocity)
-    itow_ms = np.asarray(alldata[4:].cast('I')[::56//4])      # iTOW - GPS time of week [ms]
-    #fTOW_ns = alldata[8:].cast('i')[::56//4]       # fTOW - fractional TOW [ns]
-    weekN = np.asarray(alldata[12:].cast('H')[::56//2])       # GPS week number
-    ecefX_cm = alldata[16:].cast('i')[::56//4]       # ecefX [cm]
-    ecefY_cm = alldata[20:].cast('i')[::56//4]       # ecefY [cm]
-    ecefZ_cm = alldata[24:].cast('i')[::56//4]       # ecefZ [cm]
-    posacc_cm = np.asarray(alldata[28:].cast('I')[::56//4])   # pAcc [cm]
-    ecefdX_cms = alldata[32:].cast('i')[::56//4]     # ecefVX [cm/s]
-    ecefdY_cms = alldata[36:].cast('i')[::56//4]     # ecefVY [cm/s]
-    ecefdZ_cms = alldata[40:].cast('i')[::56//4]     # ecefVZ [cm/s]
-    velacc_cms = np.asarray(alldata[44:].cast('I')[::56//4])  # sAcc [cm/s]
-
-    # NAV-SOL fields (newly exposed as channels)
-    gpsFix = np.asarray(alldata[14::56]).astype(np.uint8)     # gpsFix [0-5]
-    pDOP_raw = np.asarray(alldata[48:].cast('H')[::56//2])    # pDOP [*0.01]
-    nsat = np.asarray(alldata[51::56])                        # numSV
-
-    timecodes_raw = timecodes - time_offset
-    timecodes = memoryview(timecodes_raw)
-
-    gpsconv = gps.ecef2lla(np.divide(ecefX_cm, 100),
-                           np.divide(ecefY_cm, 100),
-                           np.divide(ecefZ_cm, 100))
-
-    # Compute GPS speed (m/s)
-    speed_ms = np.sqrt(np.square(ecefdX_cms) + np.square(ecefdY_cms) + np.square(ecefdZ_cms)) / 100.0
-
-    # Compute heading from ECEF velocity using ENU transformation
-    lat_rad = gpsconv.lat * (np.pi / 180)
-    lon_rad = gpsconv.long * (np.pi / 180)
-    V_east, V_north = gps.ecef_velocity_to_enu(
-        np.asarray(ecefdX_cms), np.asarray(ecefdY_cms), np.asarray(ecefdZ_cms),
-        lat_rad, lon_rad
-    )
-    heading_deg = np.arctan2(V_east, V_north) * (180 / np.pi)
-
-    # Compute time deltas (in seconds)
-    dt_sec = np.diff(timecodes_raw) / 1000.0
-    # Protect against division by zero
-    dt_sec = np.where(dt_sec > 0, dt_sec, np.inf)
-
-    # GPS_InlineAcc = d(speed)/dt / 9.81 (convert m/s² to g)
-    dv = np.diff(speed_ms)
-    inline_acc = np.concatenate([[0], dv / dt_sec]) / 9.81
-
-    # GPS_Yaw_Rate = d(heading)/dt (deg/s)
-    dheading = np.diff(heading_deg)
-    # Handle wrap-around at ±180°
-    dheading = np.where(dheading > 180, dheading - 360, dheading)
-    dheading = np.where(dheading < -180, dheading + 360, dheading)
-    yaw_rate = np.concatenate([[0], dheading / dt_sec])
-
-    # GPS_LateralAcc = speed × yaw_rate × π/180 / 9.81 (g)
-    lateral_acc = speed_ms * yaw_rate * (np.pi / 180) / 9.81
-
-    return [Channel(
-        long_name='GPS Speed',
-        units='m/s',
-        dec_pts=1,
-        interpolate=True,
-        timecodes=timecodes,
-        sampledata=memoryview(speed_ms.astype(np.float64))),
-            Channel(long_name='GPS Latitude',  units='deg', dec_pts=4, interpolate=True,
-                    timecodes=timecodes, sampledata=memoryview(gpsconv.lat)),
-            Channel(long_name='GPS Longitude', units='deg', dec_pts=4, interpolate=True,
-                    timecodes=timecodes, sampledata=memoryview(gpsconv.long)),
-            Channel(long_name='GPS Altitude', units='m', dec_pts=1, interpolate=True,
-                    timecodes=timecodes, sampledata=memoryview(gpsconv.alt)),
-            # GPS accuracy metrics (from NAV-SOL)
-            Channel(long_name='GPS_Satellites', units='', dec_pts=0, interpolate=False,
-                    timecodes=timecodes, sampledata=memoryview(nsat.astype(np.float32))),
-            Channel(long_name='GPS_Fix', units='', dec_pts=0, interpolate=False,
-                    timecodes=timecodes, sampledata=memoryview(gpsFix.astype(np.float32))),
-            Channel(long_name='GPS_pDOP', units='', dec_pts=2, interpolate=False,
-                    timecodes=timecodes,
-                    sampledata=memoryview(np.divide(pDOP_raw, 100.0).astype(np.float32))),
-            Channel(long_name='GPS_Position_Accuracy', units='m', dec_pts=2, interpolate=True,
-                    timecodes=timecodes, sampledata=memoryview((posacc_cm / 100.0).astype(np.float32))),
-            Channel(long_name='GPS_Velocity_Accuracy', units='m/s', dec_pts=2, interpolate=True,
-                    timecodes=timecodes, sampledata=memoryview((velacc_cms / 100.0).astype(np.float32))),
-            # GPS derived channels
-            Channel(long_name='GPS_InlineAcc', units='g', dec_pts=2, interpolate=True,
-                    timecodes=timecodes, sampledata=memoryview(inline_acc.astype(np.float32))),
-            Channel(long_name='GPS_LateralAcc', units='g', dec_pts=2, interpolate=True,
-                    timecodes=timecodes, sampledata=memoryview(lateral_acc.astype(np.float32))),
-            Channel(long_name='GPS_Yaw_Rate', units='deg/s', dec_pts=1, interpolate=True,
-                    timecodes=timecodes, sampledata=memoryview(yaw_rate.astype(np.float32))),
-            # Raw GPS clock (NAV-SOL iTOW / week). iTOW wraps every 604800000 ms.
-            Channel(long_name='GPS_ITOW', units='ms', dec_pts=0, interpolate=False,
-                    timecodes=timecodes, sampledata=memoryview(itow_ms.astype(np.float64))),
-            Channel(long_name='GPS_Week', units='', dec_pts=0, interpolate=False,
-                    timecodes=timecodes, sampledata=memoryview(weekN.astype(np.float32)))]
-
-def _decode_gnfi(gnfimsg, time_offset):
-    """Parse GNFI messages and return timecodes array.
-
-    GNFI messages run on the logger's internal clock, not the GPS timecode stream.
-    This provides a ground truth reference for detecting GPS timing bugs.
-
-    GNFI message structure (32 bytes each):
-    - Bytes 0-3: Logger timecode (int32)
-    - Bytes 4-31: Other data (not used for timing)
-
-    Args:
-        gnfimsg: Raw GNFI message bytes
-        time_offset: Time offset to subtract from timecodes
+    This is only what the LAP messages say. The GPS steps -- typing the last
+    lap "in" when the car ends far from start/finish, and detecting laps
+    from the GPS track when there are no LAP messages -- are done by the
+    Rust GPS pipeline (_aim_xrk_rs.process_gps), shared with the Rust backend.
 
     Returns:
-        numpy array of GNFI timecodes, or None if no GNFI data
+        list of (num, start_time, end_time, lap_type) rows; empty when the
+        file has no (segment-0) LAP messages.
     """
-    if not gnfimsg:
-        return None
-    alldata = memoryview(gnfimsg)
-    if len(alldata) % 32 != 0:
-        return None
-    timecodes = np.asarray(alldata[0:].cast('i')[::32//4]) - time_offset
-    return timecodes
-
-
-def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time, end_of_data=None):
     lap_nums = []
     start_times = []
     end_times = []
     lap_types = []
-    has_lap_messages = False
 
-    # Prefer LAP messages when available (matches official DLL behavior)
     if _tokdec('LAP') in msg_by_type:
-        has_lap_messages = True
         for m in msg_by_type[_tokdec('LAP')]:
             # 2nd byte is segment #, see M4GT4
             # v2 (32-byte payload) carries the absolute end time at [28:32];
@@ -1439,81 +1256,27 @@ def _get_laps(lat_ch, lon_ch, msg_by_type, time_offset, last_time, end_of_data=N
         if lap_types and start_times[0] <= 0:
             lap_types[0] = 'out'
 
-        # Classify last lap as "in" if GPS shows car is not near S/F at end
-        if lap_types and lap_types[-1] != 'out' and lat_ch and lon_ch:
-            trk_msgs = msg_by_type.get(_tokdec('TRK'))
-            if trk_msgs:
-                track = trk_msgs[-1].content
-                sf_lat, sf_lon = track['sf_lat'], track['sf_long']
-                sf_xyz = np.array(gps.lla2ecef(np.array([sf_lat]), np.array([sf_lon]), 0)).T[0]
-
-                tc = np.array(lat_ch.timecodes)
-                idx = min(np.searchsorted(tc, end_times[-1]), len(tc) - 1)
-                end_lat = float(lat_ch.sampledata[idx])
-                end_lon = float(lon_ch.sampledata[idx])
-                end_xyz = np.array(gps.lla2ecef(np.array([end_lat]), np.array([end_lon]), 0)).T[0]
-
-                dist = float(np.linalg.norm(sf_xyz - end_xyz))
-                if dist > 30.0:
-                    lap_types[-1] = 'in'
-
         # Final partial lap. When the recording runs past the last beacon
         # crossing, the AIM DLL reports one more lap from that crossing to
         # the end of data -- provided at least one lap was completed (it adds
         # nothing when the out-lap is the only lap). "End of data" is the
         # timecode of the last data message in file order, not the max over
         # channels (they differ by tens of ms on buffered loggers). A lap that
-        # ends at a LAP message is complete, so it is "full" and the
-        # synthesized lap takes the "in" classification. See
+        # ends at a LAP message is complete, so it is "full"; the synthesized
+        # lap is "in" and is the one process_gps() then looks at. See
         # spec/docs/companion.md section 7 ("Final partial lap").
         if len(lap_nums) >= 2 and end_of_data is not None and end_of_data > end_times[-1]:
-            if lap_types[-1] == 'in':
-                lap_types[-1] = 'full'
             lap_nums.append(lap_nums[-1] + 1)
             start_times.append(end_times[-1])
             end_times.append(end_of_data)
             lap_types.append('in')
-
-    elif lat_ch and lon_ch:
-        # Fall back to GPS-based lap detection only when no LAP messages exist
-        track = msg_by_type[_tokdec('TRK')][-1].content
-        XYZ = np.column_stack(gps.lla2ecef(np.array(lat_ch.sampledata),
-                                           np.array(lon_ch.sampledata), 0))
-        lap_markers = gps.find_laps(XYZ,
-                                    np.array(lat_ch.timecodes),
-                                    (track['sf_lat'], track['sf_long']))
-
-        # Use GPS channel's last timecode as session end (already adjusted)
-        # This avoids relying on last_time which may be 0 when no LAP messages exist
-        session_end = int(lat_ch.timecodes[-1]) if len(lat_ch.timecodes) else (last_time - time_offset if last_time else 0)
-
-        # Only add session boundaries if we have detected lap crossings
-        # This creates laps from each crossing to the next
-        if lap_markers:
-            lap_markers = lap_markers + [session_end]
-            for lap, (start_time, end_time) in enumerate(zip(lap_markers[:-1], lap_markers[1:])):
-                lap_nums.append(lap)
-                start_times.append(start_time)
-                end_times.append(end_time)
-                lap_types.append('full')
-
-            # Last GPS lap always ends at session_end, classify as "in"
-            if lap_types:
-                lap_types[-1] = 'in'
 
     # Normalize lap numbers to 0-based indexing (matches DLL behavior)
     if lap_nums:
         min_lap = min(lap_nums)
         lap_nums = [n - min_lap for n in lap_nums]
 
-    # Create PyArrow table
-    laps_table = pa.table({
-        'num': pa.array(lap_nums, type=pa.int32()),
-        'start_time': pa.array(start_times, type=pa.int64()),
-        'end_time': pa.array(end_times, type=pa.int64()),
-        'lap_type': pa.array(lap_types, type=pa.utf8()),
-    })
-    return laps_table, has_lap_messages
+    return list(zip(lap_nums, start_times, end_times, lap_types))
 
 
 def _channel_to_table(ch):
@@ -1639,6 +1402,15 @@ class _open_xrk:
         return False
 
 
+def _start_finish(msg_by_type):
+    """Start/finish (latitude, longitude) in degrees from the last TRK message, or None."""
+    trk_msgs = msg_by_type.get(_tokdec('TRK'))
+    if not trk_msgs:
+        return None
+    track = trk_msgs[-1].content
+    return (track['sf_lat'], track['sf_long'])
+
+
 def aim_xrk(fname, progress=None):
     """Load an AIM XRK or XRZ file.
     
@@ -1652,20 +1424,23 @@ def aim_xrk(fname, progress=None):
     with _open_xrk(fname) as m:
         data = _decode_sequence(m, progress)
 
-    log = base.LogFile(
-        {ch.long_name: _channel_to_table(ch) for ch in data.channels.values()},
-        data.laps,
+    channels = {ch.long_name: _channel_to_table(ch) for ch in data.channels.values()}
+    laps = data.laps
+    if laps is not None:
+        # GPS channels, the timing fix and the GPS steps of the lap table come
+        # from the Rust GPS pipeline, the same code the Rust backend runs.
+        non_gps_end = [t.column('timecodes')[-1].as_py() for t in channels.values() if t.num_rows]
+        gps_tables, laps = _aim_xrk_rs.process_gps(
+            data.gps_data, data.gnfi_data, data.time_offset,
+            max(non_gps_end) if non_gps_end else None,
+            _start_finish(data.messages), laps)
+        channels.update(gps_tables)
+
+    return base.LogFile(
+        channels,
+        laps,
         _get_metadata(data.messages, data.channels),
         fname if not isinstance(fname, (bytes, bytearray, memoryview)) and not hasattr(fname, 'read') else "<bytes>")
-
-    # Fix GPS timing gaps (spurious timestamp jumps in some AIM loggers)
-    # Pass GNFI timecodes for more robust detection (if available)
-    # Only correct lap boundaries when laps came from GPS-based detection
-    # (not from LAP messages, which use the internal clock unaffected by the bug)
-    log = fix_gps_timing_gaps(log, gnfi_timecodes=data.gnfi_timecodes,
-                              correct_laps=not data.has_lap_messages)
-
-    return log
 
 
 def aim_track_dbg(fname):
