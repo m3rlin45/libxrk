@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from construct import (
+    Adapter,
     Array,
     Bytes,
     Check,
@@ -34,6 +35,7 @@ from construct import (
     ConstructError,
     Container,
     ExprAdapter,
+    Float16l,
     Float32l,
     GreedyBytes,
     GreedyRange,
@@ -160,6 +162,167 @@ DECODER_TABLE = {
     38: ("i", False),
     39: ("i", False),
 }
+
+
+class NonFiniteToNaN(Adapter):
+    """Float sample sentinel rule (companion.md section 3).
+
+    Loggers write IEEE infinities (and occasionally NaN) into float channels
+    as "no value": float16 0x7C00 on every sample of the official AIM
+    sample's External Voltage, float32 0xFF800000 on CAN channels during a bus
+    dropout. The AIM DLL returns 0.0 for those; libxrk reports NaN. Decoding
+    maps any non-finite value to NaN; encoding is the identity (the original
+    sentinel is not recoverable from NaN, and nothing builds sample values).
+    """
+
+    def _decode(self, obj, context, path):
+        return obj if math.isfinite(obj) else math.nan
+
+    def _encode(self, obj, context, path):
+        return obj
+
+    def vectorized(self, values):
+        import numpy as np
+
+        return np.where(np.isfinite(values), values, np.nan)
+
+
+class GearLookup(Adapter):
+    """Decoder 15: the raw uint16 is an ASCII gear character ('N', '1'..'6')."""
+
+    _DECODE = {ord("N"): 0, **{ord(c): int(c) for c in "123456"}}
+    _ENCODE = {v: k for k, v in _DECODE.items()}
+
+    def _decode(self, obj, context, path):
+        return self._DECODE.get(obj, obj)
+
+    def _encode(self, obj, context, path):
+        return self._ENCODE.get(obj, obj)
+
+    def vectorized(self, values):
+        import numpy as np
+
+        lut = np.arange(65536, dtype=np.float64)
+        for raw, gear in self._DECODE.items():
+            lut[raw] = gear
+        return lut[values.astype(np.uint16)]
+
+
+class MilliToUnit(Adapter):
+    """Unit type 21 with the calibrated flag: stored in mV, displayed in V."""
+
+    def _decode(self, obj, context, path):
+        return obj / 1000.0
+
+    def _encode(self, obj, context, path):
+        return obj * 1000.0
+
+    def vectorized(self, values):
+        return values / 1000.0
+
+
+# Sample codecs: decoder_type -> Construct that parses ONE raw sample into its
+# displayed value. This is the executable form of DECODER_TABLE's struct
+# column plus the fixups companion.md section 3 describes; both backends
+# conform to it (test_spec.py compares every sample of every fixture).
+_I32 = Int32sl
+SAMPLE_CODECS = {
+    0: _I32,  # Master Clock (M4GT4)
+    1: Int16ul,  # plain uint16 (e.g. StartRec)
+    3: _I32,  # Master Clock (ScottE46)
+    4: Int16sl,
+    6: NonFiniteToNaN(Float32l),  # standard float
+    8: _I32,  # iGPS reference
+    11: Int16sl,
+    12: _I32,  # Predictive Time
+    13: Int8ul,  # status field
+    15: GearLookup(Int16ul),  # gear as ASCII character
+    20: NonFiniteToNaN(Float16l),  # float16, the common analog encoding
+    22: _I32,  # Lap Time (variant)
+    24: _I32,  # Best Run Diff
+    26: _I32,  # Total Odometer
+    27: _I32,  # Reset Odometer
+    31: _I32,  # Lap Time
+    32: _I32,  # Roll Time
+    33: _I32,  # Best Time
+    37: _I32,  # GPS_Hours
+    38: _I32,  # GPS_Date
+    39: _I32,  # GPS_Time
+}
+
+
+def channel_sample_codec(chs):
+    """The Construct that decodes one raw sample of a CHS channel, or None.
+
+    Wraps the decoder's codec in MilliToUnit when the channel's resolved unit
+    is "V" (unit type 21 with the calibrated flag), matching both backends.
+    """
+    codec = SAMPLE_CODECS.get(chs.decoder_type)
+    if codec is None:
+        return None
+    if chs.units == "V":
+        codec = MilliToUnit(codec)
+    return codec
+
+
+def _codec_layers(codec):
+    """Split a sample codec into (base FormatField, adapters innermost-first)."""
+    adapters = []
+    while isinstance(codec, Adapter):
+        adapters.append(codec)
+        codec = codec.subcon
+    return codec, list(reversed(adapters))
+
+
+def _numpy_dtype(formatfield):
+    """numpy dtype for a little-endian Construct FormatField.
+
+    Not ``np.dtype(fmtstr)``: struct's "l" is 4 bytes but numpy's "l" is the
+    platform C long (8 bytes on 64-bit Linux). Width comes from sizeof(),
+    kind from the format character.
+    """
+    import numpy as np
+
+    char = formatfield.fmtstr[-1]
+    kind = "f" if char in "efd" else ("i" if char.islower() else "u")
+    return np.dtype(f"<{kind}{formatfield.sizeof()}")
+
+
+def decode_channel_values(raw_samples, chs):
+    """Decode a channel's raw samples to a float64 numpy array, in bulk.
+
+    Semantically ``[channel_sample_codec(chs).parse(s) for s in raw_samples]``
+    (test_spec.py asserts the two agree), but vectorised: the base
+    FormatField gives the numpy dtype and each Adapter layer supplies its
+    ``vectorized`` form. The 86 fixture has ~40M samples. Returns None if the
+    decoder is unknown or any sample is shorter than the codec; a sample may
+    be wider than the codec (e.g. Lap Time, data_size 20 with an int32), in
+    which case the leading bytes are decoded.
+    """
+    import numpy as np
+
+    codec = channel_sample_codec(chs)
+    if codec is None:
+        return None
+    base, adapters = _codec_layers(codec)
+    size = base.sizeof()
+    if not raw_samples:
+        return np.zeros(0, dtype=np.float64)
+    lengths = set(map(len, raw_samples))
+    if min(lengths) < size:
+        return None
+    dtype = _numpy_dtype(base)
+    if len(lengths) == 1:
+        width = lengths.pop()
+        rows = np.frombuffer(b"".join(raw_samples), dtype=np.uint8).reshape(-1, width)
+        raw = np.ascontiguousarray(rows[:, :size]).view(dtype).reshape(-1)
+    else:
+        raw = np.frombuffer(b"".join(s[:size] for s in raw_samples), dtype=dtype)
+    values = raw.astype(np.float64)
+    for adapter in adapters:
+        values = adapter.vectorized(values)
+    return values
+
 
 # Logger model ID to name mapping (from _aim_xrk_cy.pyx:141-144)
 LOGGER_MODELS = {

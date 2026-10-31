@@ -6,17 +6,21 @@ Tests in this module verify that:
 3. Construct-parsed values match the Cython parser for all fields
 """
 
+import math
 import struct
 
 import numpy as np
 import pytest
 
 from spec.xrk_format import (
-    ParseResult,
-    _decompress_if_zlib,
-    chs_padding_bytes,
     DECODER_TABLE,
+    SAMPLE_CODECS,
+    _decompress_if_zlib,
+    channel_sample_codec,
+    chs_padding_bytes,
+    decode_channel_values,
     GPSPayload,
+    ParseResult,
 )
 from spec.tests.conftest import ALL_XRK_FILES
 
@@ -26,50 +30,15 @@ from spec.tests.conftest import ALL_XRK_FILES
 # ---------------------------------------------------------------------------
 
 
-def _decode_sample(data_bytes, decoder_type):
-    """Decode raw data bytes using the decoder type's struct format."""
-    if decoder_type not in DECODER_TABLE:
+def _decode_and_fixup(data_bytes, ch):
+    """Decode one raw sample with the spec's channel codec (float), or None."""
+    codec = channel_sample_codec(ch)
+    if codec is None:
         return None
-    fmt = DECODER_TABLE[decoder_type][0]
-    size = struct.calcsize(fmt)
+    size = codec.sizeof()
     if len(data_bytes) < size:
         return None
-    return struct.unpack_from("<" + fmt, data_bytes, 0)[0]
-
-
-def _apply_fixup(raw_value, decoder_type):
-    """Apply decoder fixup to get the final value."""
-    import numpy as np
-
-    if decoder_type == 20:
-        # float16 encoded as uint16
-        arr = np.array([raw_value], dtype=np.uint16)
-        return float(np.frombuffer(arr.tobytes(), dtype=np.float16)[0])
-    elif decoder_type == 15:
-        # Gear lookup
-        table = {
-            ord("N"): 0,
-            ord("1"): 1,
-            ord("2"): 2,
-            ord("3"): 3,
-            ord("4"): 4,
-            ord("5"): 5,
-            ord("6"): 6,
-        }
-        return table.get(raw_value, raw_value)
-    return raw_value
-
-
-def _decode_and_fixup(data_bytes, ch):
-    """Decode raw bytes for a channel and apply all fixups."""
-    raw = _decode_sample(data_bytes, ch.decoder_type)
-    if raw is None:
-        return None
-    value = _apply_fixup(raw, ch.decoder_type)
-    # Voltage channels are stored as mV, Cython divides by 1000
-    if ch.units == "V":
-        value = value / 1000.0
-    return float(value)
+    return float(codec.parse(data_bytes[:size]))
 
 
 def _unique_seg0_laps(parsed):
@@ -815,6 +784,77 @@ class TestDataMessageCrossValidation:
 # ---------------------------------------------------------------------------
 
 
+class TestSampleCodecs:
+    """The declarative sample codecs are the decoder definition."""
+
+    def test_codecs_agree_with_decoder_table(self):
+        """SAMPLE_CODECS and DECODER_TABLE describe the same byte widths."""
+        assert set(SAMPLE_CODECS) == set(DECODER_TABLE)
+        for decoder_type, (fmt, _interp) in DECODER_TABLE.items():
+            assert SAMPLE_CODECS[decoder_type].sizeof() == struct.calcsize(fmt), decoder_type
+
+    @pytest.mark.parametrize(
+        "decoder_type, raw, expected",
+        [
+            (20, b"\x00\x7c", float("nan")),  # fp16 +inf, the official sample's External Voltage
+            (20, b"\x00\xfc", float("nan")),  # fp16 -inf
+            (20, b"\x00\x7e", float("nan")),  # fp16 NaN
+            (20, b"\x00\x3c", 1.0),  # fp16 1.0 untouched
+            (6, b"\x00\x00\x80\xff", float("nan")),  # f32 -inf, CAN dropout sentinel
+            (6, b"\x00\x00\x80\x3f", 1.0),
+            (15, b"N\x00", 0),  # gear 'N'
+            (15, b"3\x00", 3),
+            (15, b"\x07\x00", 7),  # not a gear character: passes through
+            (13, b"\x05", 5),
+        ],
+    )
+    def test_codec_values(self, decoder_type, raw, expected):
+        value = SAMPLE_CODECS[decoder_type].parse(raw)
+        if isinstance(expected, float) and math.isnan(expected):
+            assert math.isnan(value)
+        else:
+            assert value == expected
+
+    def test_bulk_decoder_matches_per_sample_codec(self, sfj_parsed):
+        """decode_channel_values is the vectorised form of the codec: every
+        value equals codec.parse() on the same bytes (NaN-aware), for every
+        decoder type the SFJ fixture uses, on its first 500 samples."""
+        import numpy as np
+
+        samples = self._first_samples(sfj_parsed, 500)
+        checked = set()
+        for idx, raw in samples.items():
+            ch = sfj_parsed.channels[idx]
+            codec = channel_sample_codec(ch)
+            if codec is None or not raw:
+                continue
+            bulk = decode_channel_values(raw, ch)
+            single = np.array([codec.parse(s[: codec.sizeof()]) for s in raw], dtype=np.float64)
+            np.testing.assert_array_equal(bulk, single, err_msg=ch.name)
+            checked.add(ch.decoder_type)
+        assert {6, 20} <= checked, "fixture lost its float channels"
+
+    @staticmethod
+    def _first_samples(parsed, n):
+        """channel_index -> first n raw S/M sample byte strings, in file order."""
+        out = {}
+        for m in parsed.messages:
+            if m.msg_type == "S":
+                idx = m.parsed["channel_index"]
+                if len(out.setdefault(idx, [])) < n:
+                    out[idx].append(bytes(m.parsed["data"]))
+            elif m.msg_type == "M":
+                idx = m.parsed["channel_index"]
+                size = parsed.channel_sizes[idx]
+                data = bytes(m.parsed["data"])
+                lst = out.setdefault(idx, [])
+                for i in range(0, len(data), size):
+                    if len(lst) >= n:
+                        break
+                    lst.append(data[i : i + size])
+        return out
+
+
 class TestExhaustiveChannelValues:
     """Compare EVERY decoded channel value against Cython output.
 
@@ -908,49 +948,8 @@ class TestExhaustiveChannelValues:
         return arrays
 
     def _decode_channel_array(self, raw_samples, ch):
-        """Decode a list of raw byte samples into a float64 numpy array.
-
-        Vectorised equivalent of calling _decode_sample + _apply_fixup on
-        every sample (the 86 fixture has ~40M samples, which took ~12 s per
-        backend in pure Python). Returns None if any sample is shorter than
-        the decoder's width, matching the per-sample helper.
-        """
-        import numpy as np
-
-        fmt = DECODER_TABLE[ch.decoder_type][0]
-        size = struct.calcsize(fmt)
-        if not raw_samples:
-            return np.zeros(0, dtype=np.float64)
-        lengths = set(map(len, raw_samples))
-        if min(lengths) < size:
-            return None
-        dtype = np.dtype("<" + fmt)
-        if len(lengths) == 1:
-            # Uniform sample width: one join, then a strided view of the
-            # leading `size` bytes of each sample (data_size may exceed the
-            # decoder width, e.g. Lap Time size=20 with an 'i' decoder).
-            width = lengths.pop()
-            rows = np.frombuffer(b"".join(raw_samples), dtype=np.uint8).reshape(-1, width)
-            raw = np.ascontiguousarray(rows[:, :size]).view(dtype).reshape(-1)
-        else:
-            raw = np.frombuffer(b"".join(sample[:size] for sample in raw_samples), dtype=dtype)
-
-        if ch.decoder_type == 20:
-            # float16 encoded as uint16
-            values = raw.view(np.float16).astype(np.float64)
-        elif ch.decoder_type == 15:
-            # Gear lookup: 'N','1'..'6' -> 0..6, anything else passes through
-            lut = np.arange(65536, dtype=np.float64)
-            lut[ord("N")] = 0
-            for g in "123456":
-                lut[ord(g)] = int(g)
-            values = lut[raw]
-        else:
-            values = raw.astype(np.float64)
-        if ch.units == "V":
-            # Voltage channels are stored as mV, the backends divide by 1000
-            values = values / 1000.0
-        return values
+        """All samples of a channel through the spec's bulk decoder."""
+        return decode_channel_values(raw_samples, ch)
 
     def _compare_all_values(self, result, cython_log):
         """Compare every sample of every channel. Returns (checked_channels, errors)."""
