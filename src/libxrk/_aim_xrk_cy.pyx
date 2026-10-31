@@ -163,6 +163,7 @@ _unit_map = {
     4:  ('deg', 1),
     5:  ('deg/s', 1),
     6:  ('', 0), # number
+    8:  ('m', 0), # Mileage / Distance Lap - RS3 exports as 'm'
     9:  ('Hz', 0),
     11: ('#', 0), # number - the AIM DLL reports '#'
     12: ('mm', 0),
