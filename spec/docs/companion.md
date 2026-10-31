@@ -108,6 +108,25 @@ provides high accuracy without iteration.
 
 Reference: `gps.py:230-255` (`ecef2lla_vermeille2003`, aliased as `ecef2lla` at line 383)
 
+### No-fix records
+
+A NAV-SOL record written before the receiver has a fix carries an all-zero
+ECEF position (and `gpsFix = 0`, `numSV = 0`). Loggers write one at power-on
+and, rarely, as a mid-stream dropout (the all-zero record discussed under
+section 6). Fed through `ecef2lla`, zeros come out as latitude 0, longitude 0
+(a real place in the Gulf of Guinea) and a division by zero for altitude.
+
+The spec defines this on `GPSPayload` itself: the `latitude`, `longitude` and
+`altitude` fields are `Computed` from the ECEF fields (`_ecef_to_lla`), and an
+all-zero position computes to NaN. Both backends therefore treat an all-zero
+ECEF position as **position
+unknown**: `GPS Latitude`, `GPS Longitude` and `GPS Altitude` are `NaN` for
+that record. The record is kept (its timecode still anchors the GPS timebase),
+and the other GPS channels decode normally — speed from the velocity fields,
+`GPS_Fix` and `GPS_Satellites` as written. Derived channels that need the
+position (`GPS_Yaw_Rate`, `GPS_LateralAcc`) are `NaN` for that record and the
+one after it, since they are differences.
+
 ### Computed GPS Channels
 
 From the raw NAV-SOL fields, the following channels are derived:

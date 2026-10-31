@@ -16,6 +16,7 @@ from spec.xrk_format import (
     _decompress_if_zlib,
     chs_padding_bytes,
     DECODER_TABLE,
+    GPSPayload,
 )
 from spec.tests.conftest import ALL_XRK_FILES
 
@@ -311,6 +312,46 @@ class TestGPSCrossValidation:
         assert first.gpsFix in (0, 2, 3)
         assert first.numSV >= 0
         assert first.pDOP > 0
+
+    def test_gps_positions_match_backend(self, parsed_and_backend):
+        """The spec's Computed latitude/longitude/altitude/speed (GPSPayload)
+        must agree with the backends' GPS channels on every record. Both
+        sides evaluate the same Vermeille formula in float64; the residual
+        is libm/SIMD noise, so the tolerance is a few nanometres."""
+        import numpy as np
+
+        parsed, log = parsed_and_backend
+        samples = parsed.get_gps_samples()
+        for field, channel, atol in (
+            ("latitude", "GPS Latitude", 1e-9),
+            ("longitude", "GPS Longitude", 1e-9),
+            ("altitude", "GPS Altitude", 1e-6),
+            ("speed", "GPS Speed", 1e-9),
+        ):
+            spec = np.array([getattr(s, field) for s in samples], dtype=np.float64)
+            backend = log.channels[channel].column(channel).to_numpy(zero_copy_only=False)
+            assert len(spec) == len(backend), channel
+            np.testing.assert_allclose(spec, backend, rtol=0, atol=atol, equal_nan=True)
+
+    def test_no_fix_record_is_position_unknown(self):
+        """An all-zero ECEF position (receiver without a fix yet) is NaN for
+        latitude/longitude/altitude, never 0 deg, 0 deg (companion.md
+        section 5). Speed, fix type and satellite count decode as written."""
+        import math
+
+        nofix = GPSPayload.parse(bytes(56))
+        assert math.isnan(nofix.latitude) and math.isnan(nofix.longitude)
+        assert math.isnan(nofix.altitude)
+        assert nofix.speed == 0.0 and nofix.gpsFix == 0 and nofix.numSV == 0
+
+        # The SFJ fixture's first fixed record (Fuji Speedway): finite, and
+        # the values the backend tests have pinned for years (644.161 m, 35.3725 N).
+        record = bytearray(56)
+        struct.pack_into("<iii", record, 16, -392555554, 342115191, 367201827)
+        fix = GPSPayload.parse(bytes(record))
+        assert abs(fix.latitude - 35.3725327) < 1e-6
+        assert abs(fix.longitude - 138.9275985) < 1e-6
+        assert abs(fix.altitude - 644.1614) < 1e-3
 
     def test_gps_all_fields_present(self, sfj_parsed):
         """Every GPS field should be present in the parsed samples."""
