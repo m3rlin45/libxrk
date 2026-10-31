@@ -110,6 +110,10 @@ file (all listed in `libxrk.GPS_CHANNEL_NAMES`, all on the GPS fix timebase):
 | `GPS_ITOW` | ms | Raw GPS time of week; wraps every 604,800,000 ms |
 | `GPS_Week` | | Raw GPS week number |
 
+A NAV-SOL record with no fix (all-zero ECEF position, written at power-on
+before the first fix) gives `NaN` for `GPS Latitude`, `GPS Longitude` and
+`GPS Altitude` rather than a bogus position at 0°, 0°. `GPS_Fix` is 0 there.
+
 `GPS_ITOW` and `GPS_Week` carry the receiver clock unmodified, so a session can
 be tied to absolute UTC even when the file header's date/time is unreliable:
 `utc = 1980-01-06 + GPS_Week weeks + GPS_ITOW ms - leap_seconds` (18 s as of
