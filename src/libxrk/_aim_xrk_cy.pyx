@@ -51,7 +51,6 @@ dc_slots = {'slots': True} if sys.version_info.minor >= 10 else {}
 class Group:
     index: int
     channels: List[int]
-    samples: array = field(default_factory=lambda: array('I'), repr=False)
     # used during building:
     timecodes: Optional[array] = field(default=None, repr=False)
 
@@ -337,6 +336,105 @@ cdef _resize_vaccum(vaccum & v, size_t idx):
             v[i].Mms = 0
 
 
+cdef class _SampleAccumulators:
+    """Owns the raw per-message sample buffers for one decode.
+
+    gc_data[0]: G messages (groups), [1]: S messages, [2]: c messages
+    (expansion channels), [3]: M messages.
+
+    A C++ attribute of a cdef class is constructed in tp_new and destroyed in
+    tp_dealloc, so the buffers are freed as soon as the last reference drops,
+    on normal return or exception. Nothing references this object back, so it
+    never waits on the cyclic GC, and the numpy arrays built from it are all
+    copies, so nothing outlives it pointing into its memory (issue #111: a
+    C array of these vectors captured by a closure was never destroyed).
+    """
+    cdef vector[vaccum] gc_data
+    cdef list channels
+    cdef object time_offset
+
+    def __cinit__(self):
+        self.gc_data.resize(4)
+
+    def process_group(self, g):
+        cdef accum * data_p
+        g.timecodes = np.array([], dtype=np.int32).data
+        if g.index < self.gc_data[0].size():
+            data_p = &self.gc_data[0][g.index]
+            if data_p.data.size():
+                # Borrowed view; the subtraction below yields an owned array.
+                samples = np.asarray(<cython.uchar[:data_p.data.size()]> &data_p.data[0])
+                rows = len(samples) // (data_p.add_helper - 3)
+                g.timecodes = np.ndarray(buffer=samples, dtype=np.int32,
+                                         shape=(rows,),
+                                         strides=(data_p.add_helper-3,)) - self.time_offset
+        for ch in g.channels:
+            self.process_channel(self.channels[ch])
+
+    def process_channel(self, c):
+        cdef accum * data_p
+        if c.long_name in _manual_decoders:
+            d = _manual_decoders[c.long_name]
+        elif c.unknown[20] in _decoders:
+            d = _decoders[c.unknown[20]]
+        else:
+            return
+
+        c.interpolate = d.interpolate
+        if c.group:
+            grp = c.group.group
+            c.timecodes = grp.timecodes
+            if grp.index < self.gc_data[0].size() and self.gc_data[0][grp.index].data.size():
+                data_p = &self.gc_data[0][grp.index]
+                # TREAD LIGHTLY - borrowed view into data_p.data, copied out below
+                view = np.asarray(<cython.uchar[:data_p.data.size()]> &data_p.data[0])
+                c.sampledata = np.ndarray(buffer=view[c.group.offset:], dtype=d.stype,
+                                          shape=grp.timecodes.shape,
+                                          strides=(data_p.add_helper-3,)).copy()
+            else:
+                c.sampledata = np.empty(0, dtype=d.stype)
+        else:
+            # check for S messages
+            view_offset = 6
+            stride_offset = 3
+            data_p = &self.gc_data[1][c.index]
+            if not data_p.data.size():
+                # No? maybe c messages
+                view_offset = 4
+                stride_offset = 8
+                data_p = &self.gc_data[2][c.index]
+            if data_p.data.size():
+                if len(c.timecodes) != 0:
+                    raise ValueError("Can't have both S/c and M records for channel %s (index=%d, %d vs %d)" % (c.long_name, c.index, len(c.timecodes), data_p.data.size()))
+
+                # TREAD LIGHTLY - raw pointers here
+                view = np.asarray(<cython.uchar[:data_p.data.size()]> &data_p.data[0])
+                rows = len(view) // (data_p.add_helper - stride_offset)
+
+                tc = np.ndarray(buffer=view, dtype=np.int32,
+                                shape=(rows,), strides=(data_p.add_helper-stride_offset,)).copy()
+                samp = np.ndarray(buffer=view[view_offset:], dtype=d.stype,
+                                  shape=(rows,), strides=(data_p.add_helper-stride_offset,)).copy()
+            else:
+                data_p = &self.gc_data[3][c.index] # M messages
+                if data_p.timecodes.size():
+                    tc = np.asarray(<cython.int[:data_p.timecodes.size()]>
+                                    &data_p.timecodes[0]).copy()
+                    samp = np.ndarray(buffer=np.asarray(<cython.uchar[:data_p.data.size()]>
+                                                        &data_p.data[0]),
+                                      dtype=d.stype, shape=tc.shape).copy()
+                else:
+                    tc = _ndarray_from_mv(c.timecodes)
+                    samp = _ndarray_from_mv(memoryview(c.sampledata).cast(d.stype))
+            c.timecodes = (tc - self.time_offset).data
+            c.sampledata = samp.data
+
+        if d.fixup:
+            c.sampledata = memoryview(d.fixup(c.sampledata))
+        if c.units == 'V': # unit_type 21 is mV; calibrated flag converts to V
+            c.sampledata = np.divide(c.sampledata, 1000).data
+
+
 @cython.wraparound(False)
 def _decode_sequence(s, progress=None):
     cdef const cython.uchar[::1] sv = s
@@ -362,7 +460,7 @@ def _decode_sequence(s, progress=None):
     ord_lt_h : cython.int = ord_lt + 256 * ord('h')
     ord_gt: cython.int = ord('>')
     len_s: cython.Py_ssize_t = len(s)
-    cdef vaccum[4] gc_data # [0]: G messages (groups) [1]: S messages (samples?) [2]: c messages (channels from expansion) [3]: M messages
+    cdef _SampleAccumulators acc = _SampleAccumulators()
     time_offset = None
     last_time = None
     t1 = time.perf_counter()
@@ -397,7 +495,7 @@ def _decode_sequence(s, progress=None):
                 msg = <msg_hdr *>&sv[pos]
                 typ: cython.int = msg.s.op
                 if abs(typ - (ord_op_G + ord_op_S) // 2) == (ord_op_S - ord_op_G) // 2:
-                    data_cat = &gc_data[typ == ord_op_S]
+                    data_cat = &acc.gc_data[typ == ord_op_S]
                     data_p = &dereference(data_cat)[msg.s.index]
                     if data_p >= &dereference(data_cat.end()):
                         raise IndexError
@@ -412,8 +510,8 @@ def _decode_sequence(s, progress=None):
                         data_p.data.insert(data_p.data.end(),
                                            <const cython.uchar *>&msg.s.timecode, last)
                 elif typ == ord_op_M:
-                    data_p = &gc_data[3][msg.s.index]
-                    if data_p >= &dereference(gc_data[3].end()):
+                    data_p = &acc.gc_data[3][msg.s.index]
+                    if data_p >= &dereference(acc.gc_data[3].end()):
                         raise IndexError
                     if data_p.Mms == 0:
                         raise ValueError('No ms understood for channel %s' %
@@ -444,7 +542,7 @@ def _decode_sequence(s, progress=None):
                         # V1 — existing format, channel_index = channel_field >> 3
                         if (msg.c.channel & 7) != 4:
                             raise ValueError('Unexpected c.channel low bits: %x' % (msg.c.channel & 7))
-                        data_cat = &gc_data[2]
+                        data_cat = &acc.gc_data[2]
                         data_p = &dereference(data_cat)[msg.c.channel >> 3]
                         if data_p >= &dereference(data_cat.end()):
                             raise IndexError
@@ -561,21 +659,21 @@ def _decode_sequence(s, progress=None):
                             # is not dropped by the dedup check (timecodes may
                             # restart or overlap across CNF boundaries).
                             for cat_idx in range(4):
-                                for acc_idx in range(gc_data[cat_idx].size()):
-                                    gc_data[cat_idx][acc_idx].last_timecode = -1
+                                for acc_idx in range(acc.gc_data[cat_idx].size()):
+                                    acc.gc_data[cat_idx][acc_idx].last_timecode = -1
                             data = _decode_sequence(data).messages
                             #channels = {} # Replays don't necessarily contain all the original channels
                             for m in data[_tokdec('CHS')]:
                                 channels += [None] * (m.content.index - len(channels) + 1)
                                 if not channels[m.content.index]:
                                     channels[m.content.index] = m.content
-                                    _resize_vaccum(gc_data[1], m.content.index)
-                                    gc_data[1][m.content.index].add_helper = m.content.size + 9
-                                    _resize_vaccum(gc_data[2], m.content.index)
-                                    gc_data[2][m.content.index].add_helper = m.content.size + 12
-                                    _resize_vaccum(gc_data[3], m.content.index)
-                                    gc_data[3][m.content.index].add_helper = m.content.size
-                                    gc_data[3][m.content.index].Mms = struct.unpack_from(
+                                    _resize_vaccum(acc.gc_data[1], m.content.index)
+                                    acc.gc_data[1][m.content.index].add_helper = m.content.size + 9
+                                    _resize_vaccum(acc.gc_data[2], m.content.index)
+                                    acc.gc_data[2][m.content.index].add_helper = m.content.size + 12
+                                    _resize_vaccum(acc.gc_data[3], m.content.index)
+                                    acc.gc_data[3][m.content.index].add_helper = m.content.size
+                                    acc.gc_data[3][m.content.index].Mms = struct.unpack_from(
                                         '<I', m.content.unknown, 64)[0] // 1000
                                 else:
                                     # A later CNF re-definition reflects the logger's
@@ -601,8 +699,8 @@ def _decode_sequence(s, progress=None):
                                           [(ch, channels[ch].long_name, channels[ch].size)
                                            for ch in m.content.channels])
 
-                                _resize_vaccum(gc_data[0], m.content.index)
-                                gc_data[0][m.content.index].add_helper = 9 + sum(
+                                _resize_vaccum(acc.gc_data[0], m.content.index)
+                                acc.gc_data[0][m.content.index].add_helper = 9 + sum(
                                     channels[ch].size for ch in m.content.channels)
                         elif tok == _tokdec('GRP'):
                             data = memoryview(data).cast('H')
@@ -852,7 +950,7 @@ def _decode_sequence(s, progress=None):
     # Resolve V2/V3 (c)-message variants — see spec/xrk_format.py
     # :_resolve_c_variants for the algorithm and accuracy notes. Mapping
     # is empirical from the observed channel_field set reconciled against
-    # CHS; sample rows are migrated into gc_data[2] (same normalized
+    # CHS; sample rows are migrated into acc.gc_data[2] (same normalized
     # tc(4)+data(N) shape as V1 rows).
     if v2v3_by_cf:
         v2v3_cfs = set(v2v3_by_cf.keys())
@@ -913,11 +1011,11 @@ def _decode_sequence(s, progress=None):
                 if existing is None or prio > existing[1]:
                     bucket[sample_tc] = (sample_bytes, prio)
 
-        # Migrate into gc_data[2]. Each row = 4 bytes tc + N bytes data
+        # Migrate into acc.gc_data[2]. Each row = 4 bytes tc + N bytes data
         # (stride = add_helper - 8 matches process_channel's expectation).
         for ch_i, samples_dict in per_channel.items():
-            _resize_vaccum(gc_data[2], ch_i)
-            data_p = &gc_data[2][ch_i]
+            _resize_vaccum(acc.gc_data[2], ch_i)
+            data_p = &acc.gc_data[2][ch_i]
             # Preserve V1's add_helper if already set; else initialize for V2/V3.
             if data_p.add_helper == 1:
                 data_p.add_helper = channels[ch_i].size + 12
@@ -931,27 +1029,27 @@ def _decode_sequence(s, progress=None):
                 for data_byte in samples_dict[row_tc][0]:
                     data_p.data.push_back(data_byte)
 
-    # Compute time_offset and last_time from raw gc_data buffers and GPS data.
+    # Compute time_offset and last_time from raw acc.gc_data buffers and GPS data.
     # Channel timecodes are not yet populated (process_channel runs later), so we
     # scan the accumulated raw data vectors directly.
     if channels:
         tc_min_candidates = [time_offset] if time_offset is not None else []
         tc_max_candidates = [last_time] if last_time is not None else []
-        # gc_data[0..2]: first/last 4 bytes of .data are int32 timecodes
+        # acc.gc_data[0..2]: first/last 4 bytes of .data are int32 timecodes
         for cat_idx in range(3):
-            for acc_idx in range(gc_data[cat_idx].size()):
-                if gc_data[cat_idx][acc_idx].data.size():
-                    tc_ptr = <cython.int *>&gc_data[cat_idx][acc_idx].data[0]
+            for acc_idx in range(acc.gc_data[cat_idx].size()):
+                if acc.gc_data[cat_idx][acc_idx].data.size():
+                    tc_ptr = <cython.int *>&acc.gc_data[cat_idx][acc_idx].data[0]
                     tc_min_candidates.append(tc_ptr[0])
-                    stride = gc_data[cat_idx][acc_idx].add_helper - (3 if cat_idx < 2 else 8)
-                    n_rows = gc_data[cat_idx][acc_idx].data.size() // stride
-                    tc_ptr = <cython.int *>&gc_data[cat_idx][acc_idx].data[(n_rows - 1) * stride]
+                    stride = acc.gc_data[cat_idx][acc_idx].add_helper - (3 if cat_idx < 2 else 8)
+                    n_rows = acc.gc_data[cat_idx][acc_idx].data.size() // stride
+                    tc_ptr = <cython.int *>&acc.gc_data[cat_idx][acc_idx].data[(n_rows - 1) * stride]
                     tc_max_candidates.append(tc_ptr[0])
-        # gc_data[3] (M messages): timecodes stored in separate vector
-        for acc_idx in range(gc_data[3].size()):
-            if gc_data[3][acc_idx].timecodes.size():
-                tc_min_candidates.append(gc_data[3][acc_idx].timecodes[0])
-                tc_max_candidates.append(gc_data[3][acc_idx].timecodes[gc_data[3][acc_idx].timecodes.size() - 1])
+        # acc.gc_data[3] (M messages): timecodes stored in separate vector
+        for acc_idx in range(acc.gc_data[3].size()):
+            if acc.gc_data[3][acc_idx].timecodes.size():
+                tc_min_candidates.append(acc.gc_data[3][acc_idx].timecodes[0])
+                tc_max_candidates.append(acc.gc_data[3][acc_idx].timecodes[acc.gc_data[3][acc_idx].timecodes.size() - 1])
         # GPS messages: 56-byte records, first 4 bytes = int32 timecode
         if gpsmsg.size():
             tc_ptr = <cython.int *>&gpsmsg[0]
@@ -960,75 +1058,10 @@ def _decode_sequence(s, progress=None):
             tc_max_candidates.append(tc_ptr[0])
         time_offset = int(min(tc_min_candidates, default=0))
         last_time = int(max(tc_max_candidates, default=0))
-    def process_group(g):
-        g.samples = np.array([], dtype=np.int32)
-        g.timecodes = g.samples.data
-        if g.index < gc_data[0].size():
-            data_p = &gc_data[0][g.index]
-            if data_p.data.size():
-                g.samples = np.asarray(<cython.uchar[:data_p.data.size()]> &data_p.data[0])
-                rows = len(g.samples) // (data_p.add_helper - 3)
-                g.timecodes = np.ndarray(buffer=g.samples, dtype=np.int32,
-                                         shape=(rows,),
-                                         strides=(data_p.add_helper-3,)) - time_offset
-        for ch in g.channels:
-            process_channel(channels[ch])
-
-    def process_channel(c):
-        if c.long_name in _manual_decoders:
-            d = _manual_decoders[c.long_name]
-        elif c.unknown[20] in _decoders:
-            d = _decoders[c.unknown[20]]
-        else:
-            return
-
-        c.interpolate = d.interpolate
-        if c.group:
-            grp = c.group.group
-            c.timecodes = grp.timecodes
-            c.sampledata = np.ndarray(buffer=grp.samples[c.group.offset:], dtype=d.stype,
-                                      shape=grp.timecodes.shape,
-                                      strides=(gc_data[0][grp.index].add_helper-3,)).copy()
-        else:
-            # check for S messages
-            view_offset = 6
-            stride_offset = 3
-            data_p = &gc_data[1][c.index]
-            if not data_p.data.size():
-                # No? maybe c messages
-                view_offset = 4
-                stride_offset = 8
-                data_p = &gc_data[2][c.index]
-            if data_p.data.size():
-                if len(c.timecodes) != 0:
-                    raise ValueError("Can't have both S/c and M records for channel %s (index=%d, %d vs %d)" % (c.long_name, c.index, len(c.timecodes), data_p.data.size()))
-
-                # TREAD LIGHTLY - raw pointers here
-                view = np.asarray(<cython.uchar[:data_p.data.size()]> &data_p.data[0])
-                rows = len(view) // (data_p.add_helper - stride_offset)
-
-                tc = np.ndarray(buffer=view, dtype=np.int32,
-                                shape=(rows,), strides=(data_p.add_helper-stride_offset,)).copy()
-                samp = np.ndarray(buffer=view[view_offset:], dtype=d.stype,
-                                  shape=(rows,), strides=(data_p.add_helper-stride_offset,)).copy()
-            else:
-                data_p = &gc_data[3][c.index] # M messages
-                if data_p.timecodes.size():
-                    tc = np.asarray(<cython.int[:data_p.timecodes.size()]>
-                                    &data_p.timecodes[0]).copy()
-                    samp = np.ndarray(buffer=np.asarray(<cython.uchar[:data_p.data.size()]>
-                                                        &data_p.data[0]),
-                                      dtype=d.stype, shape=tc.shape).copy()
-                else:
-                    tc = _ndarray_from_mv(c.timecodes)
-                    samp = _ndarray_from_mv(memoryview(c.sampledata).cast(d.stype))
-            c.timecodes = (tc - time_offset).data
-            c.sampledata = samp.data
-
-        if d.fixup:
-            c.sampledata = memoryview(d.fixup(c.sampledata))
-        if c.units == 'V': # unit_type 21 is mV; calibrated flag converts to V
-            c.sampledata = np.divide(c.sampledata, 1000).data
+    acc.channels = channels
+    acc.time_offset = time_offset
+    process_group = acc.process_group
+    process_channel = acc.process_channel
 
     laps = None
     has_lap_messages = False
