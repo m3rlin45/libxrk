@@ -1029,6 +1029,18 @@ def _decode_sequence(s, progress=None):
             c.sampledata = memoryview(d.fixup(c.sampledata))
         if c.units == 'V': # unit_type 21 is mV; calibrated flag converts to V
             c.sampledata = np.divide(c.sampledata, 1000).data
+        # Loggers write IEEE infinities into float channels as "no value"
+        # sentinels (fp16 0x7C00 on an unconnected External Voltage, fp32
+        # 0xFF800000 on CAN channels during dropouts). The AIM DLL returns
+        # 0.0 for those; libxrk reports NaN so they read as missing. See
+        # spec/docs/companion.md section 3 ("Non-finite samples").
+        if memoryview(c.sampledata).format in ('f', 'd'):
+            _vals = np.asarray(c.sampledata)
+            _finite = np.isfinite(_vals)
+            if not _finite.all():
+                _vals = _vals.copy()
+                _vals[~_finite] = np.nan
+                c.sampledata = _vals.data
 
     laps = None
     has_lap_messages = False
