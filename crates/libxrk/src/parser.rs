@@ -1764,15 +1764,9 @@ fn process_laps(
         .collect()
 }
 
-/// Processed lap info ready for Arrow conversion.
-/// Uses i64 for times to match the PyArrow output.
-#[derive(Debug, Clone)]
-pub struct ProcessedLap {
-    pub num: i32,
-    pub start_time: i64,
-    pub end_time: i64,
-    pub lap_type: String,
-}
+/// One row of the lap table, as built from LAP messages here and finished
+/// (GPS in-lap classification, GPS fallback detection) by `libxrk_gps`.
+pub use libxrk_gps::Lap as ProcessedLap;
 
 /// Get processed laps from ParseResult (with proper start/end times).
 /// Map channel index -> user-facing channel name.
