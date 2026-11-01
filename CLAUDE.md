@@ -1,7 +1,7 @@
 # libxrk Development Guide
 
 ## Project Overview
-Python library for reading AIM XRK/XRZ motorsports telemetry files. Uses Cython for binary parsing (default) with a Rust+PyO3 parser (~2x faster). Both backends are included in all published wheels. Data is represented as PyArrow tables.
+Python library for reading AIM XRK/XRZ motorsports telemetry files. Uses Cython for binary parsing (default) with a Rust+PyO3 parser (~2x faster). Both backends are included in all published wheels, together with the Rust GPS-processing module they share. Data is represented as PyArrow tables.
 
 **Important:** Always use `just` recipes when one exists for the task. Only fall back to `uv run` for one-off commands that have no `just` recipe (e.g., running a specific script).
 
@@ -32,10 +32,11 @@ When you find data parsing differs from AIM's RaceStudio output, start by readin
 - `spec/docs/unknown_regions.md` - catalog of under-reverse-engineered byte ranges per message type
 - `src/libxrk/_aim_xrk_cy.pyx` - Cython binary parser (default backend, conforms to spec)
 - `src/libxrk/_aim_xrk_cy.pyi` - Type stubs for Cython module
-- `crates/` - Rust+PyO3 parser (~2x faster, conforms to spec)
+- `crates/libxrk/`, `crates/libxrk-python/` - Rust parser (~2x faster, conforms to spec) and its PyO3 module `_aim_xrk_rs`
 - `src/libxrk/_aim_xrk_rs.pyi` - Type stubs for Rust module
+- `crates/libxrk-gps/` - **GPS processing shared by every implementation**: NAV-SOL decode to the 14 GPS channels, timecode reconstruction, the 65533 ms timing fix, GPS in-lap classification and GPS lap detection; exposed to Python as `_aim_xrk_rs.process_gps`
 - `src/libxrk/base.py` - LogFile dataclass, channel merging
-- `src/libxrk/gps.py` - GPS utilities, lap detection, timing fix
+- `src/libxrk/gps.py` - `GPS_CHANNEL_NAMES`
 - `tests/` - pytest tests with real XRK data in `tests/test_data/`
 - `tests/reference_dll/` - official AIM parser (via Wine) used as ground truth for spec cross-checks
 
@@ -44,10 +45,22 @@ When you find data parsing differs from AIM's RaceStudio output, start by readin
 The library has two parser backends with identical APIs. Both are included in all published wheels. **Both backends implement the wire format defined by `spec/xrk_format.py` — the Construct spec is the reference. If parsing changes, update the spec first.**
 
 - **Cython** (default): `src/libxrk/_aim_xrk_cy.pyx` — mature, well-tested
-- **Rust**: `crates/` — ~2x faster
+- **Rust**: `crates/libxrk`, `crates/libxrk-python` — ~2x faster
+
+**GPS processing is not in either parser.** A parser only collects the raw
+GPS/GNFI records, the time offset, the lap table from LAP messages and the TRK
+start/finish; `crates/libxrk-gps` turns that into the 14 GPS channels, applies
+the timing fix and finishes the lap table. The Rust backend links the crate
+(`libxrk::process_gps`); the Cython backend calls the same code directly
+through the Rust extension module (`libxrk._aim_xrk_rs.process_gps`), and so
+do the spec's tests, with `ParseResult.gps_input()`. Change GPS behaviour in that
+crate only, and test it there (`cargo test -p libxrk-gps`,
+`tests/test_gps_processing.py`). Backend equivalence tests compare the
+parsers; they do not re-test GPS processing.
 
 The compiled modules are `libxrk._aim_xrk_cy` and `libxrk._aim_xrk_rs`; the
-package imports only the selected one. The public name `libxrk.aim_xrk` is
+package imports only the selected one as the parser (the Cython backend also
+imports `_aim_xrk_rs` for GPS processing). The public name `libxrk.aim_xrk` is
 always the function. Never add a submodule with that name: Python binds a
 submodule to its parent package on first load, so importing it would rebind
 `libxrk.aim_xrk` to the module and break every later `from libxrk import
@@ -59,7 +72,8 @@ A failure to build either backend fails the whole build. There is no automatic f
 Set `LIBXRK_BACKEND=rust` to use the Rust parser. Default is Cython on all platforms, including Pyodide.
 
 ```bash
-just rust-build                        # Build Rust extension
+just rust-build                        # Build the Rust extension (parser + GPS crate)
+just rust-test                         # cargo test for the parser and GPS crates
 LIBXRK_BACKEND=rust just test          # Test with Rust backend
 uv run python scripts/benchmark.py     # Compare performance
 ```
@@ -148,7 +162,7 @@ After modifying `src/libxrk/_aim_xrk_cy.pyx`, you **must** run `uv sync --reinst
 
 ## Rust Rebuild
 
-After modifying Rust source in `crates/`, run `just rust-build` (release) or `just rust-build-debug` (faster compile). Both backends are always installed together — a failure to build either fails the whole build.
+After modifying Rust source in `crates/` (the parser or the GPS crate), run `just rust-build` (release) or `just rust-build-debug` (faster compile). Both backends are always installed together — a failure to build either fails the whole build.
 
 ## Architecture Notes
 
@@ -156,7 +170,7 @@ After modifying Rust source in `crates/`, run `just rust-build` (release) or `ju
 - Different channels have different sample rates
 - `get_channels_as_table()` merges via full outer join with interpolation/forward-fill
 - Channel metadata stored in PyArrow field.metadata; use `ChannelMetadata.from_field()` for typed access
-- GPS timing fix auto-corrects 65533ms gaps (AIM firmware bug)
+- GPS channels, the 65533ms timing fix (AIM firmware bug) and GPS lap detection come from the shared `libxrk-gps` crate, after parsing
 - All filtering/resampling methods return new `LogFile` instances (immutable pattern)
 - `resample_to_timecodes()` is the core resampling logic, other methods delegate to it
 

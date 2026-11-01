@@ -27,8 +27,13 @@ test:
 spec-test:
     uv run pytest spec/tests/ -v
 
-# Run all checks (lint, clippy, typecheck, test, spec-test)
-check: lint clippy typecheck test spec-test
+# Rust unit tests (the parser crate and the shared GPS crate; the PyO3
+# wrapper is an extension module and cannot be run as a cargo test)
+rust-test:
+    cargo test -p libxrk -p libxrk-gps
+
+# Run all checks (lint, clippy, rust-test, typecheck, test, spec-test)
+check: lint clippy rust-test typecheck test spec-test
 
 # Generate spec test vectors
 spec-vectors:

@@ -1,11 +1,12 @@
 //! GPS processing: decode NAV-SOL messages, compute derived channels.
 //!
-//! Port of `_decode_gps()` from _aim_xrk_cy.pyx.
-//! Decodes 56-byte GPS NAV-SOL records into 14 GPS channels.
+//! Decodes 56-byte GPS NAV-SOL records into 14 GPS channels. The wire
+//! layout is `GPSPayload` in `spec/xrk_format.py`; the derived channels are
+//! specified in `spec/docs/companion.md` section 5.
 
 use std::f64::consts::PI;
 
-use crate::gps::utils as gps_utils;
+use crate::utils as gps_utils;
 
 /// Result of GPS decoding: 14 GPS channels with shared timecodes.
 #[derive(Debug)]
@@ -374,7 +375,7 @@ pub fn decode_gps(
 ///
 /// If any timecode goes backwards, reconstruct using only the bottom 16 bits
 /// with wrap-around detection.
-fn fix_timecodes(timecodes: &mut [i32]) {
+pub fn fix_timecodes(timecodes: &mut [i32]) {
     if timecodes.len() < 2 {
         return;
     }

@@ -21,7 +21,8 @@ Backend Selection:
     Default is Cython.
 
     The two parsers are the private modules ``libxrk._aim_xrk_cy`` and
-    ``libxrk._aim_xrk_rs``; only the selected one is imported. The public
+    ``libxrk._aim_xrk_rs``; only the selected one is used as the parser (the
+    Cython parser also calls ``_aim_xrk_rs`` for GPS processing). The public
     name ``libxrk.aim_xrk`` is always the function, never a module: if a
     submodule shared that name, its first import would rebind the package
     attribute to the module object (Python binds a submodule to its parent on
