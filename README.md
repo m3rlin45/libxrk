@@ -137,6 +137,42 @@ field = pa.field("speed", pa.float32(), metadata=meta.to_field_metadata())
 
 Available fields: `units`, `dec_pts`, `interpolate`, `function`, `source_type`, `source_channel_id`, `device_tag`, `cal_value_1`, `cal_value_2`, `display_range_min`, `display_range_max`.
 
+## Using libxrk from other languages
+
+`crates/libxrk-ffi` builds the Rust parser as a shared library with a small C
+ABI, for programs that are not Python. It hands out exactly what the Python
+`LogFile` holds: each channel and the laps table as Arrow record batches
+through the [Arrow C Data Interface](https://arrow.apache.org/docs/format/CDataInterface.html)
+(`ArrowArrayStream`), and the metadata as a JSON document.
+
+```bash
+just ffi-build    # target/release/libxrk_ffi.so, libxrk_ffi.dylib or xrk_ffi.dll
+```
+
+```c
+char *err = NULL;
+XrkSession *session = xrk_open_path("session.xrk", &err);   /* or xrk_open_bytes */
+if (!session) { fprintf(stderr, "%s\n", err); xrk_string_free(err); return 1; }
+
+for (size_t i = 0; i < xrk_channel_count(session); i++) {
+    char *name = xrk_channel_name(session, i);
+    struct ArrowArrayStream stream;
+    if (xrk_channel_stream(session, i, &stream) == 0) {
+        /* one record batch: "timecodes" (int64 ms) and the channel's values */
+        stream.release(&stream);
+    }
+    xrk_string_free(name);
+}
+
+char *metadata = xrk_metadata_json(session);   /* the LogFile.metadata dict */
+xrk_string_free(metadata);
+xrk_close(session);
+```
+
+The functions, their error values and the ownership rules are documented in
+[`crates/libxrk-ffi/src/lib.rs`](crates/libxrk-ffi/src/lib.rs). There is no
+released binary yet: build the crate from a pinned commit.
+
 ## Development
 
 ### Quick Check
