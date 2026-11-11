@@ -20,6 +20,8 @@ Usage:
 
 import io
 import zlib
+from array import array
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NamedTuple
@@ -828,6 +830,10 @@ def _samples(obj, channel_mms):
     per GRP member, all at the timecode; an M burst carries `count` samples
     Mms apart from the timecode (none when Mms is 0). V2/V3 (c) yield nothing:
     their channel is only known after _resolve_c_variants.
+
+    This is where a sample's time is defined. It is on the logger clock, like
+    the message timecode it derives from; ParseResult.channel_timecodes()
+    makes it session-relative.
     """
     tc = obj.timecode
     match obj.msg_type:
@@ -851,13 +857,15 @@ def _accumulate(obj, result):
     "Sample streams"). The rule: a sample is kept iff its time is strictly
     later than the last kept sample of its accumulator, one accumulator per
     message family and channel (per group member for G). Streams are
-    contiguous bytes, one CHS.data_size slot per sample.
+    contiguous bytes, one CHS.data_size slot per sample; a kept sample's time
+    goes to stream_times at the same position.
     """
     last = result._last_accepted
     for key, ch, t, raw in _samples(obj, result.channel_mms):
         if t > last.get(key, -1):
             last[key] = t
             result.streams.setdefault(ch, bytearray()).extend(raw)
+            result.stream_times[ch].append(t)
 
 
 def _on_data_header(obj, ctx):
@@ -1421,6 +1429,10 @@ class ParseResult:
     # Per-channel sample streams from the accumulation pass (_accumulate):
     # {channel_index: bytearray}, one CHS.data_size slot per sample.
     streams: dict = field(default_factory=dict)
+    # The time of each sample in `streams`, on the logger clock (int32 ms, as
+    # the wire timecode): {channel_index: array('i')}, one item per slot. A
+    # defaultdict, so the per-sample append in _accumulate allocates nothing.
+    stream_times: dict = field(default_factory=lambda: defaultdict(lambda: array("i")))
     _last_accepted: dict = field(default_factory=dict)  # {accumulator: last kept time}
     # Header timecode of the last data message in file order (whole or bare
     # header), and the first timecode per data stream. See _note_data_header.
@@ -1641,6 +1653,22 @@ class ParseResult:
             if idx in self.channels
         }
         return {idx: v for idx, v in decoded.items() if v is not None}
+
+    def channel_timecodes(self):
+        """Each channel's sample times: {channel_index: int64 numpy array}.
+
+        Milliseconds since session start: the time each kept sample was
+        accumulated at (_samples, _accumulate) minus time_offset(). One
+        timecode per slot of the channel's stream, so index for index with
+        channel_samples() and channel_values(). This is the ``timecodes``
+        column both backends expose for the channel. Strictly increasing
+        when one accumulator feeds the channel.
+        """
+        offset = self.time_offset()
+        return {
+            idx: np.frombuffer(times, dtype=np.intc).astype(np.int64) - offset
+            for idx, times in self.stream_times.items()
+        }
 
     def get_gps_samples(self):
         """Return parsed GPS samples as list of Containers."""
