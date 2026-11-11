@@ -143,6 +143,26 @@ jobs:
           echo "::endgroup::"
         done
 
+    # The C ABI library for non-Python consumers (crates/libxrk-ffi), and the
+    # only place the Rust tests run. After the wheels, so nothing here can
+    # leak into one. Setting LIBXRK_FFI_LIB makes the source tests below run
+    # tests/test_ffi.py against the release library instead of skipping it.
+    - name: Rust tests and the C ABI library
+      if: matrix.source-tests
+      shell: bash
+      run: |
+        set -euo pipefail
+        cargo test -p libxrk -p libxrk-ffi
+        cargo build --release -p libxrk-ffi
+        case "$RUNNER_OS" in
+          Windows) lib=xrk_ffi.dll ;;
+          macOS) lib=libxrk_ffi.dylib ;;
+          *) lib=libxrk_ffi.so ;;
+        esac
+        test -f "target/release/$lib"
+        # Relative to the checkout: Git Bash's $PWD is not a path Python can open.
+        echo "LIBXRK_FFI_LIB=target/release/$lib" >> "$GITHUB_ENV"
+
     # Each Python gets its own project environment (UV_PROJECT_ENVIRONMENT)
     # so the syncs can proceed while earlier Pythons are still testing. The
     # syncs stay sequential: the editable build compiles into the shared

@@ -27,8 +27,13 @@ test:
 spec-test:
     uv run pytest spec/tests/ -v
 
-# Run all checks (lint, clippy, typecheck, test, spec-test)
-check: lint clippy typecheck test spec-test
+# Rust unit and integration tests (core crate and the C ABI crate;
+# libxrk-python is an extension module and only links inside Python)
+rust-test:
+    cargo test -p libxrk -p libxrk-ffi
+
+# Run all checks (lint, clippy, typecheck, test, spec-test, rust-test)
+check: lint clippy typecheck test spec-test rust-test
 
 # Generate spec test vectors
 spec-vectors:
@@ -51,6 +56,22 @@ rust-build:
 rust-build-debug:
     #!/usr/bin/env bash
     source $HOME/.cargo/env && uv run maturin develop
+
+# Build the C ABI library for non-Python consumers
+# (target/release/libxrk_ffi.so, libxrk_ffi.dylib or xrk_ffi.dll)
+ffi-build:
+    cargo build --release -p libxrk-ffi
+
+# Check the C ABI against the Python LogFile on every fixture
+ffi-test: ffi-build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$(uname -s)" in
+        Darwin) lib=libxrk_ffi.dylib ;;
+        MINGW*|MSYS*|CYGWIN*) lib=xrk_ffi.dll ;;
+        *) lib=libxrk_ffi.so ;;
+    esac
+    LIBXRK_FFI_LIB="target/release/$lib" uv run pytest tests/test_ffi.py -v
 
 # --- Pyodide (runtime 314 = Python 3.14, PEP 783 pyemscripten_2026_0 -> PyPI) ---
 # Builds on STABLE Rust with the rustflags the xbuildenv reports, using plain

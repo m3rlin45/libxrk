@@ -13,6 +13,7 @@ just check           # Run all checks (lint, typecheck, test)
 just format          # Black formatting
 just typecheck       # mypy
 just test            # pytest
+just rust-test       # cargo test (core crate + C ABI crate)
 uv build             # Build wheel
 ```
 
@@ -34,6 +35,7 @@ When you find data parsing differs from AIM's RaceStudio output, start by readin
 - `src/libxrk/_aim_xrk_cy.pyi` - Type stubs for Cython module
 - `crates/` - Rust+PyO3 parser (~2x faster, conforms to spec)
 - `src/libxrk/_aim_xrk_rs.pyi` - Type stubs for Rust module
+- `crates/libxrk-ffi/` - C ABI over the Rust core for non-Python consumers (see "C ABI" below)
 - `src/libxrk/base.py` - LogFile dataclass, channel merging
 - `src/libxrk/gps.py` - GPS utilities, lap detection, timing fix
 - `tests/` - pytest tests with real XRK data in `tests/test_data/`
@@ -63,6 +65,33 @@ just rust-build                        # Build Rust extension
 LIBXRK_BACKEND=rust just test          # Test with Rust backend
 uv run python scripts/benchmark.py     # Compare performance
 ```
+
+## C ABI (`crates/libxrk-ffi`)
+
+`libxrk-ffi` builds the Rust core as a shared library (`xrk_ffi`) for callers
+that are not Python; the C# Inferno Analyzer in motorsports_data_notebook is
+the consumer. A session is opened from a path or bytes, each channel and the
+laps table come out through the Arrow C Data Interface (`ArrowArrayStream`),
+and the metadata comes out as JSON. The ten `xrk_*` functions and their
+ownership rules are documented in `crates/libxrk-ffi/src/lib.rs`.
+
+**The contract is "what the Rust backend's Python `LogFile` holds":** same
+channels in the same order, same schemas and field metadata, same laps, and
+the `metadata` dict as JSON with the same keys in the same order.
+`tests/test_ffi.py` asserts that on every fixture by loading the library with
+ctypes; it only runs when `LIBXRK_FFI_LIB` points at the library.
+
+```bash
+just ffi-build       # target/release/libxrk_ffi.so (.dylib, or xrk_ffi.dll)
+just ffi-test        # build, then tests/test_ffi.py against the library
+just rust-test       # cargo tests for the core crate and the C ABI crate
+```
+
+Keep the bindings thin. Anything every binding has to agree on lives in the
+core crate, not in `libxrk-python` or `libxrk-ffi`: the metadata keys and
+their order (`Metadata::to_entries`), and the float text in field metadata
+(`libxrk::arrow::format_float`). Changing an `xrk_*` signature breaks the
+consumer, which builds this crate from a pinned commit.
 
 ## Code Style
 
