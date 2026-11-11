@@ -82,6 +82,11 @@ Each channel table has:
 
 Channels have different sample rates. Use `get_channels_as_table()` to merge.
 
+**Non-finite samples:** loggers write IEEE infinities into float channels as
+"no value" sentinels (an unconnected `External Voltage`, CAN channels during a
+bus dropout). libxrk reports those samples as `NaN` on both backends; the
+official AIM DLL returns `0.0` instead. Integer channels are never affected.
+
 **GPS-derived channels:** the parser synthesizes 14 channels from the GPS
 receiver's NAV-SOL records (all listed in `libxrk.GPS_CHANNEL_NAMES`, all on
 the GPS fix timebase):
