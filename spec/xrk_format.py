@@ -864,6 +864,57 @@ _C_MSG_VARIANT_STRUCTS = {
     "V3": cMessageV3Compiled,
 }
 
+# (c sample placement (companion.md section 3, "Expansion samples").
+#
+# A V2 payload is two fp16 samples and a V3 payload one, each 2 bytes. This
+# table says where each sample goes in time, relative to the message timecode
+# (embedded for V2, synthesized by _resolve_c_variants for V3), and its
+# priority when two samples of one channel land on the same timecode: the
+# higher priority wins, and of two equal priorities the earlier message in the
+# file. _place_c_variants applies it once the channel is known.
+#
+# The key is the variant and the side of its channel_field: "base" when the
+# low nibble is 0 or 8, "+4" otherwise. Side, not pairing, decides: an orphan
+# field follows the row of its own side (all orphans seen so far are "+4").
+# A V3 on a base-side field has no row and carries no sample.
+#
+# The offsets are multiples of a fixed 2 ms step, the sample period of the
+# 500 Hz channels this was reverse-engineered on. It is a constant, not
+# CHS.sample_period_us: a 100 Hz orphan channel gets the same 2 ms spacing.
+C_SAMPLE_STEP_MS = 2
+C_SAMPLE_SIZE = 2  # bytes per V2/V3 payload sample (fp16), the channel's CHS.data_size
+
+
+class _Placed(NamedTuple):
+    """One sample of a V2/V3 (c message."""
+
+    sample: int  # index of the sample in the payload
+    offset_ms: int  # added to the message timecode
+    priority: int  # the higher wins a timecode collision
+
+
+C_SAMPLE_PLACEMENT = {
+    ("V2", "base"): (_Placed(0, 0, 3), _Placed(1, -2 * C_SAMPLE_STEP_MS, 3)),
+    ("V2", "+4"): (_Placed(0, -C_SAMPLE_STEP_MS, 1), _Placed(1, -2 * C_SAMPLE_STEP_MS, 1)),
+    ("V3", "+4"): (_Placed(0, 0, 2),),
+}
+
+
+def _c_field_side(channel_field):
+    """The side of a V2/V3 channel_field: "base" (low nibble 0 or 8) or "+4"."""
+    return "base" if channel_field & 0xF in (0x0, 0x8) else "+4"
+
+
+class _PlacedSample(NamedTuple):
+    """A V2/V3 sample after placement: accumulated as a V1 (c at `timecode`."""
+
+    channel_index: int
+    timecode: int
+    data: bytes
+    msg_type: str = "c"
+    variant: str = "V1"
+
+
 # Data message opcode -> compiled struct (used by round-trip tests).
 # For (c, this is the Select wrapper; callers that need variant-specific
 # builds look up by variant name via _C_MSG_VARIANT_STRUCTS.
@@ -906,7 +957,8 @@ def _samples(obj, channel_mms):
     S and V1 (c) carry one sample at the message timecode; a G carries one
     per GRP member, all at the timecode; an M burst carries `count` samples
     Mms apart from the timecode (none when Mms is 0). V2/V3 (c) yield nothing:
-    their channel is only known after _resolve_c_variants.
+    their channel is only known after _resolve_c_variants, so
+    _place_c_variants feeds their samples in after the parse.
 
     This is where a sample's time is defined. It is on the logger clock, like
     the message timecode it derives from; ParseResult.channel_timecodes()
@@ -1307,7 +1359,8 @@ def parse_xrk_bytes(data):
       - Data messages (G, S, M, c)
       - Recursive parsing of CNF/ENF embedded header sections
       - Post-parse resolution of V2/V3 (c-message) channel indices and
-        synthesis of V3 timecodes (see _resolve_c_variants).
+        synthesis of V3 timecodes (see _resolve_c_variants), then placement
+        of their samples in the channel streams (see _place_c_variants).
 
     Args:
         data: Raw XRK file bytes (or XRZ, auto-decompressed)
@@ -1320,6 +1373,7 @@ def parse_xrk_bytes(data):
         data = bytes(data)
     result = _parse_sequence(data)
     _resolve_c_variants(result)
+    _place_c_variants(result)
     return result
 
 
@@ -1348,7 +1402,8 @@ def _resolve_c_variants(result):
          channel_fields of each pair mapping to the same channel_index.
       7. Walk messages in order, synthesizing V3 timecode via a branching
          rule: V3.tc = last_V2(base).tc - mms if V2(base) was most recently
-         seen on this pair, else last_V2(+4).tc + mms. Both formulations
+         seen on this pair, else last_V2(+4).tc + mms, where mms is the
+         fixed C_SAMPLE_STEP_MS (2 ms), not the CHS period. Both formulations
          give the same cycle-center tc under uniform 10ms cycles; the
          branch handles occasional 11ms "long" cycles where a single
          rule would place V3 off by 1-2ms.
@@ -1481,7 +1536,7 @@ def _resolve_c_variants(result):
                     last_v2_plus4_tc[ch_idx] = m.parsed["timecode"]
                     last_v2_plus4_pos[ch_idx] = pos
         elif variant == "V3":
-            mms = result.channel_mms.get(ch_idx, 2)
+            mms = C_SAMPLE_STEP_MS  # fixed, as in both backends; not the CHS period
             base_tc = last_v2_base_tc.get(ch_idx)
             plus4_tc = last_v2_plus4_tc.get(ch_idx)
             base_pos = last_v2_base_pos.get(ch_idx, -1)
@@ -1492,6 +1547,55 @@ def _resolve_c_variants(result):
                 m.parsed["timecode"] = base_tc - mms
             elif plus4_tc is not None:
                 m.parsed["timecode"] = plus4_tc + mms
+
+
+def _place_c_variants(result):
+    """Place the V2/V3 (c samples in time and accumulate them.
+
+    Runs after _resolve_c_variants, which gives each V2/V3 message its
+    channel_index and each V3 its timecode. Per channel:
+
+      1. Every message contributes the samples C_SAMPLE_PLACEMENT lists for
+         its variant and channel_field side, each at timecode + offset_ms.
+         A message whose channel is unresolved contributes nothing.
+      2. Where several samples land on one time, the highest priority is
+         kept; between equal priorities, the earliest message in the file.
+      3. The survivors are accumulated in ascending time order, each as a V1
+         (c message of that channel at that time would be (_accumulate): a
+         sample is kept iff it is later than the last kept (c sample of the
+         channel since the last CNF. The channel's V1 messages were all
+         accumulated during the parse, so V2/V3 samples follow them in the
+         stream and are dropped up to the last V1 timecode kept since the
+         last CNF; so is any sample placed before time 0, which includes a
+         V3 that found no anchor (timecode -1).
+
+    The kept samples are in ``streams`` and their times in ``stream_times``
+    like any other sample, and the first of them is the channel's first (c
+    timecode for time_offset() when it has no V1 samples.
+    """
+    placed = {}  # channel_index -> {time: (priority, raw sample)}
+    for m in result.messages:
+        p = m.parsed
+        if m.msg_type != "c" or p["variant"] == "V1" or p["channel_index"] < 0:
+            continue
+        slots = placed.setdefault(p["channel_index"], {})
+        for sample, offset_ms, priority in C_SAMPLE_PLACEMENT.get(
+            (p["variant"], _c_field_side(p["channel_field"])), ()
+        ):
+            time = p["timecode"] + offset_ms
+            if priority > slots.get(time, (0,))[0]:
+                start = sample * C_SAMPLE_SIZE
+                slots[time] = (priority, p["data"][start : start + C_SAMPLE_SIZE])
+
+    for ch, slots in placed.items():
+        # In time order the accumulation rule is a cut at the last V1 sample
+        # kept since the last CNF (_reset_accumulators).
+        last_v1 = result._last_accepted.get(("c", ch), -1)
+        times = [t for t in sorted(slots) if t > last_v1]
+        if times:
+            result.first_timecodes.setdefault(("c", ch), times[0])
+        for t in times:
+            _accumulate(_PlacedSample(ch, t, slots[t][1]), result)
 
 
 def parse_xrk_file(filepath):

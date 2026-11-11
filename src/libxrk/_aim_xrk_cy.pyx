@@ -498,6 +498,9 @@ def _decode_sequence(s, progress=None):
     # Structure: ch_field -> list[(tc, sample_bytes, priority, file_order)]
     #   priority: 3 = V2(base) V2[0]/V2[1], 2 = V3, 1 = V2(+4) V2[0]/V2[1]
     #   Higher priority wins on tc collision (V2(base) > V3 > V2(+4)).
+    # The sample times and priorities used below are the rows of
+    # C_SAMPLE_PLACEMENT in spec/xrk_format.py (applied by _place_c_variants);
+    # that table is the definition, this code conforms to it.
     v2v3_by_cf = {}
     # For V3 timecode synthesis — track most recent V2(base) and V2(+4) tc
     # per pair (keyed by base_cf and plus4_cf respectively) plus file-order

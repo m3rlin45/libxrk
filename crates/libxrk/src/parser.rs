@@ -324,6 +324,9 @@ struct ParserState {
     /// :_resolve_c_variants. Keyed by channel_field. Entries are
     /// (synthesized_or_embedded_tc, sample_bytes, priority, file_order).
     /// priority: 3 = V2(base), 2 = V3, 1 = V2(+4). Higher wins at tc collision.
+    /// The sample times and priorities are the rows of C_SAMPLE_PLACEMENT in
+    /// spec/xrk_format.py (applied by _place_c_variants); that table is the
+    /// definition, this code conforms to it.
     v2v3_by_cf: HashMap<u16, Vec<(i32, Vec<u8>, u8, u32)>>,
     /// Most-recent V2(base).tc per base ch_field (for V3 tc synthesis).
     last_v2_base_tc: HashMap<u16, (i32, u32)>,
