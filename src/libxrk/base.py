@@ -132,6 +132,10 @@ class LogFile:
         channels: Dict mapping channel names to PyArrow tables. Each table has
             'timecodes' (int64, ms) and '<channel_name>' columns. Channel metadata
             (units, dec_pts, interpolate) stored in schema.field.metadata with bytes keys.
+            The value column has the type the samples are stored in, so most
+            analog, IMU and CAN channels are float16 (Arrow ``halffloat``), which
+            pyarrow compute barely supports: cast with
+            ``pc.cast(column, pa.float32())`` before doing arithmetic on one.
         laps: PyArrow table with columns: num (int), start_time (int), end_time (int),
             lap_type (str: "full", "out", "in"). Times are in milliseconds.
         metadata: Dict of session metadata (racer, vehicle, venue, etc.)
@@ -160,7 +164,9 @@ class LogFile:
             A PyArrow table with a 'timecodes' column and one column per channel.
             Missing values are interpolated or forward-filled based on channel metadata.
             Leading nulls are backward filled to ensure no nulls remain.
-            Column metadata is preserved.
+            Column metadata is preserved. Column types follow
+            ``resample_to_timecodes()``: interpolated float16 channels are float32
+            in the merged table, interpolated integer channels float64.
         """
         if not self.channels:
             # Return an empty table with just timecodes column if no channels
@@ -332,6 +338,11 @@ class LogFile:
         For channels with interpolate="True" metadata, performs linear interpolation.
         For other channels, uses forward-fill then backward-fill for leading nulls.
 
+        Forward-filled channels keep their type. Interpolated channels keep a
+        float32 or float64 type; an integer channel becomes float64 and a
+        float16 channel becomes float32, because interpolated values are not
+        values of the source type.
+
         Args:
             timecodes: Target timecodes array (int64, milliseconds) to resample to.
             channel_names: Optional sequence of channel names to include. If None, all channels.
@@ -383,11 +394,15 @@ class LogFile:
                     resampled_values = resampled_values.copy()
                     resampled_values[leading_mask] = channel_values[0]
 
-            # Promote integer types to float64 when interpolating to preserve
-            # fractional values (np.interp returns float64, casting back to int truncates)
+            # Interpolation computes new values (np.interp returns float64),
+            # which the source type may not hold: integers are promoted to
+            # float64 (casting back would truncate the fractions) and float16
+            # to float32 (casting back would round to 11 significant bits).
             output_type = field.type
             if should_interpolate and pa.types.is_integer(field.type):
                 output_type = pa.float64()
+            elif should_interpolate and pa.types.is_float16(field.type):
+                output_type = pa.float32()
 
             # Build new channel table preserving metadata
             new_table = pa.table(

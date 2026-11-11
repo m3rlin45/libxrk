@@ -64,8 +64,11 @@ This determines how to interpret the raw data bytes:
 | 39 | `i` (int32)   | 4 | No  | GPS_Time |
 
 **Float16 encoding (decoder 20):** The raw uint16 value is reinterpreted as
-IEEE 754 half-precision (binary16) and promoted to float32. This is the most
-common encoding for analog sensor channels.
+IEEE 754 half-precision (binary16) and returned as float16 (Arrow
+`halffloat`), not widened. One exception: a channel in volts is stored in
+millivolts and divided by 1000 (see "Special fixups"), and the quotient is not
+a float16 value, so it is widened to float32 first and returned as float32.
+This is the most common encoding for analog sensor channels.
 
 **Gear lookup (decoder 15):** The raw uint16 value is an ASCII character code.
 Map `'N'`(0x4E)→0, `'1'`(0x31)→1, ..., `'6'`(0x36)→6.

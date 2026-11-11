@@ -82,6 +82,7 @@ pub enum ChannelValues {
     Int16(Vec<i16>),
     Int32(Vec<i32>),
     UInt32(Vec<u32>),
+    Float16(Vec<half::f16>),
     Float32(Vec<f32>),
     Float64(Vec<f64>),
 }
@@ -90,9 +91,11 @@ impl ChannelValues {
     /// Create a new typed vector with the right variant based on decoder/channel properties.
     ///
     /// V-units channels with integer decoders use Float64 (numpy 2.x: np.divide(int, 1000) → f64).
-    /// V-units channels with float decoders stay Float32 (numpy 2.x: np.divide(f32, 1000) → f32).
+    /// V-units channels with float decoders are Float32 (numpy 2.x: np.divide(f32, 1000) → f32);
+    /// that includes float16 samples, widened first because mV/1000 is not a float16.
     /// Manual gear channels use UInt32.
-    /// Otherwise: decoder type determines the variant.
+    /// Otherwise: decoder type determines the variant; float16 samples (decoder 20) stay Float16.
+    /// Reference: spec/docs/companion.md section 3.
     pub fn new(decoder_type: u8, units: &str, is_manual: bool, capacity: usize) -> Self {
         if units == "V" {
             // V conversion (mV→V via /1000): numpy 2.x scalar promotion rules
@@ -109,13 +112,22 @@ impl ChannelValues {
         match decoder_type {
             1 | 15 => ChannelValues::UInt16(Vec::with_capacity(capacity)),
             4 | 11 => ChannelValues::Int16(Vec::with_capacity(capacity)),
-            6 | 20 => ChannelValues::Float32(Vec::with_capacity(capacity)),
+            6 => ChannelValues::Float32(Vec::with_capacity(capacity)),
+            20 => ChannelValues::Float16(Vec::with_capacity(capacity)),
             13 => ChannelValues::UInt8(Vec::with_capacity(capacity)),
             _ => ChannelValues::Int32(Vec::with_capacity(capacity)),
         }
     }
 
     /// Push a decoded sample value into the typed vector.
+    ///
+    /// A sample of the vector's own variant is stored as it is. The parser
+    /// always pairs a vector with the decoder that produces that variant
+    /// (`new` and `decode_sample` take the same `decoder_type`), except where
+    /// `new` deliberately picks a wider type: a "V" channel's Float32 or
+    /// Float64 vector takes Float16, Float32, integer and gear samples, and
+    /// widens them exactly. Every other `_` arm is a conversion for callers
+    /// that push a sample of a different variant; the parser never reaches it.
     pub fn push(&mut self, val: crate::decoders::SampleValue) {
         use crate::decoders::SampleValue;
         match self {
@@ -140,6 +152,17 @@ impl ChannelValues {
                 SampleValue::UInt32(x) => v.push(x),
                 _ => v.push(val.as_f64() as u32),
             },
+            ChannelValues::Float16(v) => match val {
+                SampleValue::Float16(x) => v.push(x),
+                // Not a round trip: a float16 sample took the arm above. This
+                // narrows a sample of another variant, and f32 is the best
+                // way in: it holds every variant a decoder produces exactly
+                // (integers past 2^24 are far beyond the float16 range and
+                // become infinity either way), and `from_f32` rounds
+                // correctly, whereas half 2.7's `from_f64` drops the low 32
+                // mantissa bits before it rounds.
+                _ => v.push(half::f16::from_f32(val.as_f32())),
+            },
             ChannelValues::Float32(v) => match val {
                 SampleValue::Float32(x) => v.push(x),
                 _ => v.push(val.as_f32()),
@@ -155,6 +178,7 @@ impl ChannelValues {
             ChannelValues::Int16(v) => v.push(0),
             ChannelValues::Int32(v) => v.push(0),
             ChannelValues::UInt32(v) => v.push(0),
+            ChannelValues::Float16(v) => v.push(half::f16::ZERO),
             ChannelValues::Float32(v) => v.push(0.0),
             ChannelValues::Float64(v) => v.push(0.0),
         }
@@ -178,6 +202,11 @@ impl ChannelValues {
             ChannelValues::Float32(v) => {
                 for val in v.iter_mut().filter(|x| !x.is_finite()) {
                     *val = f32::NAN;
+                }
+            }
+            ChannelValues::Float16(v) => {
+                for val in v.iter_mut().filter(|x| !x.is_finite()) {
+                    *val = half::f16::NAN;
                 }
             }
             _ => {}
@@ -2532,6 +2561,63 @@ mod tests {
         // V unit + float decoder → Float32
         let v = ChannelValues::new(6, "V", false, 10);
         assert!(matches!(v, ChannelValues::Float32(_)));
+
+        // float16 decoder stays Float16 ...
+        let v = ChannelValues::new(20, "C", false, 10);
+        assert!(matches!(v, ChannelValues::Float16(_)));
+
+        // ... except in volts: mV/1000 is not a float16
+        let v = ChannelValues::new(20, "V", false, 10);
+        assert!(matches!(v, ChannelValues::Float32(_)));
+    }
+
+    #[test]
+    fn test_float16_channel_values() {
+        use crate::decoders::{decode_sample, SampleValue};
+        let sample = |bits: u16| decode_sample(20, &bits.to_le_bytes()).unwrap();
+
+        // Kept as the stored float16; non-finite samples become NaN.
+        let mut v = ChannelValues::new(20, "C", false, 3);
+        v.push(sample(0x3C00)); // 1.0
+        v.push(sample(0x7C00)); // +inf
+        v.push_default();
+        v.non_finite_to_nan();
+        match &v {
+            ChannelValues::Float16(vals) => {
+                assert_eq!(vals[0].to_bits(), 0x3C00);
+                assert!(vals[1].is_nan());
+                assert_eq!(vals[2].to_bits(), 0);
+            }
+            _ => panic!("expected Float16"),
+        }
+
+        // A sample of another variant is converted, not reinterpreted. The
+        // parser never does this to a Float16 vector; `push` is public.
+        let mut v = ChannelValues::new(20, "C", false, 5);
+        v.push(SampleValue::Int32(3));
+        v.push(SampleValue::Float32(-2.5));
+        v.push(SampleValue::Float32(1.0 + 2f32.powi(-11))); // halfway: ties to even
+        v.push(SampleValue::Float32(1.0 + 2f32.powi(-11) + 2f32.powi(-22))); // just above
+        v.push(SampleValue::Int32(70_000)); // past the float16 range
+        match &v {
+            ChannelValues::Float16(vals) => {
+                assert_eq!(vals[0].to_f32(), 3.0);
+                assert_eq!(vals[1].to_f32(), -2.5);
+                assert_eq!(vals[2].to_bits(), 0x3C00);
+                assert_eq!(vals[3].to_bits(), 0x3C01);
+                assert_eq!(vals[4], half::f16::INFINITY);
+            }
+            _ => panic!("expected Float16"),
+        }
+
+        // Volts: the float16 millivolts are widened, then divided in float32.
+        let mut v = ChannelValues::new(20, "V", false, 1);
+        v.push(sample(0x7180)); // 11264 mV
+        v.apply_mv_to_v();
+        match &v {
+            ChannelValues::Float32(vals) => assert_eq!(vals[0], 11264.0f32 / 1000.0),
+            _ => panic!("expected Float32"),
+        }
     }
 
     #[test]

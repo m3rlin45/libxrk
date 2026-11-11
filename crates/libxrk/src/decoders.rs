@@ -2,6 +2,8 @@
 //!
 //! Maps decoder_type to decode function. Equivalent to `_decoders` in _aim_xrk_cy.pyx.
 
+use half::f16;
+
 /// Decoded sample value — preserves the native type from each decoder.
 #[derive(Debug, Clone, Copy)]
 pub enum SampleValue {
@@ -10,6 +12,7 @@ pub enum SampleValue {
     Int16(i16),
     Int32(i32),
     UInt32(u32),
+    Float16(f16),
     Float32(f32),
     Float64(f64),
 }
@@ -22,6 +25,7 @@ impl SampleValue {
             SampleValue::Int16(v) => v as f64,
             SampleValue::Int32(v) => v as f64,
             SampleValue::UInt32(v) => v as f64,
+            SampleValue::Float16(v) => v.to_f64(),
             SampleValue::Float32(v) => v as f64,
             SampleValue::Float64(v) => v,
         }
@@ -34,6 +38,7 @@ impl SampleValue {
             SampleValue::Int16(v) => v as f32,
             SampleValue::Int32(v) => v as f32,
             SampleValue::UInt32(v) => v as f32,
+            SampleValue::Float16(v) => v.to_f32(),
             SampleValue::Float32(v) => v,
             SampleValue::Float64(v) => v as f32,
         }
@@ -106,14 +111,14 @@ pub fn decode_sample(decoder_type: u8, data: &[u8]) -> Option<SampleValue> {
             let v = u16::from_le_bytes([data[0], data[1]]);
             Some(SampleValue::UInt16(gear_lookup(v)))
         }
-        // float16 encoded as uint16 (type 20)
+        // float16 (type 20): kept as float16; a consumer that needs more
+        // (the mV→V conversion) widens it exactly with as_f32()
         20 => {
             if data.len() < 2 {
                 return None;
             }
             let bits = u16::from_le_bytes([data[0], data[1]]);
-            let f = half_to_f32(bits);
-            Some(SampleValue::Float32(f))
+            Some(SampleValue::Float16(f16::from_bits(bits)))
         }
         _ => None,
     }
@@ -141,40 +146,6 @@ pub fn is_manual_decoder(name: &str) -> bool {
     name == "Calculated_Gear" || name == "PreCalcGear"
 }
 
-/// Convert IEEE 754 half-precision (float16) to float32.
-fn half_to_f32(bits: u16) -> f32 {
-    // Use the standard conversion: sign, exponent, mantissa
-    let sign = ((bits >> 15) & 1) as u32;
-    let exp = ((bits >> 10) & 0x1F) as u32;
-    let mantissa = (bits & 0x3FF) as u32;
-
-    if exp == 0 {
-        if mantissa == 0 {
-            // Zero
-            f32::from_bits(sign << 31)
-        } else {
-            // Subnormal: normalize
-            let mut m = mantissa;
-            let mut e: i32 = -14;
-            while m & 0x400 == 0 {
-                m <<= 1;
-                e -= 1;
-            }
-            m &= 0x3FF;
-            let f32_exp = ((e + 127) as u32) & 0xFF;
-            f32::from_bits((sign << 31) | (f32_exp << 23) | (m << 13))
-        }
-    } else if exp == 31 {
-        // Inf or NaN
-        let f32_mantissa = mantissa << 13;
-        f32::from_bits((sign << 31) | (0xFF << 23) | f32_mantissa)
-    } else {
-        // Normal
-        let f32_exp = (exp as i32 - 15 + 127) as u32;
-        f32::from_bits((sign << 31) | (f32_exp << 23) | (mantissa << 13))
-    }
-}
-
 /// Get the byte size of a sample for the given decoder type.
 pub fn sample_byte_size(decoder_type: u8) -> Option<u8> {
     crate::tables::decoder_info(decoder_type).map(|d| d.byte_size)
@@ -183,40 +154,6 @@ pub fn sample_byte_size(decoder_type: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_half_to_f32() {
-        // 0x0000 = 0.0
-        assert_eq!(half_to_f32(0x0000), 0.0);
-        // 0x3C00 = 1.0
-        assert!((half_to_f32(0x3C00) - 1.0).abs() < 1e-6);
-        // 0xBC00 = -1.0
-        assert!((half_to_f32(0xBC00) - (-1.0)).abs() < 1e-6);
-        // 0x7C00 = inf
-        assert!(half_to_f32(0x7C00).is_infinite());
-    }
-
-    #[test]
-    fn test_half_to_f32_nan() {
-        // 0x7C01 = NaN (mantissa != 0 with max exponent)
-        assert!(half_to_f32(0x7C01).is_nan());
-    }
-
-    #[test]
-    fn test_half_to_f32_negative_zero() {
-        // 0x8000 = -0.0
-        let v = half_to_f32(0x8000);
-        assert_eq!(v, 0.0);
-        assert!(v.is_sign_negative());
-    }
-
-    #[test]
-    fn test_half_to_f32_subnormal() {
-        // Smallest subnormal: 0x0001
-        let v = half_to_f32(0x0001);
-        assert!(v > 0.0);
-        assert!(v < 1e-6);
-    }
 
     #[test]
     fn test_gear_lookup() {
@@ -297,9 +234,30 @@ mod tests {
     fn test_decode_sample_float16() {
         let data = 0x3C00u16.to_le_bytes(); // 1.0 in half precision
         match decode_sample(20, &data).unwrap() {
-            SampleValue::Float32(v) => assert!((v - 1.0).abs() < 1e-6),
-            _ => panic!("expected Float32"),
+            SampleValue::Float16(v) => assert_eq!(v.to_bits(), 0x3C00),
+            _ => panic!("expected Float16"),
         }
+    }
+
+    #[test]
+    fn test_float16_sample_widens_exactly() {
+        // What the mV→V path relies on: as_f32() is the exact float32 of
+        // the float16, for normal, subnormal, signed-zero and infinite samples.
+        let widen = |bits: u16| decode_sample(20, &bits.to_le_bytes()).unwrap().as_f32();
+        assert_eq!(widen(0x3C00), 1.0);
+        assert_eq!(widen(0xBC00), -1.0);
+        assert_eq!(widen(0x7180), 11264.0); // an External Voltage sample, in mV
+        assert_eq!(widen(0x0001), 2.0f32.powi(-24)); // smallest subnormal
+        assert!(widen(0x8000) == 0.0 && widen(0x8000).is_sign_negative());
+        assert_eq!(widen(0x7C00), f32::INFINITY);
+        assert_eq!(widen(0xFC00), f32::NEG_INFINITY);
+        assert!(widen(0x7C01).is_nan());
+        assert_eq!(
+            decode_sample(20, &0x3C00u16.to_le_bytes())
+                .unwrap()
+                .as_f64(),
+            1.0
+        );
     }
 
     #[test]

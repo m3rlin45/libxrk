@@ -134,9 +134,10 @@ _decoders = {
     12: Decoder('i'), # Predictive Time?
     13: Decoder('B'), # status field?
     15: Decoder('H', fixup=lambda a: _gear_table[a]), # ?? NdscSwitch on M4GT4.  Also actual size is 8 bytes
+    # float16 samples, returned as float16 (read as 'H' because memoryview
+    # only casts to 'e' from Python 3.12). Spec: companion.md section 3.
     20: Decoder('H', interpolate=True,
-                fixup=lambda a: np.ndarray(buffer=a, shape=(len(a),),
-                                           dtype=np.float16).astype(np.float32).data),
+                fixup=lambda a: np.ndarray(buffer=a, shape=(len(a),), dtype=np.float16)),
     22: Decoder('i'), # Lap Time (variant)
     24: Decoder('i'), # Best Run Diff?
     26: Decoder('i'), # Total Odometer
@@ -432,13 +433,18 @@ cdef class _SampleAccumulators:
         if d.fixup:
             c.sampledata = memoryview(d.fixup(c.sampledata))
         if c.units == 'V': # unit_type 21 is mV; calibrated flag converts to V
-            c.sampledata = np.divide(c.sampledata, 1000).data
+            _mv = np.asarray(c.sampledata)
+            if _mv.dtype == np.float16:
+                # Volts are float32: the quotient is not a float16 (11264 mV
+                # is one, 11.264 V is not), so widen before dividing.
+                _mv = _mv.astype(np.float32)
+            c.sampledata = np.divide(_mv, 1000).data
         # Loggers write IEEE infinities into float channels as "no value"
         # sentinels (fp16 0x7C00 on an unconnected External Voltage, fp32
         # 0xFF800000 on CAN channels during dropouts). The AIM DLL returns
         # 0.0 for those; libxrk reports NaN so they read as missing. See
         # spec/docs/companion.md section 3 ("Non-finite samples").
-        if memoryview(c.sampledata).format in ('f', 'd'):
+        if memoryview(c.sampledata).format in ('e', 'f', 'd'):
             _vals = np.asarray(c.sampledata)
             _finite = np.isfinite(_vals)
             if not _finite.all():
