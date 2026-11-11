@@ -1,4 +1,4 @@
-"""GPS timecode reconstruction: reference implementation + cross-impl agreement.
+"""GPS timecode reconstruction on the real fault, against receiver ground truth.
 
 Some AIM firmware corrupts the upper 16 bits of the GPS record timecode, so
 reconstruction has to work from the low 16 bits alone. The rule that matters is
@@ -6,10 +6,13 @@ reconstruction has to work from the low 16 bits alone. The rule that matters is
 previous rule treated every backwards step as a rollover and added 65536ms to
 every later sample.
 
-The fixture (`issue84`) is a real Solo 2 qualifying session in which the logger
-re-emits a block of 41 GPS records. That steps the logger clock backwards by
-1600ms and duplicates 41 iTOW epochs — a backwards step with nothing to do with
-a 16-bit wrap.
+The reconstruction is implemented once, in the shared GPS crate
+(`libxrk-gps`, exposed as `libxrk._aim_xrk_rs.reconstruct_gps_timecodes`); its
+synthetic unit tests live in `tests/test_gps_processing.py`. This file applies
+it to the raw timecodes the spec parses out of the `issue84` fixture: a real
+Solo 2 qualifying session in which the logger re-emits a block of 41 GPS
+records, stepping the logger clock backwards by 1600ms and duplicating 41 iTOW
+epochs -- a backwards step with nothing to do with a 16-bit wrap.
 
 iTOW (GPS time of week, written by the receiver) is the ground truth here: the
 logger firmware bug cannot touch it. It is used only to *verify* reconstruction,
@@ -22,87 +25,9 @@ from collections import Counter
 
 import pytest
 
-from spec.xrk_format import reconstruct_gps_timecodes
-from spec.tests.conftest import ISSUE84_XRZ
+from libxrk._aim_xrk_rs import reconstruct_gps_timecodes as reconstruct_timecodes
 
 WRAP = 65536
-
-
-# ---------------------------------------------------------------------------
-# Reference implementation — the four causes of a backwards step
-# ---------------------------------------------------------------------------
-
-
-class TestReconstructGpsTimecodes:
-    """Only a backwards step close to 65536 is a 16-bit rollover."""
-
-    def test_clean_stream_returned_unchanged(self):
-        tcs = [1000, 1040, 1080, 1120]
-        assert reconstruct_gps_timecodes(tcs) == tcs
-
-    def test_clean_stream_with_large_forward_gap_untouched(self):
-        # A legitimate forward gap larger than the 32768ms half-range must
-        # survive: monotonic streams are never reconstructed.
-        tcs = [1000, 1040, 200_000, 200_040]
-        assert reconstruct_gps_timecodes(tcs) == tcs
-
-    def test_true_rollover_advances_one_band(self):
-        # Backwards step of ~65536 -> a genuine 16-bit wrap.
-        assert reconstruct_gps_timecodes([65440, 65480, 65520, 24, 64]) == [
-            65440,
-            65480,
-            65520,
-            65560,
-            65600,
-        ]
-
-    def test_replayed_block_is_not_a_rollover(self):
-        # The issue84 fault in miniature: a re-emitted block of records.
-        tcs = [1000, 1040, 1080, 1000, 1040, 1080, 1120]
-        assert reconstruct_gps_timecodes(tcs) == tcs
-
-    def test_seam_jitter_is_not_a_rollover(self):
-        # Small out-of-order jitter at a buffer-block seam.
-        tcs = [100, 200, 160, 240, 280]
-        assert reconstruct_gps_timecodes(tcs) == tcs
-
-    def test_straggler_after_rollover_resolves_pre_wrap(self):
-        # A record from just before a rollover, arriving just after it, must
-        # land at its true pre-wrap time rather than a whole band later.
-        assert reconstruct_gps_timecodes([65500, 65530, 20, 65510, 50]) == [
-            65500,
-            65530,
-            65556,
-            65510,
-            65586,
-        ]
-
-    def test_zero_dropout_record_absorbed(self):
-        # A single all-zero record must not shift everything after it.
-        out = reconstruct_gps_timecodes([66063, 66103, 66143, 0, 66183, 66223])
-        assert out[4] == 66183
-        assert out[5] == 66223
-
-    def test_upper_bits_garbage_reconstructs_from_low_16(self):
-        truth = [500 + i * 40 for i in range(8)]
-        corrupt = [(t & 0xFFFF) + (WRAP * 7 if i % 3 == 2 else 0) for i, t in enumerate(truth)]
-        assert reconstruct_gps_timecodes(corrupt) == truth
-
-    def test_low_16_bits_always_preserved(self):
-        # The invariant that makes reconstruction sound: output is congruent to
-        # input mod 65536, so no real sample time is ever altered.
-        corrupt = [500, 540, 400, 65_000, 20, 60]
-        out = reconstruct_gps_timecodes(corrupt)
-        assert [t & 0xFFFF for t in out] == [t & 0xFFFF for t in corrupt]
-
-    @pytest.mark.parametrize("tcs", [[], [42]])
-    def test_degenerate_inputs(self, tcs):
-        assert reconstruct_gps_timecodes(tcs) == tcs
-
-
-# ---------------------------------------------------------------------------
-# Real fixture — the fault, and reconstruction against receiver ground truth
-# ---------------------------------------------------------------------------
 
 
 def _raw_timecodes_and_itow(parsed):
@@ -130,7 +55,7 @@ class TestIssue84Fixture:
     def test_reconstruction_matches_receiver_clock(self, issue84_parsed):
         """The span of the rebuilt timeline must match iTOW's own span."""
         tcs, itow = _raw_timecodes_and_itow(issue84_parsed)
-        out = reconstruct_gps_timecodes(tcs)
+        out = reconstruct_timecodes(tcs)
         nonzero = [t for t in itow if t > 0]
         truth_span = max(nonzero) - min(nonzero)
         assert (
@@ -156,13 +81,8 @@ class TestIssue84Fixture:
         assert (old[-1] - old[0]) - truth_span == pytest.approx(WRAP, abs=50)
 
 
-# ---------------------------------------------------------------------------
-# Cross-implementation agreement: spec vs Cython vs Rust
-# ---------------------------------------------------------------------------
-
-
 class TestIssue84CrossImplementation:
-    """All three implementations must agree with the reference and each other."""
+    """Both backends must agree with the receiver clock, each other and the AIM DLL."""
 
     @staticmethod
     def _gps_timecodes(log):

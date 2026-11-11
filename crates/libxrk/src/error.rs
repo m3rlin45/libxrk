@@ -45,6 +45,14 @@ impl From<std::io::Error> for Error {
     }
 }
 
+impl From<libxrk_gps::Error> for Error {
+    fn from(e: libxrk_gps::Error) -> Self {
+        match e {
+            libxrk_gps::Error::InvalidData(msg) => Error::InvalidData(msg),
+        }
+    }
+}
+
 #[cfg(feature = "arrow")]
 impl From<arrow::error::ArrowError> for Error {
     fn from(e: arrow::error::ArrowError) -> Self {
