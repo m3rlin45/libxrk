@@ -98,6 +98,20 @@ def chs_frames(data: bytes) -> dict[str, dict]:
     return out
 
 
+def rename_channel(data: bytes, old: str, new: str) -> bytes:
+    """Change a channel's CHS long name in every definition of it (each CNF repeats the CHS)."""
+
+    def long_name(f: dict) -> bytes:
+        return data[f["pstart"] + 32 : f["pstart"] + 56].split(b"\0")[0]
+
+    hits = [f for f in frames(data) if f["tok"] == "CHS" and long_name(f) == old.encode()]
+    assert hits, f"no CHS named {old!r}"
+    buf = bytearray(data)
+    for f in hits:
+        patch(buf, f, 32, new.encode().ljust(24, b"\0"))
+    return bytes(buf)
+
+
 def s_message_offsets(data: bytes, channel_index: int, size: int) -> list[int]:
     """Offsets of ``(S`` sample messages for ``channel_index``, in file order.
 
@@ -116,6 +130,36 @@ def s_message_offsets(data: bytes, channel_index: int, size: int) -> list[int]:
         ] == ord(")"):
             out.append(pos)
         pos += 1
+
+
+def s_message(timecode: int, channel_index: int, sample: bytes) -> bytes:
+    """One ``(S`` message: a single sample of ``channel_index`` at ``timecode``."""
+    return b"(S" + struct.pack("<iH", timecode, channel_index) + sample + b")"
+
+
+def add_s_samples(data: bytes, channel: str, samples: list[bytes], beside: str) -> bytes:
+    """Give a channel samples by inserting ``(S`` messages into the data stream.
+
+    For a channel the file defines but never samples. Sample ``k`` of the
+    channel named ``channel`` goes directly before the ``k``-th ``(S`` message
+    of the channel named ``beside`` and takes that message's timecode, so the
+    new messages sit on message boundaries with timecodes the file already
+    uses. Top-level data messages have no enclosing checksum, so nothing else
+    changes. Every sample must be ``CHS.data_size`` bytes (CHS byte [72]).
+    """
+    chs = chs_frames(data)
+    (index, size), (beside_index, beside_size) = (
+        (struct.unpack_from("<H", data, chs[n]["pstart"])[0], data[chs[n]["pstart"] + 72])
+        for n in (channel, beside)
+    )
+    assert all(len(sample) == size for sample in samples), f"{channel} samples are {size} bytes"
+    anchors = s_message_offsets(data, beside_index, beside_size)[: len(samples)]
+    assert len(anchors) == len(samples), f"not enough (S messages of {beside}"
+    out = bytearray(data)
+    for off, sample in reversed(list(zip(anchors, samples))):
+        (timecode,) = struct.unpack_from("<i", data, off + 2)
+        out[off:off] = s_message(timecode, index, sample)
+    return bytes(out)
 
 
 def data_messages(data: bytes, lo: int, hi: int) -> bytes:

@@ -259,7 +259,7 @@ established the channel_field mapping and timing rules.
 |---------|:------:|:------:|:----------:|-------------------|-------------------------------|
 | V1      | 0x00   | 0x06   | 12 + N     | N bytes, CHS-sized | Embedded at offset 7 (4 bytes) |
 | V2 long | 0x00   | 0x08   | 16         | 4 bytes (2 × fp16) | Embedded at offset 7 (4 bytes) |
-| V3 short| 0x01   | 0x02   | 10         | 2 bytes (1 × fp16) | Synthesized — inherits from preceding V2 on same logical channel plus the channel's sample period |
+| V3 short| 0x01   | 0x02   | 10         | 2 bytes (1 × fp16) | Synthesized — the preceding V2 on the same logical channel, ± a fixed 2 ms step |
 
 ### `channel_field` (uint16 at offsets [3:5])
 
@@ -286,19 +286,33 @@ mapping is resolved empirically against CHS at post-parse time — see
 ### V2 payload layout
 
 Bytes [11:13] and [13:15] each encode an fp16 sample of the same logical
-channel. The sample timestamps depend on which side of the pair the
-`channel_field` is on:
+channel. The sample timestamps depend on the side of the `channel_field`,
+which is read from its low nibble alone:
 
-| `channel_field` side | bytes [11:13] (V2[0]) sample tc | bytes [13:15] (V2[1]) sample tc |
-|----------------------|---------------------------------|---------------------------------|
-| base (low nibble 0 or 8) | `tc`                        | `tc − 4ms`                      |
-| +4 (low nibble 4 or c)   | `tc − 2ms`                  | `tc − 4ms`                      |
-| orphan (accelerometers)  | `tc`                        | `tc − 4ms` (provisional)        |
+| `channel_field` side | bytes [11:13] (V2[0]) sample tc | bytes [13:15] (V2[1]) sample tc | priority |
+|----------------------|---------------------------------|---------------------------------|:--------:|
+| base (low nibble 0 or 8) | `tc`                        | `tc − 4ms`                      | 3        |
+| +4 (any other low nibble) | `tc − 2ms`                 | `tc − 4ms`                      | 1        |
 
 The base/+4 offset difference reflects that the two `channel_field`
 values in a pair interleave in the device's sampling schedule: V2(+4)
 covers the "earlier half" of a 10ms cycle and V2(base) covers the
-"later half". Together with V3 they produce 5 samples at 2ms intervals.
+"later half". Together with V3 (priority 2) they produce 5 samples at 2ms
+intervals.
+
+An orphan `channel_field` has no row of its own: it follows the row of its
+side. The orphans observed (0x12ac, 0x12b4, 0x12bc on the KK-SII fixtures)
+are all on the +4 side, so the 100Hz accelerometer samples are placed at
+`tc − 2ms` and `tc − 4ms`, 2ms apart although the channel period is 10ms.
+
+This table, the V3 row, the collision priorities and what happens to the
+placed samples afterwards are defined in one place,
+`spec.xrk_format.C_SAMPLE_PLACEMENT` with `_place_c_variants`, and
+described in `companion.md` section 3 ("Expansion samples"). **The 2ms and
+4ms offsets are fixed constants today** (`C_SAMPLE_STEP_MS`), in the spec
+and in both backends, not derived from `CHS.sample_period_us`. Whether they
+should scale with the channel period (the orphan channels suggest so) is
+not known.
 
 On the very first V2 message on a `channel_field`, bytes [13:15] may
 contain a stale pre-roll value not reflected in DLL output — this is a
@@ -312,14 +326,36 @@ is absent on orphan channel_fields. Its timecode is synthesized
 post-parse by `_resolve_c_variants` as follows (per-pair, in file order):
 
 - If the most recently seen V2 on the pair was on `base`:
-  `V3.tc = last_V2(base).tc − mms` (i.e., one sample period before the
+  `V3.tc = last_V2(base).tc − 2ms` (i.e., one sample step before the
   latest V2(base).tc).
 - Otherwise (most recent was on `+4`):
-  `V3.tc = last_V2(+4).tc + mms`.
+  `V3.tc = last_V2(+4).tc + 2ms`.
+
+The step is the same fixed 2ms constant as in the V2 table
+(`C_SAMPLE_STEP_MS`), not the channel's sample period. A V3 with no
+preceding V2 on its pair gets no timecode and carries no sample.
 
 This branching rule handles 11ms "long" cycles (occasional cycle-boundary
 drift in the logger clock) where a single rule would produce tcs
 off-by-one-sample relative to DLL.
+
+### Unobserved configurations where the spec and the backends differ
+
+On every `(c` layout seen in a real file the spec and both backends agree
+sample for sample. Hand-built streams show three layouts, none observed,
+where the two backends agree with each other and the spec does not. They
+concern channel resolution and V3 anchoring, not sample placement, and are
+left as they are until a file shows which side is right:
+
+- **A V3 on an orphan `channel_field`.** The backends anchor it on the last
+  V2 of the same field (`tc + 2ms`) and keep its sample. The spec anchors
+  V3 only on a resolved pair, so the V3 gets no timecode and no sample.
+- **A pair whose +4 field carries V3 messages but no V2.** The backends
+  pair the two fields. The spec's pairing requires a V2 on the +4 field, so
+  it treats the base field as an orphan and leaves the +4 field unresolved.
+- **A V2 whose `channel_field` resolves to no channel.** Its samples are
+  dropped everywhere, but its header timecode is still a time-offset
+  candidate in the spec (`_note_data_header`) and not in the backends.
 
 ### Accuracy vs AIM DLL on the issue68 fixture (LR_Shock_Pot, 213k samples)
 

@@ -14,12 +14,14 @@ from types import SimpleNamespace
 import numpy as np
 import pyarrow as pa
 import pytest
+from construct import Container
 
 from spec.xrk_format import (
     CHSPayload,
     NAMED_VALUE_DTYPES,
     SAMPLE_CODECS,
     TIMECODE_DTYPE,
+    CalculatedGear,
     _accumulate,
     _decompress_if_zlib,
     build_header_frame,
@@ -839,6 +841,34 @@ class TestDataMessageCrossValidation:
 # ---------------------------------------------------------------------------
 
 
+# The channel names that select the CalculatedGear codec.
+GEAR_NAMES = ["Calculated_Gear", "PreCalcGear"]
+
+# (raw 64-bit sample, gear) cases for the CalculatedGear codec.
+GEAR_WORDS = [
+    *((gear << 16, gear) for gear in range(8)),  # bits 16-18 are the gear
+    (1 << 19, 0),  # bit 19 set: 0
+    ((1 << 19) | (5 << 16), 0),  # ... whatever the gear bits say
+    (0xFFFF_FFFF_FFFF_FFFF, 0),
+    (0xFFFF | (4 << 16), 4),  # low garbage is ignored
+    ((1 << 63) | (6 << 16), 6),  # high garbage is ignored
+    (0xFFFF_FFFF_FFF3_FFFF, 3),  # every ignored bit set; rounded to a float64 it reads 4
+]
+
+
+def _official_sample_with_gear_samples(name):
+    """The official sample with GEAR_WORDS as the samples of its gear channel.
+
+    The file defines Calculated_Gear (8-byte samples) but never samples it;
+    ``name`` renames the channel first.
+    """
+    data = xrk_patch.load_bytes(AIM_OFFICIAL_XRK)
+    if name != "Calculated_Gear":
+        data = xrk_patch.rename_channel(data, "Calculated_Gear", name)
+    samples = [struct.pack("<Q", word) for word, _ in GEAR_WORDS]
+    return xrk_patch.add_s_samples(data, name, samples, beside="WAT Alarm_1")
+
+
 class TestSampleCodecs:
     """The declarative sample codecs are the decoder definition."""
 
@@ -863,6 +893,52 @@ class TestSampleCodecs:
             assert math.isnan(value)
         else:
             assert value == expected
+
+    @pytest.mark.parametrize("word, expected", GEAR_WORDS)
+    def test_calculated_gear_codec(self, word, expected):
+        """Bits 16-18 are the gear, bit 19 reads as 0, every other bit is ignored."""
+        assert CalculatedGear.parse(struct.pack("<Q", word)) == expected
+
+    @pytest.mark.parametrize("name", GEAR_NAMES)
+    def test_calculated_gear_is_selected_by_name(self, name):
+        """The long name wins over decoder_type, and a slot must hold the 8 bytes."""
+        chs = Container(name=name, decoder_type=15, units="")
+        assert channel_sample_codec(chs) is CalculatedGear
+        assert channel_sample_codec(Container(name="Gear", decoder_type=15, units="")) is (
+            SAMPLE_CODECS[15]
+        )
+        assert channel_stream(chs, 4) is None
+
+    @pytest.mark.parametrize("name", GEAR_NAMES)
+    def test_calculated_gear_grammar_matches_bulk_decoder(self, name):
+        """The 64-bit word reaches the codec as an integer on both paths: the
+        Construct grammar and its vectorised form agree on every case."""
+        chs = Container(name=name, decoder_type=15, units="")
+        stream = b"".join(struct.pack("<Q", word) for word, _ in GEAR_WORDS)
+        expected = [gear for _, gear in GEAR_WORDS]
+        assert list(channel_stream(chs, 8).parse(stream)) == expected
+        bulk = decode_channel_values(stream, chs, 8)
+        assert bulk.dtype == np.uint32
+        assert bulk.tolist() == expected
+
+    @pytest.mark.parametrize("name", GEAR_NAMES)
+    def test_calculated_gear_matches_the_backends(self, name, backend):
+        """End to end on the official sample with (S samples inserted for its
+        Calculated_Gear channel (which the file defines but never samples):
+        the spec's values equal each backend's, under both names."""
+        data = _official_sample_with_gear_samples(name)
+        parsed = parse_xrk_bytes(data)
+        (idx,) = (i for i, chs in parsed.channels.items() if chs.name == name)
+        assert parsed.channels[idx].decoder_type == 15, "fixture changed"
+        spec_values = parsed.channel_values()[idx]
+        assert spec_values.tolist() == [gear for _, gear in GEAR_WORDS]
+
+        aim_xrk = _BACKENDS[backend]
+        assert name not in aim_xrk(str(AIM_OFFICIAL_XRK)).channels, "fixture has samples now"
+        log = aim_xrk(data)
+        assert name in log.channels
+        backend_values = log.channels[name].column(name).to_numpy(zero_copy_only=False)
+        np.testing.assert_array_equal(backend_values, spec_values)
 
     def test_m_payload_is_an_array_of_samples(self):
         """An (M burst parses into `count` samples of the channel's width."""
@@ -1050,9 +1126,6 @@ class TestExhaustiveChannelTimecodes:
         # repeated CHS names, GPS names reserved when the file has GPS data).
         reserved = GPS_CHANNEL_NAMES if result.gps_payloads else ()
         index_by_name = {name: idx for idx, name in result.channel_display_names(reserved).items()}
-        # V2/V3 (c) expansion samples are not in the spec's streams (see
-        # _samples); TestIssue68SpecVsBackends compares those channels' times.
-        expansion = set(result.expansion_channel_map.values())
         checked = 0
         errors = []
 
@@ -1061,8 +1134,6 @@ class TestExhaustiveChannelTimecodes:
             if idx is None:
                 # Synthesized by the GPS pipeline, not a CHS channel.
                 assert name in GPS_CHANNEL_NAMES, f"{name!r} is not a CHS or GPS channel"
-                continue
-            if idx in expansion:
                 continue
             spec = spec_timecodes.get(idx)
             if spec is None:
@@ -1431,10 +1502,16 @@ class TestCnfResetsAccumulators:
     def test_replayed_samples_are_kept(self, cnf_case):
         """Every sample kept before the CNF is kept a second time when it is
         replayed after it. Without the reset the replay would be dropped
-        whole and the streams would equal the base streams."""
+        whole and the streams would equal the base streams, as those of the
+        expansion channels do: V2/V3 (c samples are placed by time over the
+        whole file (test_expansion_channels_match_backend)."""
         pre, base = cnf_case.streams("pre"), cnf_case.streams("base")
         replay = cnf_case.streams("replay")
-        assert replay == {ch: pre.get(ch, b"") + stream for ch, stream in base.items()}
+        expansion = set(cnf_case.parsed("replay").expansion_channel_map.values())
+        assert replay == {
+            ch: (b"" if ch in expansion else pre.get(ch, b"")) + stream
+            for ch, stream in base.items()
+        }
         assert sum(map(len, pre.values())) > 0
         assert replay != base
 
@@ -1452,11 +1529,13 @@ class TestCnfResetsAccumulators:
     def test_streams_match_backend(self, cnf_case, backend, variant):
         """Value for value, the spec's streams are the backend's channels,
         and each replayed channel's timecodes step back exactly once, where
-        the replay starts. A stream ends on its last kept sample."""
+        the replay starts (never on an expansion channel, whose V2/V3 samples
+        are placed by time). A stream ends on its last kept sample."""
         parsed, log = cnf_case.parsed(variant), cnf_case.log(backend, variant)
         before = cnf_case.parsed("pre").channel_samples()
         names = parsed.channel_display_names(GPS_CHANNEL_NAMES if parsed.gps_payloads else ())
         ends = parsed.stream_end_times()
+        expansion = set(parsed.expansion_channel_map.values())
         stepped = 0
         for idx, values in parsed.channel_values().items():
             name = names[idx]
@@ -1467,16 +1546,18 @@ class TestCnfResetsAccumulators:
             np.testing.assert_array_equal(values.astype(got.dtype), got, err_msg=name)
             times = table.column("timecodes").to_numpy()
             n_before = len(before.get(idx, ()))
-            expected_steps = [n_before - 1] if 0 < n_before < len(times) else []
+            replayed = 0 < n_before < len(times) and idx not in expansion
+            expected_steps = [n_before - 1] if replayed else []
             assert np.flatnonzero(np.diff(times) <= 0).tolist() == expected_steps, name
             assert times[-1] == ends[idx], name
             stepped += bool(expected_steps)
         assert stepped > 10
 
     def test_expansion_channels_match_backend(self, backend):
-        """V2/V3 (c samples are resolved over the whole file after the parse
-        (_resolve_c_variants), not accumulated: a replayed one lands on the
-        time it already has. The issue68 comparison holds on the replay."""
+        """V2/V3 (c samples are resolved and placed over the whole file after
+        the parse (_resolve_c_variants, _place_c_variants), so no CNF comes
+        between them: a replayed one lands on the time it already has. The
+        issue68 comparison holds on the replay."""
         case = _CnfCase(*_CNF_CASES["issue84"])
         parsed, log = case.parsed("replay"), case.log(backend, "replay")
         assert set(parsed.expansion_channel_map.values())
@@ -1783,10 +1864,10 @@ class TestIssue68CVariants:
         ), f"Too many V3 messages with unresolved tc: {negative_tcs}/{len(v3_msgs)}"
 
     def test_lr_shock_pot_samples_match_dll(self, issue68_parsed):
-        """Decode every V1/V2/V3 message for LR_Shock_Pot, apply the
-        variant-specific tc placement rules from spec/docs/unknown_regions.md,
-        and assert at least 99% of produced (tc, value) samples match the
-        AIM DLL's full sample array exactly.
+        """Take the spec's LR_Shock_Pot samples (V2/V3 messages placed by
+        C_SAMPLE_PLACEMENT, see companion.md section 3) and assert at least
+        99% of the (tc, value) samples match the AIM DLL's full sample array
+        exactly.
 
         This is the authoritative spec correctness check for issue #68.
         We require ≥99% (not 100%) because the AIM DLL applies a
@@ -1840,35 +1921,14 @@ class TestIssue68CVariants:
         )
         assert lr_idx is not None
         lr_cfs = sorted(cf for cf, i in issue68_parsed.expansion_channel_map.items() if i == lr_idx)
-        base_cf, plus4_cf = lr_cfs
+        base_cf, _ = lr_cfs
 
-        # Per-variant sample emission per spec/docs/unknown_regions.md.
-        samples = {}
-        for m in issue68_parsed.data_messages():
-            if m.msg_type != "c":
-                continue
-            p = m.parsed
-            cf = p["channel_field"]
-            if cf not in lr_cfs:
-                continue
-            variant = p.get("variant")
-            data = p["data"]
-            if variant == "V2":
-                tc = p["timecode"]
-                v0 = float(np.frombuffer(data[0:2], dtype=np.float16)[0])
-                v1 = float(np.frombuffer(data[2:4], dtype=np.float16)[0])
-                if cf == base_cf:
-                    samples[tc] = v0
-                    samples[tc - 4] = v1
-                else:
-                    samples[tc - 2] = v0
-                    samples[tc - 4] = v1
-            elif variant == "V3":
-                tc = p["timecode"]
-                if tc < 0:
-                    continue
-                v = float(np.frombuffer(data[:2], dtype=np.float16)[0])
-                samples[tc] = v
+        # The spec's placed samples (C_SAMPLE_PLACEMENT): the channel has no
+        # V1 samples, so its whole stream is V2/V3 samples.
+        times = issue68_parsed.stream_times[lr_idx]
+        values = issue68_parsed.channel_values()[lr_idx]
+        assert len(times) == len(values)
+        samples = dict(zip(times.tolist(), values.tolist()))
 
         # Derive the session time offset from the first V2(base) message,
         # whose V2[0] corresponds to DLL sample at logger_tc - offset.
@@ -1903,100 +1963,23 @@ class TestIssue68CVariants:
         )
 
 
-def _decode_c_variant_samples(parsed, ch_idx):
-    """Decode V1/V2/V3 (c)-message samples for one channel using the
-    canonical rules from spec/docs/unknown_regions.md, with the priority
-    resolution Cython and Rust both apply (V2(base)/V1 = 3 > V3 = 2 > V2(+4) = 1).
-
-    Returns {logger_tc: value}. Orphan channels (accels, no pair partner)
-    use V2[0]@tc, V2[1]@tc-2. Paired channels use V2(base)[1]@tc-4 and
-    V2(+4)[0]@tc-2, V2(+4)[1]@tc-4.
-    """
-    import numpy as np
-
-    pair_fields = {}
-    for cf, idx in parsed.expansion_channel_map.items():
-        partner = cf ^ 0x4
-        if partner in parsed.expansion_channel_map and parsed.expansion_channel_map[partner] == idx:
-            pair_fields[idx] = (min(cf, partner), max(cf, partner))
-
-    pair = pair_fields.get(ch_idx)
-    base_cf, plus4_cf = pair if pair else (None, None)
-
-    samples = {}  # tc -> (value, priority)
-
-    def put(tc, val, prio):
-        existing = samples.get(tc)
-        if existing is None or prio > existing[1]:
-            samples[tc] = (val, prio)
-
-    for m in parsed.data_messages():
-        if m.msg_type != "c" or m.parsed.get("channel_index") != ch_idx:
-            continue
-        p = m.parsed
-        variant = p.get("variant")
-        cf = p["channel_field"]
-        data = p["data"]
-        if variant == "V1":
-            tc = p["timecode"]
-            put(tc, float(np.frombuffer(data[:2], dtype=np.float16)[0]), 3)
-        elif variant == "V2":
-            tc = p["timecode"]
-            v0 = float(np.frombuffer(data[0:2], dtype=np.float16)[0])
-            v1 = float(np.frombuffer(data[2:4], dtype=np.float16)[0])
-            if base_cf is not None:
-                if cf == base_cf:
-                    put(tc, v0, 3)
-                    put(tc - 4, v1, 3)
-                else:  # +4
-                    put(tc - 2, v0, 1)
-                    put(tc - 4, v1, 1)
-            else:
-                # Orphan accelerometer: V2[0]@tc, V2[1]@tc-2
-                put(tc, v0, 3)
-                put(tc - 2, v1, 3)
-        elif variant == "V3":
-            tc = p["timecode"]
-            if tc < 0:
-                continue
-            put(tc, float(np.frombuffer(data[:2], dtype=np.float16)[0]), 2)
-
-    return {tc: v for tc, (v, _) in samples.items()}
-
-
 class TestIssue68SpecVsBackends:
-    """Authoritative spec-vs-backend cross-check on the issue68 fixture.
+    """Authoritative spec-vs-backend cross-check on the expansion fixtures.
 
     The spec is the reference wire-format parser. Cython and Rust backends
-    are required to produce output identical to the spec's canonical
-    decode of V1/V2/V3 (c)-message samples — byte-for-byte, every sample.
+    are required to produce output identical to the spec's decode: every
+    value of every channel from ``channel_values()``, in the channel's value
+    type, and every sample time from ``channel_timecodes()``, expansion
+    (V2/V3) channels included.
     """
-
-    def _decode_spec_channel(self, parsed, ch_idx, expansion_ch_indices, arrays_cache):
-        """Produce the spec's canonical samples for one channel.
-
-        Returns ({tc: value}, 'tc') for expansion (V2/V3) channels whose
-        tcs are absolute logger-clock values; or ({index: value}, 'pos')
-        for ordinary V1/S/M/G channels where the existing builder emits
-        samples in file order without absolute tc info.
-        """
-        if ch_idx in expansion_ch_indices:
-            return _decode_c_variant_samples(parsed, ch_idx), "tc"
-        exhaustive = TestExhaustiveChannelValues()
-        raw = arrays_cache.get(ch_idx, [])
-        if not raw:
-            return None, None
-        values = exhaustive._decode_channel_array(raw, parsed.channels[ch_idx])
-        if values is None:
-            return None, None
-        return values, "pos"
 
     def _compare_all_channels(self, parsed, backend_log):
         """Assert every channel present in both spec and backend decodes
-        identically — same count and same values. Expansion channels
-        also check timecode alignment."""
-        expansion_ch_indices = set(parsed.expansion_channel_map.values())
-        arrays_cache = TestExhaustiveChannelValues()._build_channel_arrays(parsed)
+        identically: same count, same value type, same values (NaN matching
+        NaN) and same timecodes."""
+        values = parsed.channel_values()
+        timecodes = parsed.channel_timecodes()
+        expansion = set(parsed.expansion_channel_map.values())
         # CHS names are not always unique — on issue68, RotaryLeft_led,
         # RotaryMiddle_led and RotaryRight_led each have 3 CHS entries.
         # Both backends expose every entry, disambiguated per the AIM DLL
@@ -2009,61 +1992,49 @@ class TestIssue68SpecVsBackends:
 
         errors = []
         checked = 0
+        expansion_checked = set()
 
         for name in backend_log.channels:
+            # GPS-derived channels are synthesized by the backend outside
+            # CHS; they have no spec equivalent here.
             ch_idx = spec_index_by_display_name.get(name)
-            if ch_idx is None:
-                # GPS-derived channels are synthesized by the backend
-                # outside CHS; they have no spec equivalent here.
-                continue
-            spec, kind = self._decode_spec_channel(
-                parsed, ch_idx, expansion_ch_indices, arrays_cache
-            )
-            if spec is None:
+            spec_v = values.get(ch_idx)
+            if spec_v is None:
                 continue
             backend_v = backend_log.channels[name].column(name).to_numpy()
+            if len(spec_v) != len(backend_v):
+                errors.append(f"{name}: count spec={len(spec_v)} backend={len(backend_v)}")
+                continue
+            # The spec's values carry the channel's value type: the backend
+            # column must have it too, with identical values.
+            if spec_v.dtype != backend_v.dtype:
+                errors.append(f"{name}: type spec={spec_v.dtype} backend={backend_v.dtype}")
+                continue
+            if diffs := len(_differing(spec_v, backend_v)):
+                errors.append(f"{name}: {diffs} values differ")
 
-            if kind == "tc":
-                backend_tc = backend_log.channels[name].column("timecodes").to_numpy()
-                if len(backend_tc) == 0 or not spec:
-                    errors.append(
-                        f"{name}: empty one side (spec={len(spec)}, backend={len(backend_tc)})"
-                    )
-                    continue
-                offset = min(spec) - int(backend_tc[0])
-                spec_session = {tc - offset: v for tc, v in spec.items()}
-                if len(spec_session) != len(backend_v):
-                    errors.append(
-                        f"{name}: count spec={len(spec_session)} backend={len(backend_v)}"
-                    )
-                    continue
-                backend_map = dict(zip(backend_tc.tolist(), backend_v.tolist()))
-                diffs = sum(
-                    1
-                    for tc, v in spec_session.items()
-                    if tc not in backend_map or abs(backend_map[tc] - v) > 1e-9
-                )
-                if diffs:
-                    errors.append(f"{name}: {diffs} expansion samples differ")
-            else:
-                # Ordinary channel: spec gives values in file order.
-                if len(spec) != len(backend_v):
-                    errors.append(f"{name}: count spec={len(spec)} backend={len(backend_v)}")
-                    continue
-                # The spec's values carry the channel's value type: the
-                # backend column must have it too, with identical values.
-                if spec.dtype != backend_v.dtype:
-                    errors.append(f"{name}: type spec={spec.dtype} backend={backend_v.dtype}")
-                    continue
-                diffs = len(_differing(spec, backend_v))
-                if diffs:
-                    errors.append(f"{name}: {diffs} values differ")
+            backend_tc = backend_log.channels[name].column("timecodes").to_numpy()
+            if diffs := int(np.count_nonzero(timecodes[ch_idx] != backend_tc)):
+                errors.append(f"{name}: {diffs} timecodes differ")
+            if ch_idx in expansion:
+                expansion_checked.add(ch_idx)
             checked += 1
 
         assert checked > 20, f"Only {checked} channels compared — fixture wiring broken?"
+        # 4 shock pots and 3 accelerometers, each resolved and compared.
+        assert expansion_checked == set(parsed.expansion_channel_map.values())
+        assert len(expansion_checked) == 7
         assert (
             not errors
         ), f"Spec ↔ backend mismatches ({checked} channels compared):\n" + "\n".join(errors)
+
+    def test_issue84_spec_matches_cython_exactly(self, issue84_parsed, issue84_cython):
+        """The second expansion fixture, same comparison, Cython backend."""
+        self._compare_all_channels(issue84_parsed, issue84_cython)
+
+    def test_issue84_spec_matches_rust_exactly(self, issue84_parsed, issue84_rust):
+        """The second expansion fixture, same comparison, Rust backend."""
+        self._compare_all_channels(issue84_parsed, issue84_rust)
 
     def test_spec_matches_cython_exactly(self, issue68_parsed, issue68_cython):
         """Every channel the Cython backend exposes on issue68 — expansion

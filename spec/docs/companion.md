@@ -177,9 +177,10 @@ exposed in file order, not sorted). Precisely:
   payload is parsed as a separate sequence with its own accumulators, so a
   `CNF` nested in another frame's payload resets nothing outside it.
 - An `ENF` frame resets nothing.
-- V2/V3 `(c` samples are not accumulated: they are resolved over the whole
-  file after the parse (`_resolve_c_variants`) and keyed by time, so a CNF
-  does not affect them.
+- V2/V3 `(c` samples are resolved and placed over the whole file after the
+  parse (`_resolve_c_variants`, `_place_c_variants`) and keyed by time, so
+  no CNF comes between them. They are cut at the channel's last V1 `(c`
+  sample kept since the last CNF ("Expansion samples" below).
 - A stream ends on its last kept sample, which after a step back is not its
   latest one. `ParseResult.stream_end_times()` gives that time per channel
   (the timecode of the channel's last row in both backends), and
@@ -232,11 +233,91 @@ every channel of every fixture against both backends for exact equality.
 Samples of V2/V3 `(c` expansion messages are not in `streams` and so have no
 entry here; their times are described in `unknown_regions.md`.
 
+**Expansion samples (V2/V3 `(c`):** a V2 `(c` message carries two fp16
+samples and a V3 one (`unknown_regions.md`, "(c) Expansion Data Messages").
+Their channel is only known once the whole file has been read, so they are
+placed after the parse, by `_place_c_variants`, from one table,
+`C_SAMPLE_PLACEMENT`. It gives, for each variant and `channel_field` side, the
+samples the message contributes: which payload sample, its time relative to
+the message timecode `tc` (embedded in a V2, synthesized for a V3), and its
+priority.
+
+| Message | `channel_field` side | Samples | Priority |
+|---|---|---|---|
+| V2 | base (low nibble 0 or 8) | `[0]` at `tc`, `[1]` at `tc − 4` | 3 |
+| V2 | +4 (any other low nibble) | `[0]` at `tc − 2`, `[1]` at `tc − 4` | 1 |
+| V3 | +4 | `[0]` at `tc` | 2 |
+| V3 | base | none | |
+
+Per channel (both fields of a pair feed the same channel), the rule is:
+
+1. Every V2/V3 message whose `channel_field` resolved to a channel
+   contributes the samples of its row. The side of the field decides, not
+   whether the field is paired: an orphan field follows the row of its own
+   side. Every orphan observed so far is on the +4 side, so the accelerometer
+   channels of the KK-SII fixtures get `[0]` at `tc − 2` and `[1]` at `tc − 4`.
+2. When several samples land on the same time, the highest priority is kept;
+   between equal priorities, the one from the earliest message in the file.
+3. The survivors are accumulated in ascending time order, exactly as V1 `(c`
+   messages of that channel at those times would be (the rule above: kept iff
+   strictly later than the last kept `(c` sample of the channel since the
+   last CNF). The channel's V1 messages were accumulated during the parse, so
+   in the stream the V2/V3 samples follow all V1 samples, and any placed at
+   or before the last V1 timecode kept since the last CNF are dropped. So is
+   a sample placed before time 0, which covers a V3 that found no V2 to
+   anchor its timecode on.
+
+The first kept time is the channel's first `(c` timecode for the time offset
+(section 2) when the channel has no V1 samples: a V2(base) at `tc` makes
+`tc − 4` a candidate, not `tc`.
+
+**The 2 ms and 4 ms offsets are fixed constants** (`C_SAMPLE_STEP_MS = 2` and
+twice that), and so is the ±2 ms step of the V3 timecode synthesis. They are
+the sample period of the 500 Hz shock potentiometers the format was
+reverse-engineered on, and are *not* derived from `CHS.sample_period_us`: both
+backends hard-code them. The consequence is visible on the 100 Hz orphan
+channels, whose two samples per 20 ms message are exposed 2 ms apart (session
+times 3298, 3300, 3318, 3320, ... on issue68's `LateralAcc`) instead of 10 ms
+apart. Deriving the step from the channel period is an open question, not
+something a backend may do on its own.
+
+The result is in `ParseResult.streams` like any other channel, so
+`channel_values()` decodes it through the channel's codec (non-finite samples
+become NaN as for every decoder-20 channel) and `channel_timecodes()` gives
+each kept sample's time. Both backends conform:
+`spec/tests/test_c_placement.py` checks each row, each collision and the V1
+mix on hand-built streams, and `TestIssue68SpecVsBackends` and
+`TestExhaustiveChannelTimecodes` every value and every timecode of the
+issue68 and issue84 fixtures.
+
 **Special fixups:**
-- Channels named `Calculated_Gear` or `PreCalcGear` use decoder `Q` (uint64)
-  with bit extraction: `(value >> 16) & 7` (returns 0 if bit 19 is set).
+- Channels whose CHS long name is `Calculated_Gear` or `PreCalcGear` are decoded
+  by name, whatever their `decoder_type`: the spec's `CalculatedGear` codec,
+  selected through `NAMED_SAMPLE_CODECS` by `channel_sample_codec()` before the
+  `SAMPLE_CODECS` table (`spec/xrk_format.py`). See "Calculated gear" below.
 - Unit type 21 (`mV`): when the calibrated flag (high bit of `unit_type_byte`) is set,
   the display unit becomes `V` and values are divided by 1000.
+
+**Calculated gear (by name):** `CalculatedGear` reads a 64-bit sample word, so
+`decode_channel_values()` keeps a 64-bit integer field as an integer for its
+adapter layers (float64 cannot hold 64 bits; every narrower field is widened
+to float64 first, as before). No shipped file has samples for such a channel:
+the official AIM sample defines `Calculated_Gear` (index 23, `decoder_type`
+15, `data_size` 8) but never samples it. The tests insert `(S` messages for it
+(`tests/xrk_patch.py::add_s_samples`) and compare the spec with both backends
+under both names (`spec/tests/test_spec.py`, `tests/test_calculated_gear.py`).
+
+The AIM DLL gives no ground truth for the rule. On the same patched inputs
+(checked 2026-11) it does not list the channel, under either name: its channel
+API reports the same 11 channels as for the unpatched file. It does read the
+samples: its per-channel scratch file (`<input>.023.tmp`, 12-byte records of
+int64 time in microseconds and a float32 value, a layout confirmed on
+`Logger Temperature` against the API) holds one record per inserted sample, at
+the inserted times, with the **low 16 bits of the word as a signed int16**
+(`0x4E` → 78, `0x8000` → −32768, `0x0102030405060708` → 1800 = `0x0708`; every
+`gear << 16` word → 0), i.e. the first two bytes with no ASCII gear mapping
+and no use of bits 16-19. The backends' bit-field rule predates the spec and
+is unverified against real `Calculated_Gear` data; it is kept as is.
 
 Reference: `_aim_xrk_cy.pyx:95-137`
 
