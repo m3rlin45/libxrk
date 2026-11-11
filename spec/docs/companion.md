@@ -291,10 +291,33 @@ mix on hand-built streams, and `TestIssue68SpecVsBackends` and
 issue68 and issue84 fixtures.
 
 **Special fixups:**
-- Channels named `Calculated_Gear` or `PreCalcGear` use decoder `Q` (uint64)
-  with bit extraction: `(value >> 16) & 7` (returns 0 if bit 19 is set).
+- Channels whose CHS long name is `Calculated_Gear` or `PreCalcGear` are decoded
+  by name, whatever their `decoder_type`: the spec's `CalculatedGear` codec,
+  selected through `NAMED_SAMPLE_CODECS` by `channel_sample_codec()` before the
+  `SAMPLE_CODECS` table (`spec/xrk_format.py`). See "Calculated gear" below.
 - Unit type 21 (`mV`): when the calibrated flag (high bit of `unit_type_byte`) is set,
   the display unit becomes `V` and values are divided by 1000.
+
+**Calculated gear (by name):** `CalculatedGear` reads a 64-bit sample word, so
+`decode_channel_values()` keeps a 64-bit integer field as an integer for its
+adapter layers (float64 cannot hold 64 bits; every narrower field is widened
+to float64 first, as before). No shipped file has samples for such a channel:
+the official AIM sample defines `Calculated_Gear` (index 23, `decoder_type`
+15, `data_size` 8) but never samples it. The tests insert `(S` messages for it
+(`tests/xrk_patch.py::add_s_samples`) and compare the spec with both backends
+under both names (`spec/tests/test_spec.py`, `tests/test_calculated_gear.py`).
+
+The AIM DLL gives no ground truth for the rule. On the same patched inputs
+(checked 2026-11) it does not list the channel, under either name: its channel
+API reports the same 11 channels as for the unpatched file. It does read the
+samples: its per-channel scratch file (`<input>.023.tmp`, 12-byte records of
+int64 time in microseconds and a float32 value, a layout confirmed on
+`Logger Temperature` against the API) holds one record per inserted sample, at
+the inserted times, with the **low 16 bits of the word as a signed int16**
+(`0x4E` → 78, `0x8000` → −32768, `0x0102030405060708` → 1800 = `0x0708`; every
+`gear << 16` word → 0), i.e. the first two bytes with no ASCII gear mapping
+and no use of bits 16-19. The backends' bit-field rule predates the spec and
+is unverified against real `Calculated_Gear` data; it is kept as is.
 
 Reference: `_aim_xrk_cy.pyx:95-137`
 

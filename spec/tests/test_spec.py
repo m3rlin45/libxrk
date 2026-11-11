@@ -14,12 +14,14 @@ from types import SimpleNamespace
 import numpy as np
 import pyarrow as pa
 import pytest
+from construct import Container
 
 from spec.xrk_format import (
     CHSPayload,
     NAMED_VALUE_DTYPES,
     SAMPLE_CODECS,
     TIMECODE_DTYPE,
+    CalculatedGear,
     _accumulate,
     _decompress_if_zlib,
     build_header_frame,
@@ -839,6 +841,34 @@ class TestDataMessageCrossValidation:
 # ---------------------------------------------------------------------------
 
 
+# The channel names that select the CalculatedGear codec.
+GEAR_NAMES = ["Calculated_Gear", "PreCalcGear"]
+
+# (raw 64-bit sample, gear) cases for the CalculatedGear codec.
+GEAR_WORDS = [
+    *((gear << 16, gear) for gear in range(8)),  # bits 16-18 are the gear
+    (1 << 19, 0),  # bit 19 set: 0
+    ((1 << 19) | (5 << 16), 0),  # ... whatever the gear bits say
+    (0xFFFF_FFFF_FFFF_FFFF, 0),
+    (0xFFFF | (4 << 16), 4),  # low garbage is ignored
+    ((1 << 63) | (6 << 16), 6),  # high garbage is ignored
+    (0xFFFF_FFFF_FFF3_FFFF, 3),  # every ignored bit set; rounded to a float64 it reads 4
+]
+
+
+def _official_sample_with_gear_samples(name):
+    """The official sample with GEAR_WORDS as the samples of its gear channel.
+
+    The file defines Calculated_Gear (8-byte samples) but never samples it;
+    ``name`` renames the channel first.
+    """
+    data = xrk_patch.load_bytes(AIM_OFFICIAL_XRK)
+    if name != "Calculated_Gear":
+        data = xrk_patch.rename_channel(data, "Calculated_Gear", name)
+    samples = [struct.pack("<Q", word) for word, _ in GEAR_WORDS]
+    return xrk_patch.add_s_samples(data, name, samples, beside="WAT Alarm_1")
+
+
 class TestSampleCodecs:
     """The declarative sample codecs are the decoder definition."""
 
@@ -863,6 +893,52 @@ class TestSampleCodecs:
             assert math.isnan(value)
         else:
             assert value == expected
+
+    @pytest.mark.parametrize("word, expected", GEAR_WORDS)
+    def test_calculated_gear_codec(self, word, expected):
+        """Bits 16-18 are the gear, bit 19 reads as 0, every other bit is ignored."""
+        assert CalculatedGear.parse(struct.pack("<Q", word)) == expected
+
+    @pytest.mark.parametrize("name", GEAR_NAMES)
+    def test_calculated_gear_is_selected_by_name(self, name):
+        """The long name wins over decoder_type, and a slot must hold the 8 bytes."""
+        chs = Container(name=name, decoder_type=15, units="")
+        assert channel_sample_codec(chs) is CalculatedGear
+        assert channel_sample_codec(Container(name="Gear", decoder_type=15, units="")) is (
+            SAMPLE_CODECS[15]
+        )
+        assert channel_stream(chs, 4) is None
+
+    @pytest.mark.parametrize("name", GEAR_NAMES)
+    def test_calculated_gear_grammar_matches_bulk_decoder(self, name):
+        """The 64-bit word reaches the codec as an integer on both paths: the
+        Construct grammar and its vectorised form agree on every case."""
+        chs = Container(name=name, decoder_type=15, units="")
+        stream = b"".join(struct.pack("<Q", word) for word, _ in GEAR_WORDS)
+        expected = [gear for _, gear in GEAR_WORDS]
+        assert list(channel_stream(chs, 8).parse(stream)) == expected
+        bulk = decode_channel_values(stream, chs, 8)
+        assert bulk.dtype == np.uint32
+        assert bulk.tolist() == expected
+
+    @pytest.mark.parametrize("name", GEAR_NAMES)
+    def test_calculated_gear_matches_the_backends(self, name, backend):
+        """End to end on the official sample with (S samples inserted for its
+        Calculated_Gear channel (which the file defines but never samples):
+        the spec's values equal each backend's, under both names."""
+        data = _official_sample_with_gear_samples(name)
+        parsed = parse_xrk_bytes(data)
+        (idx,) = (i for i, chs in parsed.channels.items() if chs.name == name)
+        assert parsed.channels[idx].decoder_type == 15, "fixture changed"
+        spec_values = parsed.channel_values()[idx]
+        assert spec_values.tolist() == [gear for _, gear in GEAR_WORDS]
+
+        aim_xrk = _BACKENDS[backend]
+        assert name not in aim_xrk(str(AIM_OFFICIAL_XRK)).channels, "fixture has samples now"
+        log = aim_xrk(data)
+        assert name in log.channels
+        backend_values = log.channels[name].column(name).to_numpy(zero_copy_only=False)
+        np.testing.assert_array_equal(backend_values, spec_values)
 
     def test_m_payload_is_an_array_of_samples(self):
         """An (M burst parses into `count` samples of the channel's width."""
