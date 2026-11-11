@@ -219,6 +219,66 @@ def channel_sample_codec(chs):
     return codec
 
 
+# Value types: the type of a channel's value column, as a numpy dtype (both
+# backends give the column the matching Arrow type; companion.md section 3,
+# "Value types"). It is derived, not tabulated: values have the type of the
+# codec's base field (Int32sl -> int32, Int16ul -> uint16, Float32l ->
+# float32, Float16l -> float16, ...), so a float16 sample stays float16. The
+# exceptions are stated once each:
+#   - NAMED_VALUE_DTYPES, per channel name: the name-keyed gear channels are
+#     uint32 whatever their decoder_type says;
+#   - VOLTS_DTYPES, per kind of type: the mV -> V division (Volts) gives
+#     float32 for a float type and float64 for an integer type. A float16
+#     widens because its quotient is not a float16: 11264 mV is one, 11.264 V
+#     is not.
+NAMED_VALUE_DTYPES = {
+    "Calculated_Gear": np.dtype(np.uint32),
+    "PreCalcGear": np.dtype(np.uint32),
+}
+VOLTS_DTYPES = {
+    "f": np.dtype(np.float32),
+    "i": np.dtype(np.float64),
+    "u": np.dtype(np.float64),
+}
+# Every channel's `timecodes` column: int32 on the wire, int64 milliseconds
+# since session start (time_offset() subtracted) in both backends' tables.
+TIMECODE_DTYPE = np.dtype(np.int64)
+
+
+def sample_dtype(codec):
+    """The numpy dtype of one raw sample: the codec's base field, under its adapters."""
+    while isinstance(codec, ExprAdapter):
+        codec = codec.subcon
+    code = codec.fmtstr[-1]
+    kind = "f" if code in "ef" else "i" if code.islower() else "u"
+    return np.dtype(f"<{kind}{codec.sizeof()}")
+
+
+def channel_value_dtype(chs):
+    """The numpy dtype of a CHS channel's value column, or None without a decoder.
+
+    The type both backends give the channel's Arrow column
+    (``pa.from_numpy_dtype``), and the dtype ``decode_channel_values`` returns:
+
+    1. a channel named in NAMED_VALUE_DTYPES has that type, whatever its
+       decoder_type;
+    2. otherwise the type of its codec's base field (``sample_dtype``): a
+       float16 sample is a float16 value;
+    3. then, for unit "V" (mV divided by 1000), the type VOLTS_DTYPES gives
+       for that kind: float32 for a float type (float16 included), float64
+       for an integer type.
+    """
+    if chs.name in NAMED_VALUE_DTYPES:
+        dtype = NAMED_VALUE_DTYPES[chs.name]
+    elif chs.decoder_type in SAMPLE_CODECS:
+        dtype = sample_dtype(SAMPLE_CODECS[chs.decoder_type])
+    else:
+        return None
+    if chs.units == "V":
+        dtype = VOLTS_DTYPES[dtype.kind]
+    return dtype
+
+
 def channel_stream(chs, width):
     """The Construct of a channel's whole sample stream, or None.
 
@@ -233,11 +293,18 @@ def channel_stream(chs, width):
 
 
 def decode_channel_values(stream, chs, width):
-    """``channel_stream(chs, width).parse(stream)`` as a float64 numpy array.
+    """``channel_stream(chs, width).parse(stream)`` as a numpy array of the channel's value type.
 
     Vectorised for the ~40M samples of the 86 fixture: the codec's base field
     becomes a numpy dtype, then each ExprAdapter layer's own decoder runs on
     the whole array, innermost first. Returns None where channel_stream would.
+
+    The layers run in float64 and the result is stored as
+    ``channel_value_dtype(chs)``. That is bit-identical to computing in the
+    value type: float64 holds every sample of every codec exactly, and the
+    one inexact step, the mV -> V division of a float32 (or of a float16
+    widened to float32, as both backends do it), rounds to the same float32
+    from its float64 quotient (53 bits >= 2 * 24 + 2).
     """
     if channel_stream(chs, width) is None or len(stream) % width:
         return None
@@ -245,12 +312,11 @@ def decode_channel_values(stream, chs, width):
     while isinstance(field, ExprAdapter):
         layers.insert(0, field)
         field = field.subcon
-    kind = "f" if field.fmtstr[-1] in "ef" else "i" if field.fmtstr[-1].islower() else "u"
     slots = np.frombuffer(bytes(stream), dtype=np.uint8).reshape(-1, width)[:, : field.sizeof()]
-    values = slots.copy().view(f"<{kind}{field.sizeof()}").reshape(-1).astype(np.float64)
+    values = slots.copy().view(sample_dtype(field)).reshape(-1).astype(np.float64)
     for layer in layers:
         values = layer._decode(values, None, None)
-    return values
+    return values.astype(channel_value_dtype(chs))
 
 
 # Logger model ID to name mapping (from _aim_xrk_cy.pyx:141-144)
@@ -1461,10 +1527,11 @@ class ParseResult:
         }
 
     def channel_values(self):
-        """Each channel's decoded values: {channel_index: float64 numpy array}.
+        """Each channel's decoded values: {channel_index: numpy array}.
 
         The accumulated stream through the channel's codec
-        (decode_channel_values). Channels without a codec are omitted.
+        (decode_channel_values), in the channel's value type
+        (channel_value_dtype). Channels without a codec are omitted.
         """
         decoded = {
             idx: decode_channel_values(stream, self.channels[idx], self.channel_sizes[idx])
