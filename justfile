@@ -10,9 +10,11 @@ lint:
     uv run black --check .
     cargo fmt --check
 
-# Rust clippy lints
+# Rust clippy lints. Under `uv run` so PyO3's build script finds the project
+# venv's Python: a bare cargo takes the first python3 on PATH, which may be
+# newer than PyO3 supports.
 clippy:
-    cargo clippy --workspace --all-targets -- -W clippy::all
+    uv run cargo clippy --workspace --all-targets -- -W clippy::all
 
 # Type check with mypy
 typecheck:
