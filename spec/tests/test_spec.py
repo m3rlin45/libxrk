@@ -6,29 +6,55 @@ Tests in this module verify that:
 3. Construct-parsed values match the Cython parser for all fields
 """
 
+import functools
 import math
 import struct
+from types import SimpleNamespace
 
 import numpy as np
+import pyarrow as pa
 import pytest
 
 from spec.xrk_format import (
+    CHSPayload,
+    NAMED_VALUE_DTYPES,
     SAMPLE_CODECS,
+    TIMECODE_DTYPE,
     _decompress_if_zlib,
     channel_sample_codec,
     channel_stream,
+    channel_value_dtype,
     chs_padding_bytes,
     decode_channel_values,
     GMessageCompiled,
     MMessageCompiled,
     ParseResult,
 )
-from spec.tests.conftest import ALL_XRK_FILES
+from spec.tests.conftest import ALL_XRK_FILES, ISSUE84_XRZ, _BACKENDS
+from tests import xrk_patch
+from libxrk.gps import GPS_CHANNEL_NAMES
 
 
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
+
+def _backend_channel_names(parsed):
+    """{channel_index: the name a backend exposes the CHS channel under}.
+
+    channel_display_names() with the GPS channel names reserved when the file
+    carries GPS data, which is what both backends do.
+    """
+    return parsed.channel_display_names(GPS_CHANNEL_NAMES if parsed.gps_payloads else ())
+
+
+def _differing(a, b):
+    """Indices where two arrays of one dtype and length differ (a NaN equals a NaN)."""
+    same = a == b
+    if a.dtype.kind == "f":
+        same |= np.isnan(a) & np.isnan(b)
+    return np.flatnonzero(~same)
 
 
 def _decode_and_fixup(data_bytes, ch):
@@ -771,8 +797,8 @@ class TestSampleCodecs:
             if grammar is None:
                 continue
             prefix = bytes(stream[: 200 * width])
-            declarative = np.array(grammar.parse(prefix), dtype=np.float64)
             vectorised = decode_channel_values(prefix, chs, width)
+            declarative = np.array(grammar.parse(prefix), dtype=np.float64).astype(vectorised.dtype)
             np.testing.assert_array_equal(declarative, vectorised, err_msg=chs.name)
             checked.add(chs.decoder_type)
         assert {6, 20} <= checked, "fixture lost its float channels"
@@ -792,7 +818,7 @@ class TestSampleCodecs:
             raw = raw[:500]
             bulk = decode_channel_values(b"".join(raw), ch, ch.data_size)
             single = np.array([codec.parse(s[: codec.sizeof()]) for s in raw], dtype=np.float64)
-            np.testing.assert_array_equal(bulk, single, err_msg=ch.name)
+            np.testing.assert_array_equal(bulk, single.astype(bulk.dtype), err_msg=ch.name)
             checked.add(ch.decoder_type)
         assert {6, 20} <= checked, "fixture lost its float channels"
 
@@ -814,15 +840,21 @@ class TestExhaustiveChannelValues:
         return decode_channel_values(b"".join(raw_samples), ch, ch.data_size)
 
     def _compare_all_values(self, result, cython_log):
-        """Compare every sample of every channel. Returns (checked_channels, errors)."""
+        """Compare every sample of every channel. Returns (checked_channels, errors).
+
+        Exact: the spec's values carry the channel's value type
+        (channel_value_dtype), so the backend column must have the same type
+        and bit-identical values (NaN == NaN), with no cast and no tolerance.
+        """
         import numpy as np
 
         values_by_index = result.channel_values()
+        names = _backend_channel_names(result)
         checked = 0
         errors = []
 
-        for idx, ch in result.channels.items():
-            name = ch.name
+        for idx in result.channels:
+            name = names[idx]
             if name not in cython_log.channels:
                 continue
             spec_values = values_by_index.get(idx)
@@ -830,8 +862,14 @@ class TestExhaustiveChannelValues:
                 continue
 
             cython_col = cython_log.channels[name].column(name)
-            cython_values = cython_col.to_numpy(zero_copy_only=False).astype(np.float64)
+            cython_values = cython_col.to_numpy(zero_copy_only=False)
 
+            if spec_values.dtype != cython_values.dtype:
+                errors.append(
+                    f"Ch {name!r}: type mismatch spec={spec_values.dtype} "
+                    f"cython={cython_values.dtype}"
+                )
+                continue
             if len(spec_values) != len(cython_values):
                 errors.append(
                     f"Ch {name!r}: length mismatch spec={len(spec_values)} "
@@ -839,25 +877,15 @@ class TestExhaustiveChannelValues:
                 )
                 continue
 
-            # Same rules as the per-sample loop this replaces: both NaN is a
-            # match, one NaN is a mismatch, otherwise |diff| must be < 0.01.
-            # Report the first offending sample only.
-            spec_nan = np.isnan(spec_values)
-            cy_nan = np.isnan(cython_values)
-            nan_mismatch = spec_nan ^ cy_nan
-            with np.errstate(invalid="ignore"):
-                value_mismatch = np.abs(spec_values - cython_values) >= 0.01
-            bad = np.flatnonzero(nan_mismatch | value_mismatch)
+            # Both NaN is a match, one NaN is a mismatch, otherwise the
+            # values must be equal. Report the first offending sample only.
+            bad = _differing(spec_values, cython_values)
             if len(bad):
                 i = int(bad[0])
-                sv, cv = float(spec_values[i]), float(cython_values[i])
-                if nan_mismatch[i]:
-                    errors.append(f"Ch {name!r} sample {i}: NaN mismatch spec={sv} cython={cv}")
-                else:
-                    errors.append(
-                        f"Ch {name!r} sample {i}/{len(spec_values)}: "
-                        f"spec={sv} cython={cv} diff={abs(sv - cv)}"
-                    )
+                errors.append(
+                    f"Ch {name!r} sample {i}/{len(spec_values)}: "
+                    f"spec={spec_values[i]!r} cython={cython_values[i]!r}"
+                )
 
             checked += 1
 
@@ -880,6 +908,176 @@ class TestExhaustiveChannelValues:
         checked, errors = self._compare_all_values(file_86_parsed, file_86_backend)
         assert checked > 0, "No channels were cross-validated"
         assert not errors, f"Value mismatches:\n" + "\n".join(errors)
+
+
+# ---------------------------------------------------------------------------
+# Value types: the type of every channel's value column
+# ---------------------------------------------------------------------------
+
+
+class TestChannelValueTypes:
+    """channel_value_dtype() is the type both backends give a channel.
+
+    The values tests above compare numbers; these compare the Arrow type of
+    the column itself, so a backend that changes a channel's type (say int32
+    to float64) fails here even though every value still matches.
+    """
+
+    _FIXTURES = [
+        "sfj",
+        "sfj_0101",
+        "sfj_suzuka",
+        "file_86",
+        "aim_official",
+        "issue49",
+        "issue68",
+        "issue84",
+    ]
+
+    @pytest.mark.parametrize(
+        "decoder_type, units, name, expected",
+        [
+            (0, "", "Master Clk", "int32"),
+            (1, "#", "StartRec", "uint16"),
+            (4, "rpm", "RPM", "int16"),
+            (6, "#", "Lateral Grip", "float32"),
+            (11, "gear", "ECU_GEAR", "int16"),
+            (12, "ms", "Predictive Time", "int32"),
+            (13, "", "Status", "uint8"),
+            (15, "gear", "Gear", "uint16"),
+            (20, "C", "LoggerTemp", "float16"),  # a float16 sample stays float16
+            (31, "ms", "Lap Time", "int32"),
+            (20, "V", "External Voltage", "float32"),  # mV -> V: float32 for a float type,
+            (6, "V", "Battery", "float32"),  # float16 included (mV / 1000 is not a float16)
+            (4, "V", "Battery", "float64"),  # ... and turns an integer type into float64
+            (13, "V", "Battery", "float64"),
+            (15, "gear", "Calculated_Gear", "uint32"),  # keyed by name, not by decoder_type
+            (6, "gear", "PreCalcGear", "uint32"),
+            (15, "V", "Calculated_Gear", "float64"),
+            (99, "", "No Such Decoder", None),
+        ],
+    )
+    def test_value_type_rule(self, decoder_type, units, name, expected):
+        """The rule on hand-written channel definitions, one row per case of
+        companion.md section 3 ("Value types")."""
+        chs = SimpleNamespace(decoder_type=decoder_type, units=units, name=name)
+        dtype = channel_value_dtype(chs)
+        # `dtype and ...` would not do: a plain numpy dtype is falsy.
+        assert (None if dtype is None else dtype.name) == expected
+
+    def test_every_other_decoder_is_int32(self):
+        """Over the whole of SAMPLE_CODECS: the seven decoders with a type of
+        their own, and int32 for every other one, as derived from the codecs'
+        base fields."""
+        own = {1: "uint16", 15: "uint16", 4: "int16", 11: "int16", 13: "uint8"}
+        own |= {6: "float32", 20: "float16"}
+        for decoder_type in SAMPLE_CODECS:
+            chs = SimpleNamespace(decoder_type=decoder_type, units="", name="x")
+            expected = own.get(decoder_type, "int32")
+            assert channel_value_dtype(chs).name == expected, decoder_type
+
+    @pytest.mark.parametrize("name", _FIXTURES)
+    def test_backend_value_types_match_spec(self, name, backend, request):
+        """Every channel of every fixture, on both backends: `timecodes` is
+        int64 and the value column has the spec's declared type. A channel
+        the spec cannot type is a failure, not a skip; the only channels
+        without a CHS are the 14 the shared GPS pipeline synthesizes, whose
+        types belong to the libxrk-gps crate."""
+        # `backend` is requested directly so its session params are defined
+        # for this test; getfixturevalue alone cannot parametrize.
+        parsed = request.getfixturevalue(f"{name}_parsed")
+        log = request.getfixturevalue(f"{name}_backend")
+        index_by_name = {n: idx for idx, n in _backend_channel_names(parsed).items()}
+        timecodes = pa.from_numpy_dtype(TIMECODE_DTYPE)
+        assert timecodes == pa.int64()
+
+        errors, checked = [], 0
+        for ch_name, table in log.channels.items():
+            if table.schema.names != ["timecodes", ch_name]:
+                errors.append(f"{ch_name}: columns {table.schema.names}")
+                continue
+            if table.schema.field("timecodes").type != timecodes:
+                errors.append(f"{ch_name}: timecodes is {table.schema.field('timecodes').type}")
+            if ch_name not in index_by_name:
+                if ch_name not in GPS_CHANNEL_NAMES:
+                    errors.append(f"{ch_name}: no CHS definition in the spec's parse")
+                continue
+            declared = channel_value_dtype(parsed.channels[index_by_name[ch_name]])
+            actual = table.schema.field(ch_name).type
+            if declared is None or actual != pa.from_numpy_dtype(declared):
+                errors.append(f"{ch_name}: backend {actual}, spec declares {declared}")
+            checked += 1
+
+        assert checked > 10, f"only {checked} channels compared"
+        assert not errors, f"{backend} value types differ from the spec:\n" + "\n".join(errors)
+
+    # The fixtures only carry data for decoders 1, 4, 6, 11, 12, 15, 20 and 24,
+    # the mV -> V conversion only on decoder 20, and no name-keyed gear channel.
+    # The rest of the rule is pinned on a patched fixture: issue84 has 30-odd
+    # data-carrying channels with decoder 15 in 8-byte slots, wide enough for
+    # every codec, so each case rewrites one of their CHS definitions in memory
+    # (decoder_type, unit, long_name). The sample values are meaningless; only
+    # the types are compared.
+    @staticmethod
+    @functools.lru_cache(maxsize=None)
+    def _patched_issue84(volts):
+        """(xrk bytes, {patched channel name: its CHS payload}) for one unit variant."""
+        data = xrk_patch.load_bytes(ISSUE84_XRZ)
+        exposed = _BACKENDS["cython"](data).channels
+        chs_frames = [f for f in xrk_patch.frames(data) if f["tok"] == "CHS"]
+        parsed = [CHSPayload.parse(data[f["pstart"] : f["pend"]]) for f in chs_frames]
+        # Patch only channels that carry data, found under their display name
+        # (the k-th CHS of a name is "<name> dup <k>", by ascending index).
+        seen, targets = {}, []
+        for chs, frame in sorted(zip(parsed, chs_frames), key=lambda pair: pair[0].index):
+            k = seen[chs.name] = seen.get(chs.name, 0) + 1
+            shown = chs.name if k == 1 else f"{chs.name} dup {k}"
+            if chs.decoder_type == 15 and chs.data_size == 8 and shown in exposed:
+                targets.append(frame)
+        # Each decoder on a channel of its own; the gear names keep decoder 15.
+        cases = [(f"decoder {d}", d) for d in sorted(SAMPLE_CODECS)]
+        cases += [(gear, 15) for gear in sorted(NAMED_VALUE_DTYPES)]
+        assert len(targets) >= len(cases), "issue84 lost its wide decoder-15 channels"
+
+        buf = bytearray(data)
+        payloads = {}
+        for frame, (label, decoder_type) in zip(targets, cases):
+            xrk_patch.patch(buf, frame, 20, bytes([decoder_type]))
+            xrk_patch.patch(buf, frame, 32, label.encode().ljust(24, b"\0"))
+            if volts:
+                # unit type 21 (mV) + calibrated flag: "V"
+                xrk_patch.patch(buf, frame, 12, bytes([21 | 0x80]))
+            payloads[label] = bytes(buf[frame["pstart"] : frame["pend"]])
+        return bytes(buf), payloads
+
+    @pytest.mark.parametrize("volts", [False, True], ids=["plain", "volts"])
+    def test_every_decoder_and_unit_rule_on_both_backends(self, volts, backend):
+        """Every decoder in SAMPLE_CODECS and both name-keyed gear channels,
+        with and without the mV -> V conversion: the backend's Arrow type is
+        the spec's declared type for the same CHS definition.
+
+        Not covered: a gear-named channel with unit "V" whose decoder_type is
+        6 or 20. The backends disagree there (Cython float64, Rust float32);
+        the spec's rule gives float64. No fixture has such a channel.
+        """
+        data, payloads = self._patched_issue84(volts)
+        log = _BACKENDS[backend](data)
+        errors = []
+        for label, payload in payloads.items():
+            chs = CHSPayload.parse(payload)
+            assert chs.name == label and (chs.units == "V") == volts
+            declared = channel_value_dtype(chs)
+            if label not in log.channels:
+                errors.append(f"{label}: not exposed by {backend}")
+                continue
+            schema = log.channels[label].schema
+            if schema.field("timecodes").type != pa.int64():
+                errors.append(f"{label}: timecodes is {schema.field('timecodes').type}")
+            if schema.field(label).type != pa.from_numpy_dtype(declared):
+                errors.append(
+                    f"{label}: backend {schema.field(label).type}, spec declares {declared}"
+                )
+        assert not errors, f"{backend} value types differ from the spec:\n" + "\n".join(errors)
 
 
 # ---------------------------------------------------------------------------
@@ -1409,11 +1607,12 @@ class TestIssue68SpecVsBackends:
                 if len(spec) != len(backend_v):
                     errors.append(f"{name}: count spec={len(spec)} backend={len(backend_v)}")
                     continue
-                # Compare in the backend column's own dtype (float32 for most
-                # channels): the spec's float64 canonical value only has to
-                # round to the value the backend stored.
-                spec_arr = np.asarray(spec, dtype=backend_v.dtype)
-                diffs = int(np.count_nonzero(np.abs(spec_arr - backend_v) > 1e-9))
+                # The spec's values carry the channel's value type: the
+                # backend column must have it too, with identical values.
+                if spec.dtype != backend_v.dtype:
+                    errors.append(f"{name}: type spec={spec.dtype} backend={backend_v.dtype}")
+                    continue
+                diffs = len(_differing(spec, backend_v))
                 if diffs:
                     errors.append(f"{name}: {diffs} values differ")
             checked += 1

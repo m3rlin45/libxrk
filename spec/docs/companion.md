@@ -67,8 +67,9 @@ This determines how to interpret the raw data bytes:
 IEEE 754 half-precision (binary16) and returned as float16 (Arrow
 `halffloat`), not widened. One exception: a channel in volts is stored in
 millivolts and divided by 1000 (see "Special fixups"), and the quotient is not
-a float16 value, so it is widened to float32 first and returned as float32.
-This is the most common encoding for analog sensor channels.
+a float16 value, so it is widened to float32 first and returned as float32
+(see "Value types"). This is the most common encoding for analog sensor
+channels.
 
 **Gear lookup (decoder 15):** The raw uint16 value is an ASCII character code.
 Map `'N'`(0x4E)→0, `'1'`(0x31)→1, ..., `'6'`(0x36)→6.
@@ -90,6 +91,54 @@ conversion). Each adapter's decoder is a numpy expression, so the same function
 decodes one sample (`channel_sample_codec(chs).parse(...)`) and a whole stream
 (`decode_channel_values()`).
 
+**Value types:** each channel's table has an int64 `timecodes` column
+(milliseconds since session start; int32 on the wire, section 2) and a value
+column whose type the spec states as `channel_value_dtype(chs)`
+(`spec/xrk_format.py`, next to `SAMPLE_CODECS`). Both backends give the
+column the matching Arrow type, and `decode_channel_values()` returns its
+arrays in it. The type is derived from the codec rather than tabulated:
+
+1. A channel named `Calculated_Gear` or `PreCalcGear` is **uint32**, whatever
+   its `decoder_type` (`NAMED_VALUE_DTYPES`; see "Special fixups").
+2. Otherwise the value has the type of the base field of the decoder's codec
+   in `SAMPLE_CODECS`: `Int32sl` → int32, `Int16ul` → uint16, `Int16sl` →
+   int16, `Int8ul` → uint8, `Float32l` → float32, `Float16l` → float16. A
+   float16 sample is returned as float16, not widened: the widening carried
+   no information and doubled the largest channels.
+3. The mV→V conversion (unit `V`) then divides by 1000 (`VOLTS_DTYPES`): any
+   float type becomes **float32**, any integer type **float64**. A float16
+   widens here because the quotient is not a float16 value (11264 mV is one,
+   11.264 V is not). Both backends widen the sample to float32 first and
+   divide in float32.
+
+Which gives:
+
+| Channel | Value type |
+|---------|-----------|
+| decoder 1, 15 | uint16 |
+| decoder 4, 11 | int16 |
+| decoder 13 | uint8 |
+| decoder 6 | float32 |
+| decoder 20 | float16 |
+| every other decoder (0, 3, 8, 12, 22, 24, 26, 27, 31–33, 37–39) | int32 |
+| `Calculated_Gear`, `PreCalcGear` | uint32 |
+| unit `V`, decoder 6 or 20 | float32 |
+| unit `V`, any integer type (gear channels included) | float64 |
+
+`TestChannelValueTypes` (`spec/tests/test_spec.py`) holds both backends to
+this: the Arrow type of every channel of every fixture, and of every decoder
+with and without the `V` conversion on a patched fixture, since the shipped
+files only carry data for decoders 1, 4, 6, 11, 12, 15, 20 and 24. One
+combination is left open: a gear-named channel with unit `V` whose
+`decoder_type` byte is 6 or 20. Cython gives float64 (rule 3 applied to
+uint32), Rust float32 (it picks the `V` type from `decoder_type` before
+looking at the name). No fixture has such a channel.
+
+The 14 GPS channels have no CHS and no codec; their types (float64 for
+`GPS Speed`, `GPS Latitude`, `GPS Longitude`, `GPS Altitude` and `GPS_ITOW`,
+float32 for the rest) are set by the shared GPS pipeline (section 5) and
+tested with it (`tests/test_gps_processing.py`).
+
 **Sample streams:** a data message's payload is structured in the spec, not
 opaque: an `(M` burst's `samples` are `Array(count, Bytes(CHS.data_size))`,
 and a `(G` payload's `samples` are an `Array` with one sample per GRP member
@@ -108,8 +157,8 @@ overlap. The spec applies it in the parse hook (`_accumulate`); the result is
 `ParseResult.streams`, contiguous bytes per channel in `data_size` slots. A
 stream's grammar is `channel_stream(chs, width)`, `GreedyRange(Padded(width,
 codec))`; `channel_values()` decodes every stream with its vectorised form,
-and `test_spec.py` compares every value of every fixture against both
-backends.
+in the channel's value type, and `test_spec.py` compares them against both
+backends sample by sample: same type, identical values.
 
 **Special fixups:**
 - Channels named `Calculated_Gear` or `PreCalcGear` use decoder `Q` (uint64)

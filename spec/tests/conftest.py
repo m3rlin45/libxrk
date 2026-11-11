@@ -134,6 +134,18 @@ def sfj_backend(backend):
 
 
 @pytest.fixture(scope="session")
+def sfj_0101_backend(backend):
+    """Load SFJ_0101_XRK via each compiled backend once per session."""
+    return _load_backend(backend, SFJ_0101_XRK)
+
+
+@pytest.fixture(scope="session")
+def sfj_suzuka_backend(backend):
+    """Load SFJ_SUZUKA_XRK via each compiled backend once per session."""
+    return _load_backend(backend, SFJ_SUZUKA_XRK)
+
+
+@pytest.fixture(scope="session")
 def file_86_backend(backend):
     """Load FILE_86_XRK via each compiled backend once per session."""
     return _load_backend(backend, FILE_86_XRK)
