@@ -72,6 +72,7 @@ class Channel:
     interpolate: bool = False
     unknown: bytes = b""
     function: str = ""
+    source_dtype: str = ""  # on-disk sample type, set with the decoder in process_channel
     source_type: int = 0
     source_channel_id: int = 0
     device_tag: str = ""
@@ -104,6 +105,18 @@ class Decoder:
     stype: str
     interpolate: bool = False
     fixup: object = None
+    source_dtype: str = ""  # on-disk sample type where stype does not say it (float16 read as 'H')
+
+# Decoder.stype -> numpy dtype name of the on-disk sample, published as the
+# source_dtype channel metadata. Reference: spec/xrk_format.py channel_source_dtype().
+_stype_source_dtypes = {
+    'B': 'uint8',
+    'H': 'uint16',
+    'h': 'int16',
+    'i': 'int32',
+    'f': 'float32',
+    'Q': 'uint64',
+}
 
 def _nullterm_string(s):
     zero = s.find(0)
@@ -137,7 +150,7 @@ _decoders = {
     12: Decoder('i'), # Predictive Time?
     13: Decoder('B'), # status field?
     15: Decoder('H', fixup=lambda a: _gear_table[a]), # ?? NdscSwitch on M4GT4.  Also actual size is 8 bytes
-    20: Decoder('H', interpolate=True,
+    20: Decoder('H', interpolate=True, source_dtype='float16',
                 fixup=lambda a: np.ndarray(buffer=a, shape=(len(a),),
                                            dtype=np.float16).astype(np.float32).data),
     22: Decoder('i'), # Lap Time (variant)
@@ -987,6 +1000,7 @@ def _decode_sequence(s, progress=None):
             return
 
         c.interpolate = d.interpolate
+        c.source_dtype = d.source_dtype or _stype_source_dtypes[d.stype]
         if c.group:
             grp = c.group.group
             c.timecodes = grp.timecodes
@@ -1287,6 +1301,7 @@ def _channel_to_table(ch):
         dec_pts=ch.dec_pts,
         interpolate=ch.interpolate,
         function=ch.function,
+        source_dtype=ch.source_dtype,
         source_type=ch.source_type,
         source_channel_id=ch.source_channel_id,
         device_tag=ch.device_tag,

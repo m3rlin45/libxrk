@@ -135,7 +135,23 @@ meta = ChannelMetadata(units="m/s", dec_pts=1, interpolate=True)
 field = pa.field("speed", pa.float32(), metadata=meta.to_field_metadata())
 ```
 
-Available fields: `units`, `dec_pts`, `interpolate`, `function`, `source_type`, `source_channel_id`, `device_tag`, `cal_value_1`, `cal_value_2`, `display_range_min`, `display_range_max`.
+Available fields: `units`, `dec_pts`, `interpolate`, `function`, `source_type`, `source_channel_id`, `device_tag`, `cal_value_1`, `cal_value_2`, `display_range_min`, `display_range_max`, `source_dtype`.
+
+#### Source sample type
+
+`source_dtype` is the numpy dtype name of a channel's samples as stored in the file (`"float16"`, `"float32"`, `"int16"`, `"uint16"`, `"int32"`, `"uint8"`, `"uint64"`). It can be narrower than the column you get: most IMU, gyro and CAN channels are stored as float16 and returned as float32. Use it to store such a channel at its real precision, with no loss:
+
+```python
+import numpy as np
+
+table = log.channels['LateralAcc']
+meta = ChannelMetadata.from_channel_table(table)
+values = table.column('LateralAcc').to_numpy()   # float32
+if meta.source_dtype == 'float16' and meta.units != 'V':
+    values = values.astype(np.float16)           # exact, half the memory
+```
+
+The field is empty for the GPS-derived channels, which are computed rather than read from one sample stream. A channel in `V` is stored in millivolts and returned divided by 1000, so its values are not float16-exact; `np.float16(values * 1000)` recovers the stored millivolts. Resampled channels keep the field, but interpolated values are no longer limited to the source precision.
 
 ## Development
 

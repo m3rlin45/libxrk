@@ -74,6 +74,17 @@ impl ChsPayload {
             .unwrap_or(false)
     }
 
+    /// numpy dtype name of one on-disk sample (the `source_dtype` channel
+    /// metadata): "uint64" for the channels decoded by name, otherwise the
+    /// decoder's wire type; empty for an unknown decoder.
+    pub fn source_dtype(&self) -> &'static str {
+        if crate::decoders::is_manual_decoder(&self.long_name()) {
+            "uint64"
+        } else {
+            tables::source_dtype(self.decoder_type).unwrap_or("")
+        }
+    }
+
     /// Get the device tag as string.
     pub fn device_tag(&self) -> String {
         if self.device_tag_raw.iter().any(|&b| b != 0) {

@@ -68,6 +68,9 @@ pub struct Channel {
     pub cal_value_2: f32,
     pub display_range_min: f32,
     pub display_range_max: f32,
+    /// numpy dtype name of one on-disk sample (e.g. "float16" for a channel
+    /// whose `values` were widened to `Float32`).
+    pub source_dtype: String,
 }
 
 /// Parse an XRK/XRZ file from raw bytes.
@@ -157,6 +160,7 @@ pub fn read_xrk_with_options(
                 cal_value_2: ch_info.chs.cal_value_2,
                 display_range_min: ch_info.chs.display_range_min,
                 display_range_max: ch_info.chs.display_range_max,
+                source_dtype: ch_info.chs.source_dtype().to_string(),
             })
         })
         .collect();

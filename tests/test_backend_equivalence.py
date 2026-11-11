@@ -1,7 +1,7 @@
 """Exhaustive Cython vs Rust backend equivalence tests.
 
 Every test fixture is loaded with both backends and compared at full
-strictness: channel name sets, Arrow types, all 11 field-metadata keys,
+strictness: channel name sets, Arrow types, all 12 field-metadata keys,
 bit-exact timecodes and values, the laps table, and the complete metadata
 dict.  This is deliberately stronger than the per-file CrossBackend classes
 (which check a subset of metadata keys).

@@ -35,6 +35,15 @@ class ChannelMetadata:
         cal_value_2: Calibration scale.
         display_range_min: Minimum display range.
         display_range_max: Maximum display range.
+        source_dtype: numpy dtype name of the channel's samples as stored in the
+            file (e.g. "float16", "float32", "int32", "uint16"), which can be
+            narrower than the value column's type: float16 samples are returned
+            as float32. Empty for channels that are not read from a single
+            on-disk sample stream (the GPS-derived channels) and for tables not
+            produced by ``aim_xrk()``. It describes the samples as parsed:
+            resampling keeps the field, but interpolated values are no longer
+            limited to the source precision, and a channel in "V" is stored in
+            millivolts (the value column holds the samples divided by 1000).
 
     Example:
         >>> field = log.channels['Engine RPM'].schema.field('Engine RPM')
@@ -43,6 +52,16 @@ class ChannelMetadata:
         'rpm'
         >>> meta.interpolate
         True
+
+        Narrow a channel back to its stored precision, losslessly:
+
+        >>> table = log.channels['LateralAcc']
+        >>> meta = ChannelMetadata.from_channel_table(table)
+        >>> meta.source_dtype, table.schema.field('LateralAcc').type
+        ('float16', DataType(float))
+        >>> values = table.column('LateralAcc').to_numpy()
+        >>> if meta.source_dtype == 'float16' and meta.units != 'V':
+        ...     values = values.astype(np.float16)  # exact: half the memory
     """
 
     units: str = ""
@@ -56,6 +75,7 @@ class ChannelMetadata:
     cal_value_2: float = 1.0
     display_range_min: float = 0.0
     display_range_max: float = 0.0
+    source_dtype: str = ""
 
     @classmethod
     def from_field(cls, field: pa.Field) -> "ChannelMetadata":
@@ -80,6 +100,7 @@ class ChannelMetadata:
             cal_value_2=float(m.get(b"cal_value_2", b"1.0").decode() or "1.0"),
             display_range_min=float(m.get(b"display_range_min", b"0.0").decode() or "0.0"),
             display_range_max=float(m.get(b"display_range_max", b"0.0").decode() or "0.0"),
+            source_dtype=m.get(b"source_dtype", b"").decode(),
         )
 
     @classmethod
@@ -120,6 +141,7 @@ class ChannelMetadata:
             b"cal_value_2": str(self.cal_value_2).encode(),
             b"display_range_min": str(self.display_range_min).encode(),
             b"display_range_max": str(self.display_range_max).encode(),
+            b"source_dtype": self.source_dtype.encode(),
         }
 
 
@@ -131,7 +153,8 @@ class LogFile:
     Attributes:
         channels: Dict mapping channel names to PyArrow tables. Each table has
             'timecodes' (int64, ms) and '<channel_name>' columns. Channel metadata
-            (units, dec_pts, interpolate) stored in schema.field.metadata with bytes keys.
+            (units, dec_pts, interpolate, source_dtype, ...) stored in schema.field.metadata
+            with bytes keys; read it with ``ChannelMetadata.from_channel_table()``.
         laps: PyArrow table with columns: num (int), start_time (int), end_time (int),
             lap_type (str: "full", "out", "in"). Times are in milliseconds.
         metadata: Dict of session metadata (racer, vehicle, venue, etc.)

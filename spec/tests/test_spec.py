@@ -15,7 +15,9 @@ import pytest
 from spec.xrk_format import (
     SAMPLE_CODECS,
     _decompress_if_zlib,
+    CHSPayload,
     channel_sample_codec,
+    channel_source_dtype,
     channel_stream,
     chs_padding_bytes,
     decode_channel_values,
@@ -25,6 +27,7 @@ from spec.xrk_format import (
 )
 from spec.tests.conftest import ALL_XRK_FILES
 from libxrk._aim_xrk_rs import process_gps
+from libxrk.base import ChannelMetadata
 from libxrk.gps import GPS_CHANNEL_NAMES
 
 
@@ -254,6 +257,91 @@ class TestCHSCrossValidation:
                     f"Ch {ch.name!r}: data_size {ch.data_size} < "
                     f"decoder type {dt} expects {expected_size}"
                 )
+
+
+class TestChannelSourceDtype:
+    """channel_source_dtype(chs) is a channel's on-disk sample type, which both
+    backends publish as the ``source_dtype`` channel metadata (issue #115)."""
+
+    _FIXTURES = [
+        "sfj",
+        "sfj_0101",
+        "sfj_suzuka",
+        "file_86",
+        "aim_official",
+        "issue49",
+        "issue68",
+        "issue84",
+    ]
+
+    @staticmethod
+    def _chs(decoder_type, name="Channel", unit_type_byte=0):
+        """A CHS payload that is zero apart from the three fields the type depends on."""
+        raw = bytearray(CHSPayload.sizeof())
+        raw[12] = unit_type_byte
+        raw[20] = decoder_type
+        raw[32 : 32 + len(name)] = name.encode()
+        return CHSPayload.parse(bytes(raw))
+
+    @pytest.mark.parametrize(
+        "decoder_type, expected",
+        [
+            (20, "float16"),  # widened to float32 by both backends
+            (6, "float32"),
+            (4, "int16"),
+            (11, "int16"),
+            (1, "uint16"),
+            (15, "uint16"),  # the gear character, before the lookup
+            (13, "uint8"),
+            (0, "int32"),
+            (31, "int32"),
+            (2, None),  # no codec: the channel is not exposed
+        ],
+    )
+    def test_decoder_types(self, decoder_type, expected):
+        assert channel_source_dtype(self._chs(decoder_type)) == expected
+
+    def test_every_codec_has_a_source_dtype_of_its_width(self):
+        """The type is derived from the codec's base field, so it cannot drift
+        from SAMPLE_CODECS: one numpy dtype per decoder, as wide as the codec."""
+        for decoder_type, codec in SAMPLE_CODECS.items():
+            dtype = np.dtype(channel_source_dtype(self._chs(decoder_type)))
+            assert dtype.itemsize == codec.sizeof(), decoder_type
+
+    def test_volts_keep_the_stored_type(self):
+        """A "V" channel is stored in millivolts; the mV->V adapter does not
+        change what is on disk."""
+        chs = self._chs(20, unit_type_byte=0x80 | 21)
+        assert chs.units == "V"
+        assert channel_source_dtype(chs) == "float16"
+
+    @pytest.mark.parametrize("name", ["Calculated_Gear", "PreCalcGear"])
+    def test_gear_channels_decoded_by_name_are_uint64(self, name):
+        assert channel_source_dtype(self._chs(20, name=name)) == "uint64"
+
+    @pytest.mark.parametrize("name", _FIXTURES)
+    def test_backend_source_dtype_matches_spec(self, name, backend, request):
+        """Every channel of every fixture, on each backend (the session
+        `backend` param): a CHS channel's source_dtype is the spec's, and the
+        GPS-derived channels, which have no single on-disk sample type, have
+        none."""
+        parsed = request.getfixturevalue(f"{name}_parsed")
+        log = request.getfixturevalue(f"{name}_backend")
+        gps_names = GPS_CHANNEL_NAMES if parsed.gps_data() else ()
+        display_names = parsed.channel_display_names(gps_names)
+        expected = {
+            display_names[idx]: channel_source_dtype(chs) for idx, chs in parsed.channels.items()
+        }
+        seen = set()
+        for channel, table in log.channels.items():
+            got = ChannelMetadata.from_channel_table(table).source_dtype
+            if channel in gps_names:
+                assert got == "", f"{channel}: GPS-derived, got {got!r}"
+                continue
+            assert got == expected[channel], f"{channel}: {got!r} != spec {expected[channel]!r}"
+            seen.add(got)
+        assert "" not in seen and None not in seen
+        assert "float16" in seen, "fixture lost its float16 channels"
 
 
 # ---------------------------------------------------------------------------

@@ -24,6 +24,7 @@ class TestChannelMetadataRoundtrip(unittest.TestCase):
             cal_value_2=2.0,
             display_range_min=-100.0,
             display_range_max=10000.0,
+            source_dtype="float16",
         )
 
         field = pa.field("test", pa.float32(), metadata=original.to_field_metadata())
@@ -81,6 +82,7 @@ class TestChannelMetadataFromField(unittest.TestCase):
         self.assertFalse(meta.interpolate)
         self.assertEqual(meta.function, "")
         self.assertEqual(meta.cal_value_2, 1.0)
+        self.assertEqual(meta.source_dtype, "")
 
     def test_from_field_empty_string_values(self):
         """from_field should handle empty string values for numeric fields."""
@@ -113,12 +115,27 @@ class TestChannelMetadataFromField(unittest.TestCase):
         self.assertEqual(restored.dec_pts, 1)
         self.assertTrue(restored.interpolate)
 
+    def test_source_dtype_roundtrip(self):
+        """source_dtype is stored as the plain dtype name and reads back."""
+        meta = ChannelMetadata(source_dtype="float16")
+        raw = meta.to_field_metadata()
+        self.assertEqual(raw[b"source_dtype"], b"float16")
+
+        field = pa.field("test", pa.float32(), metadata=raw)
+        self.assertEqual(ChannelMetadata.from_field(field).source_dtype, "float16")
+
+    def test_source_dtype_is_last_positional_field(self):
+        """The field was appended, so positional construction is unchanged."""
+        meta = ChannelMetadata("rpm", 0, True, "Engine RPM", 1, 42, "@AIM", 0.0, 1.0, 0.0, 9000.0)
+        self.assertEqual(meta.display_range_max, 9000.0)
+        self.assertEqual(meta.source_dtype, "")
+
 
 class TestChannelMetadataToFieldMetadata(unittest.TestCase):
     """Tests for ChannelMetadata.to_field_metadata() serialization."""
 
     def test_all_keys_present(self):
-        """to_field_metadata should include all 11 metadata keys."""
+        """to_field_metadata should include all 12 metadata keys."""
         meta = ChannelMetadata()
         raw = meta.to_field_metadata()
 
@@ -134,6 +151,7 @@ class TestChannelMetadataToFieldMetadata(unittest.TestCase):
             b"cal_value_2",
             b"display_range_min",
             b"display_range_max",
+            b"source_dtype",
         }
         self.assertEqual(set(raw.keys()), expected_keys)
 
@@ -184,6 +202,7 @@ class TestChannelMetadataProperties(unittest.TestCase):
         self.assertEqual(meta.cal_value_2, 1.0)
         self.assertEqual(meta.display_range_min, 0.0)
         self.assertEqual(meta.display_range_max, 0.0)
+        self.assertEqual(meta.source_dtype, "")
 
 
 class TestChannelMetadataPreservation(unittest.TestCase):
@@ -215,7 +234,9 @@ class TestChannelMetadataPreservation(unittest.TestCase):
 
     def test_preserved_through_select_channels(self):
         """Metadata should survive select_channels."""
-        meta = ChannelMetadata(units="rpm", dec_pts=2, interpolate=True, function="Engine RPM")
+        meta = ChannelMetadata(
+            units="rpm", dec_pts=2, interpolate=True, function="Engine RPM", source_dtype="uint16"
+        )
         log = self._make_log({"RPM": self._make_channel("RPM", meta)})
 
         result = log.select_channels(["RPM"])
@@ -224,7 +245,7 @@ class TestChannelMetadataPreservation(unittest.TestCase):
 
     def test_preserved_through_filter_by_time_range(self):
         """Metadata should survive filter_by_time_range."""
-        meta = ChannelMetadata(units="m/s", dec_pts=1, interpolate=True)
+        meta = ChannelMetadata(units="m/s", dec_pts=1, interpolate=True, source_dtype="float32")
         log = self._make_log({"Speed": self._make_channel("Speed", meta)})
 
         result = log.filter_by_time_range(0, 150)
@@ -233,7 +254,9 @@ class TestChannelMetadataPreservation(unittest.TestCase):
 
     def test_preserved_through_filter_by_lap(self):
         """Metadata should survive filter_by_lap."""
-        meta = ChannelMetadata(units="deg", dec_pts=1, interpolate=True, device_tag="@AIM")
+        meta = ChannelMetadata(
+            units="deg", dec_pts=1, interpolate=True, device_tag="@AIM", source_dtype="float16"
+        )
         log = self._make_log({"Steering": self._make_channel("Steering", meta)})
 
         result = log.filter_by_lap(0)
@@ -242,7 +265,9 @@ class TestChannelMetadataPreservation(unittest.TestCase):
 
     def test_preserved_through_resample_to_timecodes(self):
         """Metadata should survive resample_to_timecodes."""
-        meta = ChannelMetadata(units="rpm", dec_pts=0, interpolate=True, source_type=9)
+        meta = ChannelMetadata(
+            units="rpm", dec_pts=0, interpolate=True, source_type=9, source_dtype="float16"
+        )
         log = self._make_log({"RPM": self._make_channel("RPM", meta)})
 
         target = pa.array([0, 50, 100, 150, 200], type=pa.int64())
@@ -252,7 +277,7 @@ class TestChannelMetadataPreservation(unittest.TestCase):
 
     def test_preserved_through_get_channels_as_table(self):
         """Metadata should survive get_channels_as_table merge."""
-        meta = ChannelMetadata(units="bar", dec_pts=2, interpolate=True)
+        meta = ChannelMetadata(units="bar", dec_pts=2, interpolate=True, source_dtype="float16")
         log = self._make_log({"BRK": self._make_channel("BRK", meta)})
 
         result = log.get_channels_as_table()

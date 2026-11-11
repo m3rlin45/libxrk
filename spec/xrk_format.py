@@ -213,6 +213,28 @@ def channel_sample_codec(chs):
     return codec
 
 
+def channel_source_dtype(chs):
+    """The numpy dtype name of one on-disk sample of a CHS channel, or None.
+
+    The SOURCE (wire) type, before any adapter: the base field of the
+    channel's codec in SAMPLE_CODECS, so decoder 20 is "float16" although
+    both backends widen its values to float32, and a "V" channel keeps the
+    type its millivolts were stored in. Both backends publish it as the
+    ``source_dtype`` channel metadata field. None for a decoder_type without
+    a codec (such a channel is not exposed).
+    """
+    if chs.name in ("Calculated_Gear", "PreCalcGear"):
+        return "uint64"  # decoded by name, whatever the decoder_type (companion.md section 3)
+    field = SAMPLE_CODECS.get(chs.decoder_type)
+    if field is None:
+        return None
+    while isinstance(field, ExprAdapter):
+        field = field.subcon
+    code = field.fmtstr[-1]
+    kind = "float" if code in "ef" else "int" if code.islower() else "uint"
+    return f"{kind}{8 * field.sizeof()}"
+
+
 def channel_stream(chs, width):
     """The Construct of a channel's whole sample stream, or None.
 

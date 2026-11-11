@@ -31,6 +31,7 @@ pub struct ChannelMetadata {
     pub cal_value_2: f32,
     pub display_range_min: f32,
     pub display_range_max: f32,
+    pub source_dtype: String,
 }
 
 impl ChannelMetadata {
@@ -54,6 +55,7 @@ impl ChannelMetadata {
             cal_value_2: chs.cal_value_2,
             display_range_min: chs.display_range_min,
             display_range_max: chs.display_range_max,
+            source_dtype: chs.source_dtype().to_string(),
         }
     }
 
@@ -83,6 +85,7 @@ impl ChannelMetadata {
             "display_range_max".to_string(),
             format_f32(self.display_range_max),
         );
+        m.insert("source_dtype".to_string(), self.source_dtype.clone());
         m
     }
 }

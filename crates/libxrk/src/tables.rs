@@ -199,6 +199,27 @@ pub fn decoder_info(decoder_type: u8) -> Option<DecoderInfo> {
     }
 }
 
+/// numpy dtype name of one on-disk sample for a decoder type, published as
+/// the `source_dtype` channel metadata. `None` for an unknown decoder.
+///
+/// This is the wire type, not the output type: decoder 20 stores float16
+/// (read as `H` and widened to float32), and mV channels keep the type their
+/// millivolts were stored in. Reference: `channel_source_dtype()` in
+/// spec/xrk_format.py.
+pub fn source_dtype(decoder_type: u8) -> Option<&'static str> {
+    if decoder_type == 20 {
+        return Some("float16");
+    }
+    decoder_info(decoder_type).and_then(|d| match d.format {
+        'B' => Some("uint8"),
+        'H' => Some("uint16"),
+        'h' => Some("int16"),
+        'i' => Some("int32"),
+        'f' => Some("float32"),
+        _ => None,
+    })
+}
+
 /// Resolve the channel function string from CHS fields.
 ///
 /// Uses `(maybe_display_format, unit_type_byte)` as the primary lookup key,
@@ -365,6 +386,31 @@ mod tests {
         assert_eq!(d.format, 'B');
         assert!(!d.interpolate);
         assert_eq!(d.byte_size, 1);
+    }
+
+    #[test]
+    fn test_source_dtype() {
+        assert_eq!(source_dtype(20), Some("float16"));
+        assert_eq!(source_dtype(6), Some("float32"));
+        assert_eq!(source_dtype(1), Some("uint16"));
+        assert_eq!(source_dtype(15), Some("uint16"));
+        assert_eq!(source_dtype(4), Some("int16"));
+        assert_eq!(source_dtype(11), Some("int16"));
+        assert_eq!(source_dtype(13), Some("uint8"));
+        assert_eq!(source_dtype(31), Some("int32"));
+        assert_eq!(source_dtype(2), None);
+
+        // Every known decoder has a source dtype as wide as its samples.
+        for decoder_type in 0..=255u8 {
+            let width = source_dtype(decoder_type).map(|name| {
+                let bits: u8 = name
+                    .trim_start_matches(char::is_alphabetic)
+                    .parse()
+                    .unwrap();
+                bits / 8
+            });
+            assert_eq!(width, decoder_info(decoder_type).map(|d| d.byte_size));
+        }
     }
 
     #[test]

@@ -169,8 +169,25 @@ field = pa.field("speed", pa.float32(), metadata=meta.to_field_metadata())
 | `cal_value_2` | float | `1.0` | Calibration scale |
 | `display_range_min` | float | `0.0` | Min display range |
 | `display_range_max` | float | `0.0` | Max display range |
+| `source_dtype` | str | `""` | numpy dtype name of the samples as stored in the file (e.g. "float16") |
 
 The `function` field contains the RS3 channel function classification (e.g., "Temperature", "Engine RPM", "Lateral Acceleration"). This is a best-effort lookup derived from `(maybe_display_format, unit_type_byte, config_flags)` in the CHS binary. Empty string for GPS-derived channels and unrecognized combinations.
+
+The `source_dtype` field is the on-disk (wire) sample type of the channel, as a numpy dtype name: `"float16"`, `"float32"`, `"int16"`, `"uint16"`, `"int32"`, `"uint8"`, or `"uint64"` (`Calculated_Gear` / `PreCalcGear`). It is set by both backends for every channel read from the file and is defined by `channel_source_dtype()` in `spec/xrk_format.py`. It is **not** the value column's Arrow type, which is unchanged: float16 samples (CHS decoder type 20: most IMU, gyro and CAN channels) are returned as float32, and `source_dtype` is what tells them apart from genuine float32 channels. Narrowing such a channel back is lossless:
+
+```python
+table = log.channels['LateralAcc']
+meta = ChannelMetadata.from_channel_table(table)
+values = table.column('LateralAcc').to_numpy()   # float32
+if meta.source_dtype == 'float16' and meta.units != 'V':
+    values = values.astype(np.float16)           # exact, half the memory
+```
+
+Caveats:
+- Empty string for the GPS-derived channels (computed from NAV-SOL records, no single on-disk sample type) and for tables not produced by `aim_xrk()`.
+- A channel with units `V` is stored in millivolts and returned divided by 1000, so its values are not float16-exact; `np.float16(values * 1000)` recovers the stored millivolts.
+- Non-finite samples are returned as `NaN` whatever the source type.
+- `select_channels`, `filter_by_*`, `resample_to_*` and `get_channels_as_table` all keep the field. After resampling it still names the source type, but interpolated values are no longer limited to that precision.
 
 ## LogFile Methods
 

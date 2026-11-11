@@ -29,6 +29,8 @@ pub fn gps_channel_metadata(def: &GpsChannelDef) -> HashMap<String, String> {
     m.insert("cal_value_2".to_string(), "1.0".to_string());
     m.insert("display_range_min".to_string(), "0.0".to_string());
     m.insert("display_range_max".to_string(), "0.0".to_string());
+    // No single on-disk sample type: the channels are computed from NAV-SOL records.
+    m.insert("source_dtype".to_string(), String::new());
     m
 }
 
@@ -121,6 +123,7 @@ mod tests {
         assert_eq!(md["dec_pts"], "1");
         assert_eq!(md["interpolate"], "True");
         assert_eq!(md["cal_value_2"], "1.0");
+        assert_eq!(md["source_dtype"], "");
         let (_, sats) = &batches[4];
         assert_eq!(sats.schema().field(1).data_type(), &DataType::Float32);
     }

@@ -72,6 +72,20 @@ This determines how to interpret the raw data bytes:
 IEEE 754 half-precision (binary16) and promoted to float32. This is the most
 common encoding for analog sensor channels.
 
+**Source sample type:** the type of one sample on disk is a property of the
+channel, separate from the type of the values a backend returns. The spec
+states it as `channel_source_dtype(chs)` (`spec/xrk_format.py`): the numpy
+dtype name of the base field of the channel's codec in `SAMPLE_CODECS`, under
+any adapter — `float16` for decoder 20, `float32` for 6, `int16` for 4 and 11,
+`uint16` for 1 and 15, `uint8` for 13, `int32` for the rest — and `uint64` for
+the two channels decoded by name (see "Special fixups" below). Both backends
+publish it as the `source_dtype` channel metadata field, so a consumer can
+tell a widened float16 channel from a genuine float32 one and narrow it back
+without loss. The mV→V conversion does not change it (the millivolts are what
+is stored), and the GPS-derived channels have none (empty string).
+`test_spec.py` compares it against both backends for every channel of every
+fixture.
+
 **Gear lookup (decoder 15):** The raw uint16 value is an ASCII character code.
 Map `'N'`(0x4E)→0, `'1'`(0x31)→1, ..., `'6'`(0x36)→6.
 
