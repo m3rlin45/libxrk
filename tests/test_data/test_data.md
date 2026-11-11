@@ -18,6 +18,8 @@ a GPS header record cut short by the file trailer; referenced by
 ## SFJ
 The SFJ Folder contains data from a run by a beginner in a Super FJ Junior formula car.
 
+In `..._0101.xrk` and `CMD_SFJ_Suzuka Car_..._0090.xrk` the recording continues 141 s and 187 s past the last beacon crossing. The official AIM DLL reports a final partial lap there (9 and 11 laps respectively), ending at the last data message in the file; libxrk does the same and types it `in` (issue #119).
+
 ### File: CMD_SFJ_Fuji GP Sh_Generic testing_a_0033.xrk
 
 **Laps:** 13 laps

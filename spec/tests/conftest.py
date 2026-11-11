@@ -364,6 +364,22 @@ def sfj_dll():
 
 
 @pytest.fixture(scope="session")
+def sfj_0101_dll():
+    """Extract SFJ 0101 data from the official AIM DLL."""
+    if not _dll_available():
+        pytest.skip("AIM DLL or Wine not available")
+    return _dll_extract(SFJ_0101_XRK)
+
+
+@pytest.fixture(scope="session")
+def sfj_suzuka_dll():
+    """Extract SFJ Suzuka data from the official AIM DLL."""
+    if not _dll_available():
+        pytest.skip("AIM DLL or Wine not available")
+    return _dll_extract(SFJ_SUZUKA_XRK)
+
+
+@pytest.fixture(scope="session")
 def file_86_dll():
     """Extract 86 data from the official AIM DLL."""
     if not _dll_available():
