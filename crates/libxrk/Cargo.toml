@@ -7,12 +7,13 @@ description = "Pure Rust library for reading AIM XRK/XRZ motorsports telemetry f
 
 [features]
 default = []
-arrow = ["dep:arrow", "dep:ryu"]
+arrow = ["dep:arrow", "dep:ryu", "libxrk-gps/arrow"]
 
 [dependencies]
 binrw = { workspace = true }
 flate2 = { workspace = true }
 half = { workspace = true }
+libxrk-gps = { path = "../libxrk-gps" }
 
 [dependencies.arrow]
 workspace = true
