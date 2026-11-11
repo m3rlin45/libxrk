@@ -12,6 +12,7 @@ arrow = ["dep:arrow", "dep:ryu"]
 [dependencies]
 binrw = { workspace = true }
 flate2 = { workspace = true }
+half = { workspace = true }
 
 [dependencies.arrow]
 workspace = true

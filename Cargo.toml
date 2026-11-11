@@ -5,6 +5,8 @@ resolver = "2"
 [workspace.dependencies]
 arrow = { version = "57", default-features = false }
 binrw = "0.14"
+# Float16 channel values; the same crate arrow's Float16Array is built on.
+half = { version = "2", default-features = false }
 flate2 = "1"
 ryu = "1"
 

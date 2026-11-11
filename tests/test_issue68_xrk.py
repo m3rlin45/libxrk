@@ -107,14 +107,12 @@ class TestIssue68XRK(unittest.TestCase):
         plausible range (−30mm..30mm typical). Catches gross decode errors
         where e.g. bytes are misinterpreted as a wrong fp type.
         """
-        import pyarrow as pa
-
+        # The shock pots are float16 channels (Arrow halffloat), which
+        # pyarrow's min/max kernels do not take: compare in numpy.
         for name in SHOCK_POT_CHANNELS:
-            tbl = self.log.channels[name]
-            values = tbl[name].to_numpy()
+            values = self.log.channels[name][name].to_numpy()
             self.assertTrue(
-                bool(pa.compute.min(tbl[name]).as_py() >= -30.0)
-                and bool(pa.compute.max(tbl[name]).as_py() <= 30.0),
+                bool(values.min() >= -30.0) and bool(values.max() <= 30.0),
                 f"{name}: range [{values.min()}, {values.max()}] outside ±30mm",
             )
 

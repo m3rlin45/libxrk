@@ -1,6 +1,7 @@
 """Unit tests for LogFile.get_channels_as_table() method."""
 
 import unittest
+import numpy as np
 import pyarrow as pa
 from libxrk.base import ChannelMetadata, LogFile
 
@@ -573,6 +574,63 @@ class TestInterpolationTypePromotion(unittest.TestCase):
 
         # Should remain int32 (forward fill, no interpolation)
         self.assertEqual(result_type, pa.int32())
+
+    def _float16_log(self, interpolate: bool) -> LogFile:
+        channel = pa.table(
+            {
+                "timecodes": pa.array([0, 100, 200], type=pa.int64()),
+                "Accel": pa.array(np.array([1.0, 1.0009765625, 3.0], dtype=np.float16)),
+            }
+        )
+        field = channel.schema.field("Accel")
+        self.assertEqual(field.type, pa.float16())
+        field_with_meta = field.with_metadata(
+            ChannelMetadata(interpolate=interpolate).to_field_metadata()
+        )
+        channel = channel.cast(pa.schema([channel.schema.field("timecodes"), field_with_meta]))
+        return LogFile(
+            channels={"Accel": channel},
+            laps=pa.table({"num": [], "start_time": [], "end_time": []}),
+            metadata={},
+            file_name="test.xrk",
+        )
+
+    def test_float16_interpolation_promotes_to_float32(self):
+        """A float16 channel with interpolate=True resamples to float32: the
+        interpolated values are not float16 values."""
+        log = self._float16_log(interpolate=True)
+        target = pa.array([0, 50, 100, 150, 200], type=pa.int64())
+
+        for table, column in (
+            (log.resample_to_timecodes(target).channels["Accel"], "Accel"),
+            (log.resample_to_channel("Accel").channels["Accel"], "Accel"),
+            (log.get_channels_as_table(), "Accel"),
+        ):
+            self.assertEqual(table.schema.field(column).type, pa.float32())
+
+        values = log.resample_to_timecodes(target).channels["Accel"].column("Accel").to_numpy()
+        # 1.0 and 1.0009765625 are adjacent float16 values; their midpoint is
+        # not a float16 and would round back onto one of them.
+        self.assertEqual(values[1], np.float32(1.00048828125))
+        self.assertNotEqual(np.float16(values[1]), values[1])
+        # Samples that fall on a source timecode are the stored values.
+        np.testing.assert_array_equal(
+            values[[0, 2, 4]], np.array([1.0, 1.0009765625, 3.0], dtype=np.float32)
+        )
+
+    def test_float16_no_interpolation_preserves_type(self):
+        """A float16 channel without interpolate=True is forward-filled: every
+        value is a stored sample, so the column stays float16."""
+        log = self._float16_log(interpolate=False)
+        target = pa.array([0, 50, 100, 150, 200], type=pa.int64())
+
+        result = log.resample_to_timecodes(target).channels["Accel"]
+        self.assertEqual(result.schema.field("Accel").type, pa.float16())
+        np.testing.assert_array_equal(
+            result.column("Accel").to_numpy(),
+            np.array([1.0, 1.0, 1.0009765625, 1.0009765625, 3.0], dtype=np.float16),
+        )
+        self.assertEqual(log.get_channels_as_table().schema.field("Accel").type, pa.float16())
 
     def test_float32_interpolation_preserves_type(self):
         """A float32 channel with interpolate=True should stay float32."""

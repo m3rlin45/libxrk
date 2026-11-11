@@ -183,11 +183,13 @@ After modifying Rust source in `crates/`, run `just rust-build` (release) or `ju
 
 - Each channel is a PyArrow table with `timecodes` + value columns
 - Different channels have different sample rates
+- A value column has the type its samples are stored in (`spec/docs/companion.md` section 3): float16 samples are Arrow `halffloat`, which pyarrow compute barely supports (cast to float32 first); channels in volts are float32
 - `get_channels_as_table()` merges via full outer join with interpolation/forward-fill
 - Channel metadata stored in PyArrow field.metadata; use `ChannelMetadata.from_field()` for typed access
 - GPS timing fix auto-corrects 65533ms gaps (AIM firmware bug)
 - All filtering/resampling methods return new `LogFile` instances (immutable pattern)
 - `resample_to_timecodes()` is the core resampling logic, other methods delegate to it
+- Interpolating changes the type where the source type cannot hold the result: integer channels become float64, float16 channels float32
 
 ## LogFile Methods
 

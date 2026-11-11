@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, RecordBatch,
-    StringArray, UInt16Array, UInt32Array, UInt8Array,
+    Array, Float16Array, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array,
+    RecordBatch, StringArray, UInt16Array, UInt32Array, UInt8Array,
 };
 use arrow::datatypes::{DataType, Field, Schema};
 
@@ -171,6 +171,7 @@ pub fn build_channel_batch(
         ChannelValues::Int16(v) => (Arc::new(Int16Array::from(v)), DataType::Int16),
         ChannelValues::Int32(v) => (Arc::new(Int32Array::from(v)), DataType::Int32),
         ChannelValues::UInt32(v) => (Arc::new(UInt32Array::from(v)), DataType::UInt32),
+        ChannelValues::Float16(v) => (Arc::new(Float16Array::from(v)), DataType::Float16),
         ChannelValues::Float32(v) => (Arc::new(Float32Array::from(v)), DataType::Float32),
         ChannelValues::Float64(v) => (Arc::new(Float64Array::from(v)), DataType::Float64),
     };

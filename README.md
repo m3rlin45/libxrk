@@ -72,6 +72,42 @@ print(log.metadata)
 # Includes: Driver, Vehicle, Venue, Log Date/Time, Logger ID, Logger Model, Device Name, etc.
 ```
 
+### Channel Value Types
+
+A channel's value column has the type its samples are stored in. Most analog, IMU, gyro and CAN channels are stored as half floats, so their column is **float16** (Arrow `halffloat`, numpy `float16`), not float32:
+
+| Samples in the file | Value column |
+|---------------------|--------------|
+| float16 | float16 |
+| float32 | float32 |
+| int16, uint16, int32, uint8 | the same integer type |
+| any channel in volts (`V`) | float32 (float64 if stored as an integer) |
+| GPS-derived channels | float64 or float32 |
+
+Channels in volts are the exception: they are stored in millivolts and divided by 1000, and the result is not a float16 value, so they are float32.
+
+**Cast float16 columns before doing arithmetic on them.** Neither pyarrow nor numpy handles them well:
+
+- `pyarrow.compute` has no half-float kernels for aggregation (`pc.mean`, `pc.sum`, `pc.min_max`), arithmetic (`pc.multiply`, `pc.abs`, `pc.round`), comparison (`pc.greater`, `pc.equal`), `pc.unique` or `Table.sort_by`; they raise `ArrowNotImplementedError`.
+- numpy computes in float16: `values.sum()` overflows to `inf` above 65504 and `values.mean()` is rounded to 11 significant bits.
+
+The cast is exact and takes one line:
+
+```python
+import numpy as np
+import pyarrow as pa
+import pyarrow.compute as pc
+
+column = log.channels['LateralAcc'].column('LateralAcc')   # halffloat
+
+pc.mean(pc.cast(column, pa.float32()))                      # pyarrow
+column.to_numpy().astype(np.float32).mean()                 # numpy
+```
+
+`to_numpy()`, `to_pandas()` (a `float16` column), `Table.filter`/`take`/`slice`, `pa.concat_tables`, `pc.cast` and Parquet or Arrow IPC files all work on float16 columns as they are, as do all `LogFile` methods.
+
+Resampling (`resample_to_channel`, `resample_to_timecodes`, `get_channels_as_table`) returns interpolated float16 channels as **float32**, because interpolated values are not float16 values. A merged table of a parsed file therefore has no float16 column.
+
 ### Filtering and Resampling
 
 ```python

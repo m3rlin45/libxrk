@@ -38,6 +38,7 @@ def test_official_sample_external_voltage_is_nan_throughout(decode):
     log = decode(str(AIM_OFFICIAL))
     v = _col(log, "External Voltage")
     assert len(v) == 570
+    assert v.dtype == np.float32  # float16 millivolts, returned as float32 volts
     assert np.all(np.isnan(v))
     assert not np.any(np.isinf(v))
 
@@ -74,6 +75,8 @@ def test_sentinel_samples_become_nan_and_nothing_else_changes(decode):
     for name, offs in patched.items():
         v, o = _col(log, name), _col(original, name)
         assert len(v) == len(o)
+        # BRK is a float16 column, Lateral Grip a float32 one: NaN in either.
+        assert v.dtype == o.dtype == {"BRK": np.float16, "Lateral Grip": np.float32}[name]
         nan_at = np.flatnonzero(np.isnan(v))
         assert len(nan_at) == len(offs), f"{name}: expected {len(offs)} NaN samples, got {nan_at}"
         assert not np.any(np.isinf(v)), f"{name}: an infinity leaked through"

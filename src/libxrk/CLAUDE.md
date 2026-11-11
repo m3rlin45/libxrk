@@ -82,6 +82,60 @@ Each channel table has:
 
 Channels have different sample rates. Use `get_channels_as_table()` to merge.
 
+**Value types:** the value column has the type the samples are stored in (the
+rule is in `spec/docs/companion.md` section 3; both backends give identical
+types):
+
+| Samples in the file | Value column (Arrow / numpy) |
+|---------------------|------------------------------|
+| float16 (CHS decoder 20: most analog, IMU, gyro and CAN channels) | `halffloat` / `float16` |
+| float32 (decoder 6) | `float` / `float32` |
+| int16, uint16, int32, uint8 | the same integer type |
+| `Calculated_Gear`, `PreCalcGear` | `uint32` |
+| unit `V`, float16 or float32 samples | `float` / `float32` |
+| unit `V`, integer samples | `double` / `float64` |
+
+Float16 samples are returned as float16, not widened to float32: the widening
+added no information and doubled the column (a channel table is 10 bytes per
+row instead of 12). The exception is a channel in volts: it is stored in
+millivolts and divided by 1000, and the quotient is not a float16 value
+(11264 mV is one, 11.264 V is not), so the samples are widened to float32
+before the division.
+
+**Float16 columns need a cast before arithmetic.** This is the caller-facing
+cost of the rule:
+
+- `pyarrow.compute` (checked on pyarrow 23.0.1) has no half-float kernels for
+  `mean`, `sum`, `min_max`, `multiply` and other arithmetic, `abs`, `round`,
+  `greater`/`equal` and other comparisons, `unique`, or `Table.sort_by`; they
+  raise `ArrowNotImplementedError`. `pc.is_nan` works on 23.0.1 but not on
+  18.1.0.
+- numpy computes in float16: `values.sum()` overflows to `inf` above 65504,
+  `values.mean()` and `np.std(values)` are rounded or overflow the same way.
+- These work as they are: `to_numpy()`, `to_pandas()` (a `float16` column),
+  `to_pylist()`, `Table.filter`/`take`/`slice`/`drop_null`,
+  `pa.concat_tables`, `pc.cast`, `pc.is_null`, `pc.fill_null`, Parquet and
+  Arrow IPC round trips, and every `LogFile` method.
+
+The cast is exact:
+
+```python
+column = log.channels['LateralAcc'].column('LateralAcc')   # halffloat
+pc.mean(pc.cast(column, pa.float32()))                      # pyarrow
+column.to_numpy().astype(np.float32).mean()                 # numpy
+```
+
+**Types after resampling:** `resample_to_timecodes`, `resample_to_channel` and
+`get_channels_as_table` keep the type of a forward-filled channel and of an
+interpolated float32 or float64 channel. An interpolated integer channel
+becomes float64 and an interpolated float16 channel becomes **float32**,
+because interpolated values are not values of the source type (rounding RPM
+back to float16 would cost up to 2 rpm on the SFJ fixture). Every float16
+channel a logger writes is interpolated, so resampled channels and the merged
+table of a parsed file contain no float16 column. `select_channels`,
+`filter_by_time_range` and `filter_by_lap` keep the stored samples and their
+float16 type.
+
 **Non-finite samples:** loggers write IEEE infinities into float channels as
 "no value" sentinels (an unconnected `External Voltage`, CAN channels during a
 bus dropout). libxrk reports those samples as `NaN` on both backends; the
