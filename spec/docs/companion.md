@@ -155,15 +155,64 @@ accumulate first and decode after. Every data message is a list of samples,
 each with a time: S and V1 `(c` carry one at the message timecode, a `(G` one
 per member at the timecode, an `(M` burst `count` samples `Mms` apart from the
 timecode (section 4). The rule is: **a sample is kept iff its time is strictly
-later than the last kept sample of its accumulator**, one accumulator per
-message family and channel (per group member for G). This is what lets an M
-burst that overlaps the accepted stream contribute only its samples past the
-overlap. The spec applies it in the parse hook (`_accumulate`); the result is
-`ParseResult.streams`, contiguous bytes per channel in `data_size` slots. A
-stream's grammar is `channel_stream(chs, width)`, `GreedyRange(Padded(width,
-codec))`; `channel_values()` decodes every stream with its vectorised form,
-in the channel's value type, and `test_spec.py` compares them against both
-backends sample by sample: same type, identical values.
+later than the last kept sample of its accumulator since the last CNF**, one
+accumulator per message family and channel (per group member for G). This is
+what lets an M burst that overlaps the accepted stream contribute only its
+samples past the overlap. A `CNF` header starts every accumulator afresh (next
+paragraph). The spec applies the rule in the parse hook (`_accumulate`); the
+result is `ParseResult.streams`, contiguous bytes per channel in `data_size`
+slots. A stream's grammar is `channel_stream(chs, width)`,
+`GreedyRange(Padded(width, codec))`; `channel_values()` decodes every stream
+with its vectorised form, in the channel's value type, and `test_spec.py`
+compares them against both backends sample by sample: same type, identical
+values.
+
+**CNF resets the accumulators:** a `CNF` header frame makes every accumulator
+forget its last kept time, so the next sample of each is kept whatever came
+before, and a channel's timecodes may step back at that point (they are
+exposed in file order, not sorted). Precisely:
+
+- All four families reset (G, S, V1 `(c`, M), every accumulator of each.
+- Only the accumulators of the sequence the `CNF` frame sits in. A CNF's own
+  payload is parsed as a separate sequence with its own accumulators, so a
+  `CNF` nested in another frame's payload resets nothing outside it.
+- An `ENF` frame resets nothing.
+- V2/V3 `(c` samples are not accumulated: they are resolved over the whole
+  file after the parse (`_resolve_c_variants`) and keyed by time, so a CNF
+  does not affect them.
+- A stream ends on its last kept sample, which after a step back is not its
+  latest one. `ParseResult.stream_end_times()` gives that time per channel
+  (the timecode of the channel's last row in both backends), and
+  `non_gps_end_time()`, the input of the GPS timing fix's indirect method
+  (section 6), is the latest of them. A reset alone does not lower it: a
+  stream with no sample after the CNF keeps the end it had.
+
+The spec's `_reset_accumulators` states this and both backends conform (the
+`CNF` branch of `_decode_sequence` in Cython, of `handle_header_message` in
+Rust). Loggers do write a CNF after data has started: a short one that
+re-defines a single channel (every SFJ, 86 and issue68/84 fixture has one), or
+the whole configuration again (the official sample, twice). But in no shipped
+fixture do timecodes step back across one, so the reset changes nothing there,
+and `TestCnfResetsAccumulators` builds its inputs by replaying, right after
+such a CNF, the data messages that precede it.
+
+**The official AIM DLL does not reset.** It applies the acceptance rule over
+the whole file, as if the CNF were not there (Wine harness, patched copies of
+the fixtures):
+
+| Input | libxrk (spec and both backends) | AIM DLL |
+|---|---|---|
+| SFJ, every data message before the CNF at byte 32032 (930 S, 117 M) replayed after it | 2,490 samples kept a second time, over 18 streams; e.g. `RPM` 33,930 → 34,033 rows, timecodes 5584 → 484 ms at the replay | all 18 channels unchanged (735,453 samples), no step back |
+| 86, same at byte 129125 (3,582 G, 1,270 M, 133 S) | 18,799 samples kept a second time, over 84 streams | all 92 channels unchanged (7,097,497 samples) |
+| Official sample, same at its third CNF, byte 56223, a full configuration (1,717 S, 382 M) | every replayed sample kept a second time | all 11 channels unchanged (418,566 samples) |
+| SFJ, the 103 `RPM` S messages before the CNF (484…5584 ms) replayed with a marker value | 103 marker rows | none; the original values stay |
+| Same, replayed 7 ms later (491…5591 ms) | 103 marker rows | one, at 5591 ms, the only one later than 5584 ms |
+
+So on a file whose timecodes do step back across a CNF, libxrk returns samples
+the DLL drops. Whether real loggers ever write such a file is not known (the
+backends' reset was written on the assumption that timecodes may restart or
+overlap after a new configuration block); the difference is recorded here,
+tracked in issue #158, and left as is.
 
 **Special fixups:**
 - Channels named `Calculated_Gear` or `PreCalcGear` use decoder `Q` (uint64)

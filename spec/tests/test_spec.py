@@ -21,6 +21,7 @@ from spec.xrk_format import (
     SAMPLE_CODECS,
     TIMECODE_DTYPE,
     _decompress_if_zlib,
+    build_header_frame,
     channel_sample_codec,
     channel_stream,
     channel_value_dtype,
@@ -29,8 +30,16 @@ from spec.xrk_format import (
     GMessageCompiled,
     MMessageCompiled,
     ParseResult,
+    parse_xrk_bytes,
 )
-from spec.tests.conftest import ALL_XRK_FILES, ISSUE84_XRZ, _BACKENDS
+from spec.tests.conftest import (
+    _BACKENDS,
+    AIM_OFFICIAL_XRK,
+    ALL_XRK_FILES,
+    FILE_86_XRK,
+    ISSUE84_XRZ,
+    SFJ_XRK,
+)
 from tests import xrk_patch
 from libxrk._aim_xrk_rs import process_gps
 from libxrk.gps import GPS_CHANNEL_NAMES
@@ -1178,6 +1187,177 @@ class TestChannelValueTypes:
                     f"{label}: backend {schema.field(label).type}, spec declares {declared}"
                 )
         assert not errors, f"{backend} value types differ from the spec:\n" + "\n".join(errors)
+
+
+# ---------------------------------------------------------------------------
+# A CNF resets the sample accumulators
+# ---------------------------------------------------------------------------
+
+
+class _CnfCase:
+    """One fixture cut around a mid-file CNF, with its earlier data replayed.
+
+    No shipped fixture has timecodes that step back across a CNF, so the
+    inputs are built in memory (``xrk_patch.split_at_cnf``) from the head of
+    a fixture: the stream up to the CNF (``pre``), the CNF frame, a copy of
+    the data messages of ``pre`` (``replay``) and about 128 KB of what
+    really follows (``post``). Variants:
+
+    - ``base``: pre + CNF + post, the fixture as recorded.
+    - ``replay``: pre + CNF + replay + post. Every replayed message carries
+      a timecode at or before the last one sent before the CNF.
+    - ``ends_in_replay``: pre + CNF + the first half of the replay, so each
+      replayed stream ends earlier than it did before the CNF.
+    - ``cnf_last``: pre + CNF, nothing after the reset.
+    - ``enf``: pre + ENF(CNF) + replay + CNF + post. The replay follows an
+      ENF frame whose payload is the CNF, one level down.
+    """
+
+    def __init__(self, path, nth, families):
+        self.families = families
+        s = self.split = xrk_patch.split_at_cnf(xrk_patch.load_bytes(path), nth)
+        self.inputs = {
+            "pre": s.pre,
+            "base": s.pre + s.cnf + s.post,
+            "replay": s.pre + s.cnf + s.replay + s.post,
+            "ends_in_replay": s.pre + s.cnf + s.replay_head,
+            "cnf_last": s.pre + s.cnf,
+            "enf": s.pre + build_header_frame("ENF", s.cnf) + s.replay + s.cnf + s.post,
+        }
+        self._parsed = {}
+        self._logs = {}
+
+    def parsed(self, variant):
+        if variant not in self._parsed:
+            self._parsed[variant] = parse_xrk_bytes(self.inputs[variant])
+        return self._parsed[variant]
+
+    def log(self, backend, variant):
+        if (backend, variant) not in self._logs:
+            self._logs[backend, variant] = _BACKENDS[backend](self.inputs[variant])
+        return self._logs[backend, variant]
+
+    def streams(self, variant):
+        return {ch: bytes(stream) for ch, stream in self.parsed(variant).streams.items()}
+
+
+# (fixture, which top-level CNF, message families its replay must contain).
+# SFJ and 86 write a short CNF re-defining one channel between data
+# messages; the official sample writes its whole configuration again.
+# issue84 is the fixture with V1 (c messages before its mid-file CNF.
+_CNF_CASES = {
+    "sfj": (SFJ_XRK, 1, {"S", "M"}),
+    "86": (FILE_86_XRK, 1, {"G", "S", "M"}),
+    "issue84": (ISSUE84_XRZ, 1, {"G", "S", "c"}),
+    "aim_official": (AIM_OFFICIAL_XRK, 2, {"S", "M"}),
+}
+
+
+@pytest.fixture(scope="class", params=list(_CNF_CASES), ids=list(_CNF_CASES))
+def cnf_case(request):
+    return _CnfCase(*_CNF_CASES[request.param])
+
+
+class TestCnfResetsAccumulators:
+    """A CNF header starts every sample accumulator afresh (companion.md
+    section 3, "CNF resets the accumulators"): samples that follow it are
+    kept even when their time is at or before the last one kept before it.
+    The spec states the rule (_reset_accumulators) and both backends conform.
+    """
+
+    def test_replayed_samples_are_kept(self, cnf_case):
+        """Every sample kept before the CNF is kept a second time when it is
+        replayed after it. Without the reset the replay would be dropped
+        whole and the streams would equal the base streams."""
+        pre, base = cnf_case.streams("pre"), cnf_case.streams("base")
+        replay = cnf_case.streams("replay")
+        assert replay == {ch: pre.get(ch, b"") + stream for ch, stream in base.items()}
+        assert sum(map(len, pre.values())) > 0
+        assert replay != base
+
+    def test_replay_covers_the_message_families(self, cnf_case):
+        """The replays together exercise G, S, M and V1 (c accumulators."""
+        messages = cnf_case.parsed("replay").messages
+        start = len(cnf_case.parsed("cnf_last").messages)
+        count = len(messages) - len(cnf_case.parsed("base").messages)
+        replayed = messages[start : start + count]
+        assert {m.msg_type for m in replayed} >= cnf_case.families
+        if "c" in cnf_case.families:
+            assert "V1" in {m.parsed["variant"] for m in replayed if m.msg_type == "c"}
+
+    @pytest.mark.parametrize("variant", ["replay", "ends_in_replay"])
+    def test_streams_match_backend(self, cnf_case, backend, variant):
+        """Value for value, the spec's streams are the backend's channels,
+        and each replayed channel's timecodes step back exactly once, where
+        the replay starts. A stream ends on its last kept sample."""
+        parsed, log = cnf_case.parsed(variant), cnf_case.log(backend, variant)
+        before = cnf_case.parsed("pre").channel_samples()
+        names = parsed.channel_display_names(GPS_CHANNEL_NAMES if parsed.gps_payloads else ())
+        ends = parsed.stream_end_times()
+        stepped = 0
+        for idx, values in parsed.channel_values().items():
+            name = names[idx]
+            if name not in log.channels:
+                continue  # internal channel, not exposed by the backends
+            table = log.channels[name]
+            got = table.column(name).to_numpy(zero_copy_only=False)
+            np.testing.assert_array_equal(values.astype(got.dtype), got, err_msg=name)
+            times = table.column("timecodes").to_numpy()
+            n_before = len(before.get(idx, ()))
+            expected_steps = [n_before - 1] if 0 < n_before < len(times) else []
+            assert np.flatnonzero(np.diff(times) <= 0).tolist() == expected_steps, name
+            assert times[-1] == ends[idx], name
+            stepped += bool(expected_steps)
+        assert stepped > 10
+
+    def test_expansion_channels_match_backend(self, backend):
+        """V2/V3 (c samples are resolved over the whole file after the parse
+        (_resolve_c_variants), not accumulated: a replayed one lands on the
+        time it already has. The issue68 comparison holds on the replay."""
+        case = _CnfCase(*_CNF_CASES["issue84"])
+        parsed, log = case.parsed("replay"), case.log(backend, "replay")
+        assert set(parsed.expansion_channel_map.values())
+        TestIssue68SpecVsBackends()._compare_all_channels(parsed, log)
+
+    def test_backends_agree(self, cnf_case):
+        """Cython and Rust give identical tables, timecodes included."""
+        for variant in ("replay", "ends_in_replay"):
+            cy, rs = (cnf_case.log(b, variant) for b in ("cython", "rust"))
+            assert list(cy.channels) == list(rs.channels)
+            for name in cy.channels:
+                # Columns only: the two backends differ in field nullability.
+                for column in ("timecodes", name):
+                    a, b = (
+                        log.channels[name].column(column).to_numpy(zero_copy_only=False)
+                        for log in (cy, rs)
+                    )
+                    assert a.dtype == b.dtype, f"{name}.{column}"
+                    np.testing.assert_array_equal(a, b, err_msg=f"{name}.{column}")
+            assert cy.laps.to_pylist() == rs.laps.to_pylist()
+
+    def test_only_a_cnf_of_the_same_sequence_resets(self, cnf_case, backend):
+        """An ENF frame does not reset, and a CNF inside its payload resets
+        only that payload's own accumulators: a replay that follows
+        ENF(CNF) is dropped whole, leaving the base result."""
+        assert cnf_case.streams("enf") == cnf_case.streams("base")
+        log, base = cnf_case.log(backend, "enf"), cnf_case.log(backend, "base")
+        assert list(log.channels) == list(base.channels)
+        for name in log.channels:
+            _assert_tables_identical(log.channels[name], base.channels[name], name)
+
+    def test_reset_keeps_the_end_time(self, cnf_case):
+        """non_gps_end_time() is the latest stream end over the whole file.
+        A CNF with nothing after it leaves it where it was, and so does a
+        replay that the recording then runs past."""
+        end = cnf_case.parsed("pre").non_gps_end_time()
+        assert end is not None
+        assert cnf_case.parsed("cnf_last").non_gps_end_time() == end
+        assert cnf_case.parsed("cnf_last").stream_end_times() == (
+            cnf_case.parsed("pre").stream_end_times()
+        )
+        assert cnf_case.parsed("replay").non_gps_end_time() == (
+            cnf_case.parsed("base").non_gps_end_time()
+        )
 
 
 # ---------------------------------------------------------------------------
