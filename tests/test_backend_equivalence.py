@@ -115,6 +115,15 @@ def _compare_channel(name: str, cy_t, rs_t, errors: list) -> None:
             )
 
 
+def _key_order(value):
+    """The dict keys of a metadata value, nested, in iteration order."""
+    if isinstance(value, dict):
+        return [(key, _key_order(item)) for key, item in value.items()]
+    if isinstance(value, list):
+        return [_key_order(item) for item in value]
+    return None
+
+
 @pytest.mark.parametrize("fixture", FIXTURES, ids=lambda p: p.name)
 def test_backends_equivalent(fixture: Path) -> None:
     """Cython and Rust must agree on everything except documented gaps."""
@@ -147,6 +156,13 @@ def test_backends_equivalent(fixture: Path) -> None:
                     f"metadata[{k!r}]: cython={cy.metadata.get(k)!r} "
                     f"rust={rs.metadata.get(k)!r}"
                 )
+
+    # ... including the key order, which dict equality ignores.
+    elif _key_order(cy.metadata) != _key_order(rs.metadata):
+        errors.append(
+            f"metadata key order: cython={_key_order(cy.metadata)} "
+            f"rust={_key_order(rs.metadata)}"
+        )
 
     assert not errors, f"{fixture.name}: backend divergence:\n" + "\n".join(errors)
 

@@ -102,10 +102,7 @@ impl Metadata {
     ///
     /// This is the one place that defines the key names, their order and
     /// which keys are omitted when a value is missing; the bindings only
-    /// translate [`MetadataValue`] into their own types. Keys can repeat
-    /// (two odometer records with the same name): consumers insert in order
-    /// and let a later entry replace an earlier one in place, as a Python
-    /// dict does.
+    /// translate [`MetadataValue`] into their own types.
     pub fn to_entries(&self) -> Vec<(String, MetadataValue)> {
         let mut m = Vec::new();
 
@@ -253,13 +250,13 @@ pub fn extract_metadata(result: &ParseResult) -> Metadata {
     if let Some(msg_list) = msgs.get(&tokens::odo()) {
         if let Some(last_msg) = msg_list.last() {
             if let Payload::Odo(odo) = messages::dispatch_payload(last_msg) {
-                for (name, record) in &odo.records {
+                for record in &odo.records {
                     let dist_km = record.dist as f64 / 1000.0;
                     let hours = record.time / 3600;
                     let minutes = (record.time / 60) % 60;
                     let seconds = record.time % 60;
                     odometer.push(OdometerEntry {
-                        name: name.clone(),
+                        name: record.name.clone(),
                         distance_km: dist_km,
                         time_formatted: format!("{}:{:02}:{:02}", hours, minutes, seconds),
                     });
