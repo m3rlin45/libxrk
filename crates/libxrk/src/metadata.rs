@@ -69,6 +69,150 @@ pub struct Metadata {
     pub expansion_devices: Vec<ExpansionDevice>,
 }
 
+/// A value in the metadata document built by [`Metadata::to_entries`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum MetadataValue {
+    /// A key that is present without a value (Python `None`).
+    Null,
+    Str(String),
+    Int(u64),
+    Float(f64),
+    List(Vec<MetadataValue>),
+    /// A nested document, in insertion order.
+    Map(Vec<(String, MetadataValue)>),
+}
+
+impl From<&str> for MetadataValue {
+    fn from(v: &str) -> Self {
+        MetadataValue::Str(v.to_string())
+    }
+}
+
+/// Append `key: value` when the string is present.
+fn push_str(entries: &mut Vec<(String, MetadataValue)>, key: &str, value: &Option<String>) {
+    if let Some(v) = value {
+        entries.push((key.to_string(), v.as_str().into()));
+    }
+}
+
+impl Metadata {
+    /// The metadata as the ordered key/value document every binding exposes:
+    /// the Python `LogFile.metadata` dict, and the same document as JSON
+    /// through the C ABI.
+    ///
+    /// This is the one place that defines the key names, their order and
+    /// which keys are omitted when a value is missing; the bindings only
+    /// translate [`MetadataValue`] into their own types. Keys can repeat
+    /// (two odometer records with the same name): consumers insert in order
+    /// and let a later entry replace an earlier one in place, as a Python
+    /// dict does.
+    pub fn to_entries(&self) -> Vec<(String, MetadataValue)> {
+        let mut m = Vec::new();
+
+        push_str(&mut m, "Driver", &self.driver);
+        push_str(&mut m, "Vehicle", &self.vehicle);
+        push_str(&mut m, "Log Date", &self.log_date);
+        push_str(&mut m, "Log Time", &self.log_time);
+        push_str(&mut m, "Session", &self.session);
+        push_str(&mut m, "Series", &self.series);
+        push_str(&mut m, "Long Comment", &self.long_comment);
+        push_str(&mut m, "Venue", &self.venue);
+
+        for entry in &self.odometer {
+            m.push((
+                format!("Odo/{} Distance (km)", entry.name),
+                MetadataValue::Float(entry.distance_km),
+            ));
+            m.push((
+                format!("Odo/{} Time", entry.name),
+                entry.time_formatted.as_str().into(),
+            ));
+        }
+
+        if let Some(v) = self.logger_id {
+            m.push(("Logger ID".to_string(), MetadataValue::Int(v.into())));
+        }
+        if let Some(v) = self.logger_model_id {
+            m.push(("Logger Model ID".to_string(), MetadataValue::Int(v.into())));
+        }
+        // A logger whose model ID is not in the table still gets the key.
+        match &self.logger_model {
+            Some(name) => m.push(("Logger Model".to_string(), name.as_str().into())),
+            None if self.logger_model_id.is_some() => {
+                m.push(("Logger Model".to_string(), MetadataValue::Null))
+            }
+            None => {}
+        }
+
+        push_str(&mut m, "Device Name", &self.device_name);
+        push_str(&mut m, "GPS Receiver", &self.gps_receiver);
+
+        if !self.expansion_devices.is_empty() {
+            let devices = self
+                .expansion_devices
+                .iter()
+                .map(|d| {
+                    let mut dev = Vec::new();
+                    push_str(&mut dev, "Bus Unit", &d.bus_unit);
+                    push_str(&mut dev, "Bus Type", &d.bus_type);
+                    push_str(&mut dev, "Version", &d.version);
+                    push_str(&mut dev, "Manufacturer", &d.manufacturer);
+                    push_str(&mut dev, "Model", &d.model);
+                    if let Some(v) = d.logger_id {
+                        dev.push(("Logger ID".to_string(), MetadataValue::Int(v.into())));
+                    }
+                    if let Some(v) = d.model_id {
+                        dev.push(("Model ID".to_string(), MetadataValue::Int(v.into())));
+                    }
+                    MetadataValue::Map(dev)
+                })
+                .collect();
+            m.push((
+                "Expansion Devices".to_string(),
+                MetadataValue::List(devices),
+            ));
+        }
+
+        push_str(&mut m, "Race Mode", &self.race_mode);
+
+        if let Some(vet) = &self.vehicle_electronics_type {
+            let value = match vet {
+                VetValue::Mode(mode) => mode.as_str().into(),
+                VetValue::Value(val) => MetadataValue::Int((*val).into()),
+            };
+            m.push(("Vehicle Electronics Type".to_string(), value));
+        }
+
+        if !self.calibrations.is_empty() {
+            let calibrations = self
+                .calibrations
+                .iter()
+                .map(|c| {
+                    let mut cal = vec![
+                        ("type".to_string(), MetadataValue::Int(c.cal_type.into())),
+                        ("raw_1".to_string(), MetadataValue::Float(c.raw_1.into())),
+                        ("raw_2".to_string(), MetadataValue::Float(c.raw_2.into())),
+                    ];
+                    if let Some(v) = c.output_1 {
+                        cal.push(("output_1".to_string(), MetadataValue::Float(v.into())));
+                    }
+                    if let Some(v) = c.output_2 {
+                        cal.push(("output_2".to_string(), MetadataValue::Float(v.into())));
+                    }
+                    push_str(&mut cal, "channel", &c.channel);
+                    MetadataValue::Map(cal)
+                })
+                .collect();
+            m.push((
+                "Calibrations".to_string(),
+                MetadataValue::List(calibrations),
+            ));
+        }
+
+        m
+    }
+}
+
 /// Extract metadata from a ParseResult.
 pub fn extract_metadata(result: &ParseResult) -> Metadata {
     let msgs = &result.header_messages;
@@ -322,5 +466,118 @@ pub fn extract_metadata(result: &ParseResult) -> Metadata {
         odometer,
         calibrations,
         expansion_devices,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty() -> Metadata {
+        Metadata {
+            driver: None,
+            vehicle: None,
+            venue: None,
+            log_date: None,
+            log_time: None,
+            session: None,
+            series: None,
+            long_comment: None,
+            device_name: None,
+            gps_receiver: None,
+            race_mode: None,
+            vehicle_electronics_type: None,
+            logger_id: None,
+            logger_model_id: None,
+            logger_model: None,
+            odometer: Vec::new(),
+            calibrations: Vec::new(),
+            expansion_devices: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn to_entries_omits_missing_values() {
+        assert!(empty().to_entries().is_empty());
+    }
+
+    #[test]
+    fn to_entries_keeps_the_python_dict_order_and_types() {
+        let meta = Metadata {
+            driver: Some("D".into()),
+            venue: Some("Fuji".into()),
+            device_name: Some("MXm".into()),
+            race_mode: Some("Speed".into()),
+            vehicle_electronics_type: Some(VetValue::Value(3)),
+            logger_id: Some(7),
+            logger_model_id: Some(9999),
+            odometer: vec![OdometerEntry {
+                name: "Total".into(),
+                distance_km: 1.5,
+                time_formatted: "0:01:02".into(),
+            }],
+            calibrations: vec![Calibration {
+                cal_type: 20,
+                raw_1: 0.5,
+                raw_2: 1.0,
+                output_1: None,
+                output_2: Some(180.0),
+                channel: Some("steering".into()),
+            }],
+            expansion_devices: vec![ExpansionDevice {
+                bus_unit: Some("1".into()),
+                bus_type: None,
+                version: None,
+                manufacturer: None,
+                model: Some("TPMS".into()),
+                logger_id: Some(42),
+                model_id: None,
+            }],
+            ..empty()
+        };
+
+        let entries = meta.to_entries();
+        let keys: Vec<&str> = entries.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                "Driver",
+                "Venue",
+                "Odo/Total Distance (km)",
+                "Odo/Total Time",
+                "Logger ID",
+                "Logger Model ID",
+                "Logger Model",
+                "Device Name",
+                "Expansion Devices",
+                "Race Mode",
+                "Vehicle Electronics Type",
+                "Calibrations",
+            ]
+        );
+        let get = |key: &str| &entries.iter().find(|(k, _)| k == key).unwrap().1;
+        assert_eq!(get("Odo/Total Distance (km)"), &MetadataValue::Float(1.5));
+        assert_eq!(get("Logger ID"), &MetadataValue::Int(7));
+        // An unknown model ID still yields the key, with no value.
+        assert_eq!(get("Logger Model"), &MetadataValue::Null);
+        assert_eq!(get("Vehicle Electronics Type"), &MetadataValue::Int(3));
+        assert_eq!(
+            get("Expansion Devices"),
+            &MetadataValue::List(vec![MetadataValue::Map(vec![
+                ("Bus Unit".into(), "1".into()),
+                ("Model".into(), "TPMS".into()),
+                ("Logger ID".into(), MetadataValue::Int(42)),
+            ])])
+        );
+        assert_eq!(
+            get("Calibrations"),
+            &MetadataValue::List(vec![MetadataValue::Map(vec![
+                ("type".into(), MetadataValue::Int(20)),
+                ("raw_1".into(), MetadataValue::Float(0.5)),
+                ("raw_2".into(), MetadataValue::Float(1.0)),
+                ("output_2".into(), MetadataValue::Float(180.0)),
+                ("channel".into(), "steering".into()),
+            ])])
+        );
     }
 }
