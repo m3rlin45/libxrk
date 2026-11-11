@@ -15,6 +15,59 @@ use arrow::datatypes::{DataType, Field, Schema};
 use crate::gps::{GpsChannelDef, GpsDecodeResult, GPS_CHANNEL_DEFS};
 use crate::parser::{ChannelData, ChannelInfo, ChannelValues, ProcessedLap};
 
+/// Format an f32 exactly as Python's `str(float(v))` does.
+///
+/// This is the float format of the Arrow field metadata values
+/// (`cal_value_1`, `display_range_min`, ...). The Cython backend writes them
+/// with `str()`, so every binding built on this crate has to produce the same
+/// text. Python widens the f32 to f64 and prints the shortest digits that
+/// round-trip, breaking ties to even. `ryu` picks the same digits (Rust's own
+/// float formatting does not: it breaks ties upwards, and widened f32 values
+/// hit ties often), so only the layout needs adjusting:
+///
+/// - positional notation for `1e-4 <= |v| < 1e16`, always with a fractional
+///   part (`"1.0"`); `ryu` stays positional down to `1e-5`
+/// - otherwise scientific notation with a signed exponent of at least two
+///   digits (`"1e-05"`, `"1.0000000150474662e+30"`); `ryu` writes `"1e-5"`
+///   and `"1.0000000150474662e30"`
+/// - `"nan"`, `"inf"` and `"-inf"` for the non-finite values
+pub fn format_float(v: f32) -> String {
+    let v = v as f64;
+    if v.is_nan() {
+        return "nan".to_string();
+    }
+    if v.is_infinite() {
+        return if v > 0.0 { "inf" } else { "-inf" }.to_string();
+    }
+    let mut buf = ryu::Buffer::new();
+    let text = buf.format_finite(v);
+    let (sign, body) = match text.strip_prefix('-') {
+        Some(body) => ("-", body),
+        None => ("", text),
+    };
+    if let Some((mantissa, exponent)) = body.split_once('e') {
+        let exponent: i32 = exponent.parse().expect("ryu exponent is an integer");
+        let exponent_sign = if exponent < 0 { '-' } else { '+' };
+        format!(
+            "{}{}e{}{:02}",
+            sign,
+            mantissa,
+            exponent_sign,
+            exponent.abs()
+        )
+    } else if let Some(digits) = body.strip_prefix("0.0000") {
+        // [1e-5, 1e-4): the first significant digit is the fifth decimal.
+        let (first, rest) = digits.split_at(1);
+        if rest.is_empty() {
+            format!("{}{}e-05", sign, first)
+        } else {
+            format!("{}{}.{}e-05", sign, first, rest)
+        }
+    } else {
+        text.to_string()
+    }
+}
+
 /// Channel metadata keys used in Arrow field metadata.
 pub struct ChannelMetadata {
     pub units: String,
@@ -274,4 +327,39 @@ pub fn build_gps_channel_batches(
     }
 
     Ok(batches)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Expected strings are `str(float(numpy.float32(x)))` from CPython.
+    #[test]
+    fn format_float_matches_python_str() {
+        for (value, expected) in [
+            (0.0f32, "0.0"),
+            (-0.0, "-0.0"),
+            (1.0, "1.0"),
+            (-180.0, "-180.0"),
+            (18000.0, "18000.0"),
+            (0.1, "0.10000000149011612"),
+            (1e-4, "9.999999747378752e-05"),
+            (1.5e-4, "0.0001500000071246177"),
+            (1e-5, "9.999999747378752e-06"),
+            (1e-7, "1.0000000116860974e-07"),
+            (9.5e15, "9499999507316736.0"),
+            (1e16, "1.0000000272564224e+16"),
+            (1e30, "1.0000000150474662e+30"),
+            (f32::from_bits(1), "1.401298464324817e-45"),
+            (f32::MAX, "3.4028234663852886e+38"),
+            (2.0f32.powi(-14), "6.103515625e-05"),
+            (2.0f32.powi(-13), "0.0001220703125"),
+            (2.0f32.powi(60), "1.152921504606847e+18"),
+            (f32::NAN, "nan"),
+            (f32::INFINITY, "inf"),
+            (f32::NEG_INFINITY, "-inf"),
+        ] {
+            assert_eq!(format_float(value), expected, "{:?}", value);
+        }
+    }
 }

@@ -12,4 +12,3 @@ crate-type = ["cdylib"]
 libxrk = { path = "../libxrk", features = ["arrow"] }
 pyo3 = { version = "0.26", features = ["extension-module"] }
 arrow = { workspace = true, features = ["pyarrow"] }
-ryu = "1"

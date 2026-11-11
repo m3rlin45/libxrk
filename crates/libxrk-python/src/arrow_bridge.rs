@@ -1,6 +1,6 @@
 //! Arrow → PyArrow bridge: converts RecordBatch to PyArrow via C Data Interface.
 //!
-//! Also provides `format_float()` for Python-matching float formatting.
+//! Re-exports the core crate's `format_float()` (Python-matching float formatting).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,37 +18,7 @@ pub fn batch_to_pyarrow(py: Python<'_>, batch: RecordBatch) -> PyResult<Py<PyAny
         .map(|b| b.unbind())
 }
 
-/// Format an f32 to match Python's `str(float(f32_value))` output.
-///
-/// Python promotes f32→f64, then uses shortest-representation formatting.
-/// For values with no fractional part, Python appends ".0".
-/// For very large (≥1e16) or very small (<1e-4) values, Python uses
-/// scientific notation like "1.0000000150474662e+30".
-pub fn format_float(v: f32) -> String {
-    if !v.is_finite() {
-        return format!("{}", v);
-    }
-    // Promote to f64, matching Python's implicit f32→float conversion.
-    let f64_val = v as f64;
-    // Use ryu for shortest-representation formatting (same algorithm as CPython).
-    let mut buf = ryu::Buffer::new();
-    let s = buf.format(f64_val);
-    // ryu outputs "1e30" but Python outputs "1e+30" (explicit + for positive exponents).
-    if let Some(e_pos) = s.find('e') {
-        let (mantissa, exp_part) = s.split_at(e_pos);
-        let exp_str = &exp_part[1..]; // skip 'e'
-        if exp_str.starts_with('-') {
-            format!("{}e{}", mantissa, exp_str)
-        } else {
-            format!("{}e+{}", mantissa, exp_str)
-        }
-    } else if s.contains('.') {
-        s.to_string()
-    } else {
-        // Integer value without decimal point — append ".0"
-        format!("{}.0", s)
-    }
-}
+pub use libxrk::arrow::format_float;
 
 /// Build a test RecordBatch with field-level metadata and return it as a PyArrow table.
 ///

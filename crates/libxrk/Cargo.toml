@@ -7,13 +7,17 @@ description = "Pure Rust library for reading AIM XRK/XRZ motorsports telemetry f
 
 [features]
 default = []
-arrow = ["dep:arrow"]
+arrow = ["dep:arrow", "dep:ryu"]
 
 [dependencies]
 binrw = { workspace = true }
 flate2 = { workspace = true }
 
 [dependencies.arrow]
+workspace = true
+optional = true
+
+[dependencies.ryu]
 workspace = true
 optional = true
 
