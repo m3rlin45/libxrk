@@ -70,6 +70,7 @@ class Channel:
     long_name: str = ""
     size: int = 0
     units: str = ""
+    volts: bool = False  # millivolts with the calibrated flag: divide by 1000
     dec_pts: int = 0
     interpolate: bool = False
     unknown: bytes = b""
@@ -162,16 +163,24 @@ _logger_models = {
     793: "MXm",
 }
 
+# Entries marked DLL are codes no available file carries: the string is what
+# the AIM DLL reports for a channel patched to that code, and the decimal
+# points are not known (spec/docs/companion.md section 9).
 _unit_map = {
+    0:  ('', 0), # no unit: an unconfigured input (NONE_0); the AIM DLL reports ''
     1:  ('%', 2),
+    2:  ('%/s', 0), # DLL
     3:  ('g', 2),
     4:  ('deg', 1),
     5:  ('deg/s', 1),
-    6:  ('', 0), # number
+    6:  ('#', 0), # number - the AIM DLL reports '#'
+    7:  ('Coord', 0), # DLL
     8:  ('m', 0), # Mileage / Distance Lap - RS3 exports as 'm'
     9:  ('Hz', 0),
+    10: ('kg/s', 0), # DLL
     11: ('#', 0), # number - the AIM DLL reports '#'
     12: ('mm', 0),
+    13: ('kW', 0), # DLL
     14: ('bar', 2),
     15: ('rpm', 0),
     16: ('km/h', 0),
@@ -181,13 +190,22 @@ _unit_map = {
     20: ('km/h', 0),
     21: ('mV', 1),
     22: ('l', 1),
+    23: ('l*Lap', 0), # DLL
     24: ('l/s', 0), # ? rs3 displayed 1l/h
+    25: ('Date', 0), # DLL
     26: ('time?', 0),
     27: ('A', 0),
     28: ('%', 2), # Luminosity on the official AIM sample; RS3 displays %
+    29: ('rpm/s', 0), # DLL
     30: ('lambda', 2),
     31: ('gear', 0),
+    32: ('V', 0), # DLL - volts as stored, not divided by 1000 (see Channel.volts)
     33: ('%', 2),
+    34: ('l/hkm', 0), # DLL
+    35: ('km/l', 0), # DLL
+    36: ('ft/s2', 0), # DLL
+    37: ('mG', 0), # DLL - MagnetomX/Y/Z on a MyChron 5S
+    38: ('krpm', 0), # DLL
     43: ('kg', 3),
 }
 
@@ -439,7 +457,7 @@ cdef class _SampleAccumulators:
 
         if d.fixup:
             c.sampledata = memoryview(d.fixup(c.sampledata))
-        if c.units == 'V': # unit_type 21 is mV; calibrated flag converts to V
+        if c.volts: # unit_type 21 is mV; calibrated flag converts to V
             _mv = np.asarray(c.sampledata)
             if _mv.dtype == np.float16:
                 # Volts are float32: the quotient is not a float16 (11264 mV
@@ -753,11 +771,15 @@ def _decode_sequence(s, progress=None):
                                 data.units, data.dec_pts = _unit_map[dcopy[12] & 127]
                             except KeyError:
                                 print('Unknown units[%d] for %s' %
-                                      (dcopy[12] & 127, data.long_name))
+                                      (dcopy[12] & 127, _nullterm_string(data.long_name)))
                                 data.units = ''
                                 data.dec_pts = 0
-                            if dcopy[12] & 0x80 and data.units == 'mV':
+                            if dcopy[12] == 0x80 | 21:
+                                # mV with the calibrated flag. Keyed on the
+                                # byte, not on units == 'V': code 32 is 'V'
+                                # too and is not divided.
                                 data.units = 'V'
+                                data.volts = True
 
                             # CHS layout (112 bytes):
                             # [0:2]    uint16 LE   channel index

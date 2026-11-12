@@ -8,17 +8,29 @@
 /// Checked against the official AIM `MatLabXRK` DLL over the whole test
 /// corpus (`get_channel_units`, 253 channel observations): every entry the
 /// DLL reports agrees. Code 11 was corrected to "#" on that evidence.
+///
+/// Entries marked "DLL" are codes no available file carries. Their strings
+/// are what the DLL reports for a channel patched to that code
+/// (spec/docs/companion.md section 9); their decimal points are not known
+/// and are left at 0.
 pub fn unit_map(unit_type: u8) -> (&'static str, u8) {
     match unit_type & 0x7F {
+        // No unit: an unconfigured input (channels named NONE_0, NONE_3 on a
+        // MyChron 5S, issue #81). The AIM DLL reports "" too.
+        0 => ("", 0),
         1 => ("%", 2),
+        2 => ("%/s", 0), // DLL
         3 => ("g", 2),
         4 => ("deg", 1),
         5 => ("deg/s", 1),
-        6 => ("", 0), // "number"; never exposed by the AIM DLL on the corpus, so unverified
-        8 => ("m", 0), // Mileage / Distance Lap; RaceStudio3 exports Mileage as "m"
+        6 => ("#", 0),     // "number"; the AIM DLL reports "#", as for code 11
+        7 => ("Coord", 0), // DLL
+        8 => ("m", 0),     // Mileage / Distance Lap; RaceStudio3 exports Mileage as "m"
         9 => ("Hz", 0),
-        11 => ("#", 0), // "number"; the AIM DLL reports "#" (see test below)
+        10 => ("kg/s", 0), // DLL
+        11 => ("#", 0),    // "number"; the AIM DLL reports "#" (see test below)
         12 => ("mm", 0),
+        13 => ("kW", 0), // DLL
         14 => ("bar", 2),
         15 => ("rpm", 0),
         16 => ("km/h", 0),
@@ -28,13 +40,24 @@ pub fn unit_map(unit_type: u8) -> (&'static str, u8) {
         20 => ("km/h", 0),
         21 => ("mV", 1),
         22 => ("l", 1),
+        23 => ("l*Lap", 0), // DLL
         24 => ("l/s", 0),
+        25 => ("Date", 0), // DLL
         26 => ("time?", 0),
         27 => ("A", 0),
         28 => ("%", 2), // Luminosity on the official AIM sample; RaceStudio3 displays "%"
+        29 => ("rpm/s", 0), // DLL
         30 => ("lambda", 2),
         31 => ("gear", 0),
+        // DLL. Volts as stored: unlike the "V" of code 21 with the calibrated
+        // flag (`is_volts`), samples are not divided by 1000.
+        32 => ("V", 0),
         33 => ("%", 2),
+        34 => ("l/hkm", 0), // DLL
+        35 => ("km/l", 0),  // DLL
+        36 => ("ft/s2", 0), // DLL
+        37 => ("mG", 0),    // DLL. MagnetomX/Y/Z on a MyChron 5S (issue #80)
+        38 => ("krpm", 0),  // DLL
         43 => ("kg", 3),
         _ => ("", 0),
     }
@@ -43,44 +66,28 @@ pub fn unit_map(unit_type: u8) -> (&'static str, u8) {
 /// Check if a unit type byte maps to a known unit in the unit map.
 /// Returns false for unit types not in the Cython `_unit_map` dictionary.
 pub fn is_known_unit(unit_type_byte: u8) -> bool {
-    matches!(
-        unit_type_byte & 0x7F,
-        1 | 3
-            | 4
-            | 5
-            | 6
-            | 8
-            | 9
-            | 11
-            | 12
-            | 14
-            | 15
-            | 16
-            | 17
-            | 18
-            | 19
-            | 20
-            | 21
-            | 22
-            | 24
-            | 26
-            | 27
-            | 28
-            | 30
-            | 31
-            | 33
-            | 43
-    )
+    matches!(unit_type_byte & 0x7F, 0..=38 | 43)
+}
+
+/// Unit code of millivolts.
+const MILLIVOLTS_UNIT: u8 = 21;
+
+/// True for millivolts with the calibrated flag (high bit): the channel is
+/// shown in "V" and its samples are divided by 1000.
+///
+/// This is a property of the unit byte, not of the unit string: code 32 is
+/// also "V" and its samples are left as stored.
+pub fn is_volts(unit_type_byte: u8) -> bool {
+    unit_type_byte == 0x80 | MILLIVOLTS_UNIT
 }
 
 /// Resolve the display unit, handling the calibrated flag (high bit of unit_type_byte).
 /// When the calibrated flag is set and base unit is "mV", display as "V".
 pub fn resolve_unit(unit_type_byte: u8) -> &'static str {
-    let (base_unit, _) = unit_map(unit_type_byte);
-    if unit_type_byte & 0x80 != 0 && base_unit == "mV" {
+    if is_volts(unit_type_byte) {
         "V"
     } else {
-        base_unit
+        unit_map(unit_type_byte).0
     }
 }
 
@@ -299,6 +306,62 @@ mod tests {
         assert!(is_known_unit(8));
     }
 
+    /// Unit code 0 is "no unit", not an unknown code: the AIM DLL exposes a
+    /// channel carrying it with an empty unit string. Mirrors `UNIT_MAP` in
+    /// `spec/xrk_format.py`.
+    #[test]
+    fn unit_code_0_is_no_unit() {
+        assert_eq!(unit_map(0), ("", 0));
+        assert!(is_known_unit(0));
+        assert_eq!(resolve_unit(0), "");
+        assert_eq!(resolve_unit(0x80), "");
+    }
+
+    /// Unit code 6 ("number") is "#", like code 11: the AIM DLL reports "#"
+    /// for a channel patched to it. Mirrors `UNIT_MAP` in `spec/xrk_format.py`.
+    #[test]
+    fn unit_code_6_is_hash() {
+        assert_eq!(unit_map(6), ("#", 0));
+        assert_eq!(resolve_unit(0x80 | 6), "#");
+    }
+
+    /// The codes the AIM DLL names that no available file carries. Mirrors
+    /// `UNIT_MAP` in `spec/xrk_format.py`.
+    #[test]
+    fn unit_codes_named_by_the_dll() {
+        for (code, unit) in [
+            (2, "%/s"),
+            (7, "Coord"),
+            (10, "kg/s"),
+            (13, "kW"),
+            (23, "l*Lap"),
+            (25, "Date"),
+            (29, "rpm/s"),
+            (32, "V"),
+            (34, "l/hkm"),
+            (35, "km/l"),
+            (36, "ft/s2"),
+            (37, "mG"),
+            (38, "krpm"),
+        ] {
+            assert_eq!(unit_map(code), (unit, 0), "code {code}");
+            assert!(is_known_unit(code), "code {code}");
+        }
+    }
+
+    /// Only millivolts with the calibrated flag is divided by 1000. Code 32
+    /// is "V" as stored, with or without the flag: the AIM DLL returns its
+    /// samples unchanged.
+    #[test]
+    fn volts_conversion_is_keyed_on_the_unit_byte() {
+        assert!(is_volts(0x80 | 21));
+        assert!(!is_volts(21));
+        assert_eq!(resolve_unit(32), "V");
+        assert!(!is_volts(32));
+        assert_eq!(resolve_unit(0x80 | 32), "V");
+        assert!(!is_volts(0x80 | 32));
+    }
+
     /// Unit code 28 is "%": Luminosity on the official AIM sample carries it
     /// and RaceStudio3 displays "%". Mirrors `UNIT_MAP` in `spec/xrk_format.py`.
     #[test]
@@ -320,8 +383,8 @@ mod tests {
     #[test]
     fn test_unit_map_unknown_returns_empty() {
         assert_eq!(unit_map(99), ("", 0));
-        assert_eq!(unit_map(0), ("", 0));
-        assert_eq!(unit_map(2), ("", 0));
+        assert_eq!(unit_map(39), ("", 0));
+        assert_eq!(unit_map(127), ("", 0));
     }
 
     #[test]
@@ -336,15 +399,17 @@ mod tests {
         assert!(is_known_unit(15)); // rpm
         assert!(is_known_unit(1)); // %
         assert!(is_known_unit(43)); // kg
-        assert!(!is_known_unit(0));
-        assert!(!is_known_unit(2));
+        assert!(is_known_unit(0)); // no unit
+        assert!(is_known_unit(38)); // krpm, the last code the AIM DLL names
+        assert!(!is_known_unit(39));
+        assert!(!is_known_unit(42));
         assert!(!is_known_unit(99));
     }
 
     #[test]
     fn test_is_known_unit_masks_high_bit() {
         assert!(is_known_unit(0x80 | 15));
-        assert!(!is_known_unit(0x80 | 2));
+        assert!(!is_known_unit(0x80 | 39));
     }
 
     #[test]

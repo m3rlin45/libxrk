@@ -5,6 +5,8 @@
 /// CAL payload — calibration data.
 #[derive(Debug, Clone)]
 pub struct CalPayload {
+    /// u32 at [8:12]; 1 in every file seen.
+    pub u32_8: u32,
     pub cal_type: u32,
     pub raw_1: f32,
     pub raw_2: f32,
@@ -15,22 +17,8 @@ pub struct CalPayload {
 impl CalPayload {
     /// Parse a CAL payload from raw bytes (minimum 40 bytes).
     pub fn parse(data: &[u8]) -> Self {
-        let cal_u32_8 = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
-        if cal_u32_8 != 1 {
-            eprintln!(
-                "libxrk: unexpected CAL u32[8]={} (expected 1). \
-                 Please report at https://github.com/m3rlin45/libxrk/issues",
-                cal_u32_8
-            );
-        }
+        let u32_8 = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
         let cal_type = u32::from_le_bytes([data[20], data[21], data[22], data[23]]);
-        if cal_type != 1 && cal_type != 20 {
-            eprintln!(
-                "libxrk: unexpected CAL type {} (expected 1 or 20). \
-                 Please report at https://github.com/m3rlin45/libxrk/issues",
-                cal_type
-            );
-        }
         let raw_1 = f32::from_le_bytes([data[24], data[25], data[26], data[27]]);
         let raw_2 = f32::from_le_bytes([data[28], data[29], data[30], data[31]]);
         let (output_1, output_2) = if cal_type == 1 && data.len() >= 40 {
@@ -42,11 +30,33 @@ impl CalPayload {
             (None, None)
         };
         CalPayload {
+            u32_8,
             cal_type,
             raw_1,
             raw_2,
             output_1,
             output_2,
+        }
+    }
+
+    /// Report fields this parser has not seen before.
+    ///
+    /// Kept out of `parse`, which runs on every scan of the file (prescan,
+    /// main scan, metadata), so that a record is reported once.
+    pub fn warn_if_unexpected(&self) {
+        if self.u32_8 != 1 {
+            eprintln!(
+                "libxrk: unexpected CAL u32[8]={} (expected 1). \
+                 Please report at https://github.com/m3rlin45/libxrk/issues",
+                self.u32_8
+            );
+        }
+        if self.cal_type != 1 && self.cal_type != 20 {
+            eprintln!(
+                "libxrk: unexpected CAL type {} (expected 1 or 20). \
+                 Please report at https://github.com/m3rlin45/libxrk/issues",
+                self.cal_type
+            );
         }
     }
 }
