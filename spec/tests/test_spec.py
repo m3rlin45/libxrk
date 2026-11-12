@@ -20,8 +20,10 @@ from spec.xrk_format import (
     NAMED_VALUE_DTYPES,
     SAMPLE_CODECS,
     TIMECODE_DTYPE,
+    _accumulate,
     _decompress_if_zlib,
     build_header_frame,
+    _note_data_header,
     channel_sample_codec,
     channel_stream,
     channel_value_dtype,
@@ -31,6 +33,7 @@ from spec.xrk_format import (
     MMessageCompiled,
     ParseResult,
     parse_xrk_bytes,
+    SMessageCompiled,
 )
 from spec.tests.conftest import (
     _BACKENDS,
@@ -994,6 +997,166 @@ class TestExhaustiveChannelValues:
         checked, errors = self._compare_all_values(file_86_parsed, file_86_backend)
         assert checked > 0, "No channels were cross-validated"
         assert not errors, f"Value mismatches:\n" + "\n".join(errors)
+
+
+class TestExhaustiveChannelTimecodes:
+    """Compare EVERY sample time of every channel against both backends.
+
+    TestExhaustiveChannelValues proves the values; this proves when. The
+    spec's ParseResult.channel_timecodes() (sample time per _samples, kept
+    per _accumulate, minus time_offset()) must equal each backend's
+    ``timecodes`` column exactly: same count, same int64 milliseconds, on
+    every fixture.
+    """
+
+    _FIXTURES = [
+        "sfj",
+        "sfj_0101",
+        "sfj_suzuka",
+        "file_86",
+        "aim_official",
+        "issue49",
+        "issue68",
+        "issue84",
+    ]
+
+    def _compare_all_timecodes(self, result, log):
+        """Compare every timecode of every backend channel. Returns (checked, errors)."""
+        spec_timecodes = result.channel_timecodes()
+        # Backend channels are keyed by display name ("<name> dup <k>" for
+        # repeated CHS names, GPS names reserved when the file has GPS data).
+        reserved = GPS_CHANNEL_NAMES if result.gps_payloads else ()
+        index_by_name = {name: idx for idx, name in result.channel_display_names(reserved).items()}
+        # V2/V3 (c) expansion samples are not in the spec's streams (see
+        # _samples); TestIssue68SpecVsBackends compares those channels' times.
+        expansion = set(result.expansion_channel_map.values())
+        checked = 0
+        errors = []
+
+        for name, table in log.channels.items():
+            idx = index_by_name.get(name)
+            if idx is None:
+                # Synthesized by the GPS pipeline, not a CHS channel.
+                assert name in GPS_CHANNEL_NAMES, f"{name!r} is not a CHS or GPS channel"
+                continue
+            if idx in expansion:
+                continue
+            spec = spec_timecodes.get(idx)
+            if spec is None:
+                errors.append(f"Ch {name!r}: no spec timecodes, backend has {table.num_rows}")
+                continue
+
+            column = table.column("timecodes").to_numpy()
+            assert column.dtype == np.int64 and spec.dtype == np.int64, name
+            if len(spec) != len(column):
+                errors.append(
+                    f"Ch {name!r}: length mismatch spec={len(spec)} backend={len(column)}"
+                )
+                continue
+            # Exact: timecodes are integers. Report the first offending sample only.
+            bad = np.flatnonzero(spec != column)
+            if len(bad):
+                i = int(bad[0])
+                errors.append(
+                    f"Ch {name!r} sample {i}/{len(spec)}: spec={int(spec[i])} "
+                    f"backend={int(column[i])} ({len(bad)} differ)"
+                )
+            checked += 1
+
+        return checked, errors
+
+    @pytest.mark.parametrize("name", _FIXTURES)
+    def test_every_timecode(self, name, backend, request):
+        """Every timecode of every channel must match the backend exactly.
+
+        `backend` is requested directly so its session params are defined
+        for this test; getfixturevalue alone cannot parametrize.
+        """
+        parsed = request.getfixturevalue(f"{name}_parsed")
+        log = request.getfixturevalue(f"{name}_backend")
+        checked, errors = self._compare_all_timecodes(parsed, log)
+        assert checked > 20, f"Only {checked} channels compared"
+        assert not errors, "Timecode mismatches:\n" + "\n".join(errors)
+
+    def test_timecodes_align_with_the_streams(self, any_parsed):
+        """One time per stream slot, so channel_timecodes() lines up index for
+        index with channel_samples() and channel_values(); and each channel's
+        times strictly increase, which is the accumulation rule."""
+        timecodes = any_parsed.channel_timecodes()
+        assert timecodes.keys() == any_parsed.streams.keys()
+        assert timecodes.keys() >= any_parsed.channel_values().keys()
+        for idx, stream in any_parsed.streams.items():
+            name = any_parsed.channels[idx].name
+            assert len(timecodes[idx]) * any_parsed.channel_sizes[idx] == len(stream), name
+            assert (np.diff(timecodes[idx]) > 0).all(), name
+        # Session-relative: no sample precedes the session start.
+        assert min(int(t[0]) for t in timecodes.values()) >= 0
+
+    @staticmethod
+    def _accumulated(messages, channel_mms):
+        """A ParseResult fed data messages the way the parse hook feeds them."""
+        sizes = {5: 2, 7: 2, 9: 4}
+        result = ParseResult(channel_mms=channel_mms, channel_sizes=sizes)
+        for struct_def, frame in messages:
+            msg = struct_def.parse(
+                frame, channel_sizes=sizes, group_sizes={1: 6}, group_members={1: [5, 9]}
+            )
+            _accumulate(msg, result)
+            _note_data_header(msg, result)
+        return result
+
+    def test_m_burst_sample_times(self):
+        """An (M burst's k-th sample is at timecode + k * Mms. A second burst
+        that overlaps the first contributes only its samples past the overlap,
+        each at its own time (companion.md sections 3 and 4)."""
+
+        def burst(timecode, samples):
+            head = struct.pack("<iHH", timecode, 7, len(samples) // 2)
+            return MMessageCompiled, b"\x28\x4d" + head + samples + b"\x29"
+
+        result = self._accumulated(
+            [burst(1000, b"aabbcc"), burst(1020, b"CCddee"), burst(1100, b"ff")], {7: 10}
+        )
+        assert result.time_offset() == 1000
+        assert result.channel_timecodes()[7].tolist() == [0, 10, 20, 30, 40, 100]
+        assert result.channel_samples()[7] == [b"aa", b"bb", b"cc", b"dd", b"ee", b"ff"]
+
+    def test_s_and_g_sample_times(self):
+        """An (S sample is at the message timecode, and so is every member
+        sample of a (G. A repeated timecode is dropped, time and bytes alike,
+        and times are relative to the earliest stream's first timecode."""
+
+        def s_msg(timecode, sample):
+            return (
+                SMessageCompiled,
+                b"\x28\x53" + struct.pack("<iH", timecode, 7) + sample + b"\x29",
+            )
+
+        def g_msg(timecode, payload):
+            return (
+                GMessageCompiled,
+                b"\x28\x47" + struct.pack("<iH", timecode, 1) + payload + b"\x29",
+            )
+
+        result = self._accumulated(
+            [
+                s_msg(2000, b"s0"),
+                g_msg(1990, b"xxXXXX"),
+                s_msg(2000, b"s!"),  # repeat: dropped
+                g_msg(2040, b"yyYYYY"),
+                s_msg(2025, b"s1"),
+            ],
+            {},
+        )
+        assert result.time_offset() == 1990
+        timecodes = result.channel_timecodes()
+        assert {idx: t.tolist() for idx, t in timecodes.items()} == {
+            7: [10, 35],
+            5: [0, 50],
+            9: [0, 50],
+        }
+        assert result.channel_samples()[7] == [b"s0", b"s1"]
+        assert all(t.dtype == np.int64 for t in timecodes.values())
 
 
 # ---------------------------------------------------------------------------

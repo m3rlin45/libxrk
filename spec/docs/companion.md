@@ -214,6 +214,24 @@ backends' reset was written on the assumption that timecodes may restart or
 overlap after a new configuration block); the difference is recorded here,
 tracked in issue #158, and left as is.
 
+**Sample times:** the time of a sample is the one the accumulation rule
+compares, defined in one place (`_samples`): the message timecode for S, V1
+`(c` and every member of a `(G`, and `timecode + k * Mms` for the k-th sample
+of an `(M` burst (section 4). It is an int32 on the logger clock, like the
+wire timecode. `_accumulate` stores the time of each kept sample next to its
+bytes: `ParseResult.stream_times[channel]` has one entry per slot of
+`ParseResult.streams[channel]`. `ParseResult.channel_timecodes()` subtracts
+`time_offset()` (section 2) and returns int64 milliseconds since session
+start per channel, index for index with `channel_values()`. That array is the
+`timecodes` column of the channel's table in both backends: they apply the
+same rule and the same subtraction, with no sort, resample or further dedup
+pass, so the timecodes of a channel fed by one accumulator (every channel of
+every fixture) strictly increase.
+`TestExhaustiveChannelTimecodes` in `test_spec.py` compares every timecode of
+every channel of every fixture against both backends for exact equality.
+Samples of V2/V3 `(c` expansion messages are not in `streams` and so have no
+entry here; their times are described in `unknown_regions.md`.
+
 **Special fixups:**
 - Channels named `Calculated_Gear` or `PreCalcGear` use decoder `Q` (uint64)
   with bit extraction: `(value >> 16) & 7` (returns 0 if bit 19 is set).
@@ -235,6 +253,16 @@ Where `Mms = CHS.sample_period_us // 1000` (the channel's sample period in ms).
 
 This means M-messages are used for high-frequency channels (e.g., 500 Hz shock
 potentiometers with Mms=2). The base timecode is the message timecode.
+
+In the spec the formula is the `(M` case of `_samples`. Each sample of the
+burst is then kept or dropped on its own time by the accumulation rule of
+section 3, so a burst that starts at or before the last kept sample of its
+channel contributes only the samples whose time is later, each still at
+`base_timecode + i * Mms` of its own burst (both backends compute the number
+of leading samples to skip, `(last - base_timecode) // Mms + 1`, which is the
+same thing). The kept times are exposed, session-relative, by
+`ParseResult.channel_timecodes()` and checked against both backends sample by
+sample.
 
 Reference: `_aim_xrk_cy.pyx:314-326`
 
