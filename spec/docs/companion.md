@@ -424,6 +424,20 @@ assumed stable across re-definitions.
 The CHS `unit_type_byte` (offset [12], lower 7 bits) maps to display units and
 decimal precision. The high bit indicates whether the channel has been calibrated.
 
+One entry below departs from the AIM DLL on purpose (issue #116). For unit
+byte 30 the DLL's `get_channel_units` returns the single byte `0xBB`
+(MatLabXRK 2017 DLL; `Lambda`, `ECU_LAMBDA` and `0LCC_Lambda` in the
+fixtures). That byte is `»` in Latin-1 and Windows-1252 and is not valid UTF-8
+on its own. The spec and both backends report the ASCII string `lambda`
+instead, for two reasons. First, RaceStudio 3 shows `lambda` for the 86
+fixture's `Lambda` channel, so on that channel it is the DLL that disagrees
+with AIM's own application; this was observed in RaceStudio 3 and nothing in
+the repo measures it. Second, it is a string any consumer can display and
+match on. `_KNOWN_UNIT_DIVERGENCES` in `spec/tests/test_spec.py` pins the
+libxrk/DLL pair, so `test_channel_units` fails if either side changes. Unit
+byte 158 (30 with the calibrated flag), where the DLL says `A/F`, is a
+separate open question (issue #117).
+
 | unit_type | Units | Decimal Points |
 |-----------|-------|----------------|
 | 0  | (none) | 0 |
@@ -485,7 +499,7 @@ samples the DLL returns never depend on the code.
 | in the table above, except those below | the same string |
 | 0, 28, 39-127 (so also 43) | empty |
 | 26 | the channel is not exposed |
-| 30 | byte `0xBB`, a symbol-font lambda |
+| 30 | byte `0xBB`; libxrk keeps `lambda` (see above) |
 
 The DLL's table stops at 38: 28 (`%`, from RaceStudio3) and 43 (`kg`) are
 newer than it.

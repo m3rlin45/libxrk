@@ -1368,8 +1368,9 @@ class TestDLLCrossValidation:
         assert [lap["end_time"] for lap in laps] == [l["end_ms"] for l in issue80_dll["laps"]]
 
     # Unit codes where libxrk deliberately spells the unit differently from
-    # the DLL. Code 30 comes back from the DLL as the single byte 0xBB, a
-    # symbol-font lambda ("\xbb" in latin-1); libxrk writes "lambda". Code 158
+    # the DLL. Code 30 comes back from the DLL as the single byte 0xBB ("\xbb"
+    # as the harness decodes it, latin-1); libxrk writes "lambda", a recorded
+    # decision (issue #116, spec/docs/companion.md section 9). Code 158
     # (30 | calibrated flag) is reported as "A/F" on the one corpus channel
     # that carries it, which is too little evidence to encode a rewrite.
     _KNOWN_UNIT_DIVERGENCES = {30: ("lambda", "\xbb"), 158: ("lambda", "A/F")}
