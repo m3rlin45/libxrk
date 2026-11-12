@@ -992,19 +992,19 @@ class TestExhaustiveChannelValues:
         return checked, errors
 
     def test_aim_official_every_value(self, aim_official_parsed, aim_official_backend):
-        """Every sample of every AIM official channel must match Cython (3.1M)."""
+        """Every sample of every AIM official channel must match Cython (0.5M)."""
         checked, errors = self._compare_all_values(aim_official_parsed, aim_official_backend)
         assert checked > 0, "No channels were cross-validated"
         assert not errors, f"Value mismatches:\n" + "\n".join(errors)
 
     def test_sfj_every_value(self, sfj_parsed, sfj_backend):
-        """Every sample of every SFJ channel must match Cython (7.9M)."""
+        """Every sample of every SFJ channel must match Cython (0.8M)."""
         checked, errors = self._compare_all_values(sfj_parsed, sfj_backend)
         assert checked > 0, "No channels were cross-validated"
         assert not errors, f"Value mismatches:\n" + "\n".join(errors)
 
     def test_86_every_value(self, file_86_parsed, file_86_backend):
-        """Every sample of every 86 channel must match Cython (40M)."""
+        """Every sample of every 86 channel must match Cython (7.1M)."""
         checked, errors = self._compare_all_values(file_86_parsed, file_86_backend)
         assert checked > 0, "No channels were cross-validated"
         assert not errors, f"Value mismatches:\n" + "\n".join(errors)
