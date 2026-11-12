@@ -30,7 +30,7 @@ from spec.xrk_format import (
     MMessageCompiled,
     ParseResult,
 )
-from spec.tests.conftest import ALL_XRK_FILES, ISSUE84_XRZ, _BACKENDS
+from spec.tests.conftest import ALL_XRK_FILES, ISSUE84_XRZ, SFJ_XRK, _BACKENDS
 from tests import xrk_patch
 from libxrk._aim_xrk_rs import process_gps
 from libxrk import GPS_CHANNEL_NAMES
@@ -992,6 +992,35 @@ class TestExhaustiveChannelValues:
 # ---------------------------------------------------------------------------
 
 
+class TestVoltsRule:
+    """The mV -> V division is a property of the unit byte, not of the unit string.
+
+    Only unit code 21 with the calibrated flag is divided by 1000. Code 32 is
+    also "V" (the AIM DLL's string for it) and is left as stored: the DLL
+    returns the SFJ fixture's External Voltage as 11.264 with its own unit
+    byte (149) and as 11264 with 21, 32 or 32 | 0x80.
+    """
+
+    @staticmethod
+    def _chs(unit_byte):
+        data = xrk_patch.load_bytes(SFJ_XRK)
+        frame = xrk_patch.chs_frames(data)["External Voltage"]
+        payload = bytearray(data[frame["pstart"] : frame["pend"]])
+        payload[12] = unit_byte
+        return CHSPayload.parse(bytes(payload))
+
+    @pytest.mark.parametrize(
+        "unit_byte, units, volts",
+        [(21 | 0x80, "V", True), (21, "mV", False), (32, "V", False), (32 | 0x80, "V", False)],
+    )
+    def test_volts_is_millivolts_with_the_calibrated_flag(self, unit_byte, units, volts):
+        chs = self._chs(unit_byte)
+        assert (chs.units, chs.volts) == (units, volts)
+        raw = np.float16(11264.0).tobytes()
+        assert channel_sample_codec(chs).parse(raw) == pytest.approx(11.264 if volts else 11264.0)
+        assert channel_value_dtype(chs) == (np.float32 if volts else np.float16)
+
+
 class TestChannelValueTypes:
     """channel_value_dtype() is the type both backends give a channel.
 
@@ -1012,32 +1041,33 @@ class TestChannelValueTypes:
     ]
 
     @pytest.mark.parametrize(
-        "decoder_type, units, name, expected",
+        "decoder_type, volts, name, expected",
         [
-            (0, "", "Master Clk", "int32"),
-            (1, "#", "StartRec", "uint16"),
-            (4, "rpm", "RPM", "int16"),
-            (6, "#", "Lateral Grip", "float32"),
-            (11, "gear", "ECU_GEAR", "int16"),
-            (12, "ms", "Predictive Time", "int32"),
-            (13, "", "Status", "uint8"),
-            (15, "gear", "Gear", "uint16"),
-            (20, "C", "LoggerTemp", "float16"),  # a float16 sample stays float16
-            (31, "ms", "Lap Time", "int32"),
-            (20, "V", "External Voltage", "float32"),  # mV -> V: float32 for a float type,
-            (6, "V", "Battery", "float32"),  # float16 included (mV / 1000 is not a float16)
-            (4, "V", "Battery", "float64"),  # ... and turns an integer type into float64
-            (13, "V", "Battery", "float64"),
-            (15, "gear", "Calculated_Gear", "uint32"),  # keyed by name, not by decoder_type
-            (6, "gear", "PreCalcGear", "uint32"),
-            (15, "V", "Calculated_Gear", "float64"),
-            (99, "", "No Such Decoder", None),
+            (0, False, "Master Clk", "int32"),
+            (1, False, "StartRec", "uint16"),
+            (4, False, "RPM", "int16"),
+            (6, False, "Lateral Grip", "float32"),
+            (11, False, "ECU_GEAR", "int16"),
+            (12, False, "Predictive Time", "int32"),
+            (13, False, "Status", "uint8"),
+            (15, False, "Gear", "uint16"),
+            (20, False, "LoggerTemp", "float16"),  # a float16 sample stays float16
+            (31, False, "Lap Time", "int32"),
+            (20, True, "External Voltage", "float32"),  # mV -> V: float32 for a float type,
+            (6, True, "Battery", "float32"),  # float16 included (mV / 1000 is not a float16)
+            (4, True, "Battery", "float64"),  # ... and turns an integer type into float64
+            (13, True, "Battery", "float64"),
+            (15, False, "Calculated_Gear", "uint32"),  # keyed by name, not by decoder_type
+            (6, False, "PreCalcGear", "uint32"),
+            (15, True, "Calculated_Gear", "float64"),
+            (99, False, "No Such Decoder", None),
         ],
     )
-    def test_value_type_rule(self, decoder_type, units, name, expected):
+    def test_value_type_rule(self, decoder_type, volts, name, expected):
         """The rule on hand-written channel definitions, one row per case of
-        companion.md section 3 ("Value types")."""
-        chs = SimpleNamespace(decoder_type=decoder_type, units=units, name=name)
+        companion.md section 3 ("Value types"). `volts` is CHSPayload.volts:
+        millivolts with the calibrated flag, divided by 1000."""
+        chs = SimpleNamespace(decoder_type=decoder_type, volts=volts, name=name)
         dtype = channel_value_dtype(chs)
         # `dtype and ...` would not do: a plain numpy dtype is falsy.
         assert (None if dtype is None else dtype.name) == expected
@@ -1049,7 +1079,7 @@ class TestChannelValueTypes:
         own = {1: "uint16", 15: "uint16", 4: "int16", 11: "int16", 13: "uint8"}
         own |= {6: "float32", 20: "float16"}
         for decoder_type in SAMPLE_CODECS:
-            chs = SimpleNamespace(decoder_type=decoder_type, units="", name="x")
+            chs = SimpleNamespace(decoder_type=decoder_type, volts=False, name="x")
             expected = own.get(decoder_type, "int32")
             assert channel_value_dtype(chs).name == expected, decoder_type
 
@@ -1142,7 +1172,7 @@ class TestChannelValueTypes:
         errors = []
         for label, payload in payloads.items():
             chs = CHSPayload.parse(payload)
-            assert chs.name == label and (chs.units == "V") == volts
+            assert chs.name == label and chs.volts == volts
             declared = channel_value_dtype(chs)
             if label not in log.channels:
                 errors.append(f"{label}: not exposed by {backend}")

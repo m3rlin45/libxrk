@@ -110,7 +110,8 @@ arrays in it. The type is derived from the codec rather than tabulated:
    int16, `Int8ul` → uint8, `Float32l` → float32, `Float16l` → float16. A
    float16 sample is returned as float16, not widened: the widening carried
    no information and doubled the largest channels.
-3. The mV→V conversion (unit `V`) then divides by 1000 (`VOLTS_DTYPES`): any
+3. The mV→V conversion (`CHSPayload.volts`: unit code 21 with the calibrated
+   flag, shown as `V`) then divides by 1000 (`VOLTS_DTYPES`): any
    float type becomes **float32**, any integer type **float64**. A float16
    widens here because the quotient is not a float16 value (11264 mV is one,
    11.264 V is not). Both backends widen the sample to float32 first and
@@ -127,8 +128,8 @@ Which gives:
 | decoder 20 | float16 |
 | every other decoder (0, 3, 8, 12, 22, 24, 26, 27, 31–33, 37–39) | int32 |
 | `Calculated_Gear`, `PreCalcGear` | uint32 |
-| unit `V`, decoder 6 or 20 | float32 |
-| unit `V`, any integer type (gear channels included) | float64 |
+| mV→V, decoder 6 or 20 | float32 |
+| mV→V, any integer type (gear channels included) | float64 |
 
 `TestChannelValueTypes` (`spec/tests/test_spec.py`) holds both backends to
 this: the Arrow type of every channel of every fixture, and of every decoder
@@ -169,7 +170,8 @@ backends sample by sample: same type, identical values.
 - Channels named `Calculated_Gear` or `PreCalcGear` use decoder `Q` (uint64)
   with bit extraction: `(value >> 16) & 7` (returns 0 if bit 19 is set).
 - Unit type 21 (`mV`): when the calibrated flag (high bit of `unit_type_byte`) is set,
-  the display unit becomes `V` and values are divided by 1000.
+  the display unit becomes `V` and values are divided by 1000. The rule is on
+  the unit byte, not the unit string: unit type 32 is also `V` and is not divided.
 
 Reference: `_aim_xrk_cy.pyx:95-137`
 
@@ -405,15 +407,20 @@ decimal precision. The high bit indicates whether the channel has been calibrate
 
 | unit_type | Units | Decimal Points |
 |-----------|-------|----------------|
+| 0  | (none) | 0 |
 | 1  | %      | 2 |
+| 2  | %/s    | 0 |
 | 3  | g      | 2 |
 | 4  | deg    | 1 |
 | 5  | deg/s  | 1 |
-| 6  | (none) | 0 |
+| 6  | #      | 0 |
+| 7  | Coord  | 0 |
 | 8  | m      | 0 |
 | 9  | Hz     | 0 |
+| 10 | kg/s   | 0 |
 | 11 | #      | 0 |
 | 12 | mm     | 0 |
+| 13 | kW     | 0 |
 | 14 | bar    | 2 |
 | 15 | rpm    | 0 |
 | 16 | km/h   | 0 |
@@ -423,16 +430,57 @@ decimal precision. The high bit indicates whether the channel has been calibrate
 | 20 | km/h   | 0 |
 | 21 | mV     | 1 |
 | 22 | l      | 1 |
+| 23 | l*Lap  | 0 |
 | 24 | l/s    | 0 |
+| 25 | Date   | 0 |
 | 26 | time?  | 0 |
 | 27 | A      | 0 |
 | 28 | %      | 2 |
+| 29 | rpm/s  | 0 |
 | 30 | lambda | 2 |
 | 31 | gear   | 0 |
+| 32 | V      | 0 |
 | 33 | %      | 2 |
+| 34 | l/hkm  | 0 |
+| 35 | km/l   | 0 |
+| 36 | ft/s2  | 0 |
+| 37 | mG     | 0 |
+| 38 | krpm   | 0 |
 | 43 | kg     | 3 |
 
 Reference: `_aim_xrk_cy.pyx:144-169`
+
+Code 0 is "no unit". A MyChron 5S writes it on inputs with no sensor
+configured, which it names `NONE_0`, `NONE_3` (issue #81). A code that is not
+in the table also gives an empty unit and 0 decimal points, and both backends
+print `Unknown units[<code>] for <channel>`.
+
+### What the AIM DLL reports for each code
+
+Measured by patching the unit byte of a channel in the SFJ fixture to each of
+the 128 codes and reading `get_channel_units` (MatLabXRK 2017 DLL). The
+samples the DLL returns never depend on the code.
+
+| Codes | DLL unit string |
+|-------|-----------------|
+| in the table above, except those below | the same string |
+| 0, 28, 39-127 (so also 43) | empty |
+| 26 | the channel is not exposed |
+| 30 | byte `0xBB`, a symbol-font lambda |
+
+The DLL's table stops at 38: 28 (`%`, from RaceStudio3) and 43 (`kg`) are
+newer than it.
+
+Thirteen entries of the table above come from this measurement alone, because
+no available file carries the code: 2, 7, 10, 13, 23, 25, 29, 32, 34, 35, 36,
+37 and 38. Their decimal points are not known and are given as 0. Code 37
+(`mG`) is what the `MagnetomX/Y/Z` channels of issue #80 carry. Code 6 (`#`)
+was also settled by it: the one fixture channel that carries it,
+`Calculated_Gear` on the official AIM sample, has no samples.
+
+Code 32 is `V` as stored. It is not the `V` of code 21 with the calibrated
+flag, whose samples are divided by 1000 (section 3, `CHSPayload.volts`): the
+DLL returns a code-32 channel's samples unchanged, with or without the flag.
 
 ## 10. Unparsed Byte Runs: Messages Written Over One Another
 

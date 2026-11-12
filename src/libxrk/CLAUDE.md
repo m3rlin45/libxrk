@@ -92,8 +92,8 @@ types):
 | float32 (decoder 6) | `float` / `float32` |
 | int16, uint16, int32, uint8 | the same integer type |
 | `Calculated_Gear`, `PreCalcGear` | `uint32` |
-| unit `V`, float16 or float32 samples | `float` / `float32` |
-| unit `V`, integer samples | `double` / `float64` |
+| millivolts converted to `V`, float16 or float32 samples | `float` / `float32` |
+| millivolts converted to `V`, integer samples | `double` / `float64` |
 
 Float16 samples are returned as float16, not widened to float32: the widening
 added no information and doubled the column (a channel table is 10 bytes per

@@ -114,19 +114,30 @@ _STRING = object()  # Sentinel for null-terminated string decode
 
 # Unit type map: unit_type_byte -> (unit_string, decimal_points)
 # From _aim_xrk_cy.pyx:146-171
+#
+# Entries marked "DLL" are codes no available file carries. Their strings are
+# what the AIM DLL reports for a channel patched to that code (companion.md
+# section 9); their decimal points are not known and are left at 0.
 UNIT_MAP = {
+    # No unit: an input the logger has no sensor configured on (channels named
+    # NONE_0, NONE_3 on a MyChron 5S, issue #81). The AIM DLL reports "" too.
+    0: ("", 0),
     1: ("%", 2),
+    2: ("%/s", 0),  # DLL
     3: ("g", 2),
     4: ("deg", 1),
     5: ("deg/s", 1),
-    6: ("", 0),
+    6: ("#", 0),  # "number"; the AIM DLL reports "#", as for code 11
+    7: ("Coord", 0),  # DLL
     # Distance channels (Mileage, Distance Lap, Distance Lap Int). RaceStudio3
     # exports Mileage as "m" (20/20 corpus CSV observations); the AIM DLL
     # does not expose these channels, so it cannot confirm.
     8: ("m", 0),
     9: ("Hz", 0),
+    10: ("kg/s", 0),  # DLL
     11: ("#", 0),  # "number"; the AIM DLL reports "#" (36/36 corpus observations)
     12: ("mm", 0),
+    13: ("kW", 0),  # DLL
     14: ("bar", 2),
     15: ("rpm", 0),
     16: ("km/h", 0),
@@ -136,17 +147,30 @@ UNIT_MAP = {
     20: ("km/h", 0),
     21: ("mV", 1),
     22: ("l", 1),
+    23: ("l*Lap", 0),  # DLL
     24: ("l/s", 0),
+    25: ("Date", 0),  # DLL
     26: ("time?", 0),
     27: ("A", 0),
     # Luminosity on the official AIM sample (test.xrk) carries code 28 and
     # RaceStudio3 displays it as "%"; Backlight and WiFi share the code.
     28: ("%", 2),
+    29: ("rpm/s", 0),  # DLL
     30: ("lambda", 2),
     31: ("gear", 0),
+    # DLL. Volts as stored: unlike the "V" of code 21 with the calibrated flag
+    # (see CHSPayload.volts), samples are not divided by 1000.
+    32: ("V", 0),
     33: ("%", 2),
+    34: ("l/hkm", 0),  # DLL
+    35: ("km/l", 0),  # DLL
+    36: ("ft/s2", 0),  # DLL
+    37: ("mG", 0),  # DLL. MagnetomX/Y/Z on a MyChron 5S (issue #80)
+    38: ("krpm", 0),  # DLL
     43: ("kg", 3),
 }
+
+MILLIVOLTS_UNIT = 21  # with the calibrated flag (0x80): volts, divided by 1000
 
 # Decoders whose channels are interpolated (the rest are step channels).
 # From _aim_xrk_cy.pyx:111-137
@@ -214,7 +238,7 @@ SAMPLE_CODECS = {
 def channel_sample_codec(chs):
     """The Construct that decodes one raw sample of a CHS channel, or None."""
     codec = SAMPLE_CODECS.get(chs.decoder_type)
-    if codec is not None and chs.units == "V":
+    if codec is not None and chs.volts:
         codec = Volts(codec)
     return codec
 
@@ -264,7 +288,7 @@ def channel_value_dtype(chs):
        decoder_type;
     2. otherwise the type of its codec's base field (``sample_dtype``): a
        float16 sample is a float16 value;
-    3. then, for unit "V" (mV divided by 1000), the type VOLTS_DTYPES gives
+    3. then, for a ``volts`` channel (mV divided by 1000), the type VOLTS_DTYPES gives
        for that kind: float32 for a float type (float16 included), float64
        for an integer type.
     """
@@ -274,7 +298,7 @@ def channel_value_dtype(chs):
         dtype = sample_dtype(SAMPLE_CODECS[chs.decoder_type])
     else:
         return None
-    if chs.units == "V":
+    if chs.volts:
         dtype = VOLTS_DTYPES[dtype.kind]
     return dtype
 
@@ -443,14 +467,15 @@ CHSPayload = Struct(
     "display_range_max" / Float32l,  # [108:112] display range maximum
     # Derived fields (computed at parse time, not stored in binary)
     "name" / Computed(lambda ctx: _nullterm(ctx.long_name)),
+    # Millivolts with the calibrated flag: shown as "V", samples divided by
+    # 1000. This is a property of the unit byte, not of the unit string: code
+    # 32 is also "V" and its samples are left as stored.
+    "volts" / Computed(lambda ctx: ctx.unit_type_byte == 0x80 | MILLIVOLTS_UNIT),
     "units"
     / Computed(
         lambda ctx: (
             "V"
-            if (
-                ctx.unit_type_byte & 0x80
-                and UNIT_MAP.get(ctx.unit_type_byte & 127, ("", 0))[0] == "mV"
-            )
+            if ctx.unit_type_byte == 0x80 | MILLIVOLTS_UNIT
             else UNIT_MAP.get(ctx.unit_type_byte & 127, ("", 0))[0]
         )
     ),

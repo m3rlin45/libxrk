@@ -90,14 +90,15 @@ pub enum ChannelValues {
 impl ChannelValues {
     /// Create a new typed vector with the right variant based on decoder/channel properties.
     ///
-    /// V-units channels with integer decoders use Float64 (numpy 2.x: np.divide(int, 1000) → f64).
-    /// V-units channels with float decoders are Float32 (numpy 2.x: np.divide(f32, 1000) → f32);
+    /// `volts` is `ChsPayload::is_volts`: millivolts converted to volts (mV/1000).
+    /// Such channels with integer decoders use Float64 (numpy 2.x: np.divide(int, 1000) → f64).
+    /// Such channels with float decoders are Float32 (numpy 2.x: np.divide(f32, 1000) → f32);
     /// that includes float16 samples, widened first because mV/1000 is not a float16.
     /// Manual gear channels use UInt32.
     /// Otherwise: decoder type determines the variant; float16 samples (decoder 20) stay Float16.
     /// Reference: spec/docs/companion.md section 3.
-    pub fn new(decoder_type: u8, units: &str, is_manual: bool, capacity: usize) -> Self {
-        if units == "V" {
+    pub fn new(decoder_type: u8, volts: bool, is_manual: bool, capacity: usize) -> Self {
+        if volts {
             // V conversion (mV→V via /1000): numpy 2.x scalar promotion rules
             // - int / int_scalar → float64
             // - float32 / int_scalar → float32
@@ -329,6 +330,10 @@ struct ParserState {
     unparsed_runs: Vec<(usize, usize)>,
     /// See `ParseResult::fragments`.
     fragments: usize,
+    /// True for the throwaway state of a nested CNF/ENF scan. Its channels
+    /// are merged into the top-level state, which is the one that reports
+    /// warnings about them, so each is printed once per parse.
+    quiet: bool,
 }
 
 /// Pre-scan results used to pre-allocate accumulator capacity.
@@ -391,6 +396,15 @@ impl ParserState {
             c_var_pos: 0,
             unparsed_runs: Vec::new(),
             fragments: 0,
+            quiet: false,
+        }
+    }
+
+    /// State for scanning the payload of a CNF or ENF message.
+    fn new_nested() -> Self {
+        ParserState {
+            quiet: true,
+            ..ParserState::new()
         }
     }
 
@@ -420,6 +434,9 @@ impl ParserState {
 
     fn register_chs(&mut self, chs: &ChsPayload) {
         let idx = chs.index as usize;
+        // The prescan and the main scan both register every channel, and a
+        // file can repeat its CNF block: warn on the first registration only.
+        let warn = !self.quiet && !self.channels.contains_key(&chs.index);
 
         // A later re-definition of an existing index reflects the logger's
         // current configuration: the last write wins on names. The AIM
@@ -434,7 +451,7 @@ impl ParserState {
         }
 
         // Warn for unknown unit types (I)
-        if !tables::is_known_unit(chs.unit_type_byte) {
+        if warn && !tables::is_known_unit(chs.unit_type_byte) {
             eprintln!(
                 "Unknown units[{}] for {}",
                 chs.unit_type_byte & 0x7F,
@@ -451,7 +468,7 @@ impl ParserState {
             || chs._pad_73_76.iter().any(|&b| b != 0)
             || chs._pad_85_88.iter().any(|&b| b != 0)
             || chs._pad_93_96.iter().any(|&b| b != 0);
-        if has_nonzero_pad {
+        if warn && has_nonzero_pad {
             let mut details = Vec::new();
             for (base, pad) in [
                 (2usize, &chs._pad_2_4[..]),
@@ -780,7 +797,7 @@ fn prescan_header_message(msg: &HeaderMessage, state: &mut ParserState, hints: &
     }
     if token == tokens::cnf() {
         // Recursively discover channels from CNF payload.
-        let mut sub_state = ParserState::new();
+        let mut sub_state = ParserState::new_nested();
         scan_stream(
             &msg.payload,
             &mut sub_state,
@@ -989,7 +1006,7 @@ fn handle_header_message(msg: &HeaderMessage, state: &mut ParserState) {
         }
 
         // Recursively parse the CNF payload
-        let mut sub_state = ParserState::new();
+        let mut sub_state = ParserState::new_nested();
         scan_stream(
             &msg.payload,
             &mut sub_state,
@@ -1023,7 +1040,7 @@ fn handle_header_message(msg: &HeaderMessage, state: &mut ParserState) {
 
     // ENF: recursive parse — store sub-messages separately per ENF
     if token == tokens::enf() {
-        let mut sub_state = ParserState::new();
+        let mut sub_state = ParserState::new_nested();
         scan_stream(
             &msg.payload,
             &mut sub_state,
@@ -1476,7 +1493,7 @@ fn decode_all_channels(
 
                     let mut timecodes = Vec::with_capacity(n_rows);
                     let mut values =
-                        ChannelValues::new(decoder_type, ch_info.chs.units(), is_manual, n_rows);
+                        ChannelValues::new(decoder_type, ch_info.chs.is_volts(), is_manual, n_rows);
 
                     for row in 0..n_rows {
                         let row_start = row * stride;
@@ -1508,7 +1525,7 @@ fn decode_all_channels(
                     }
 
                     // Apply V conversion (mV -> V)
-                    if ch_info.chs.units() == "V" {
+                    if ch_info.chs.is_volts() {
                         values.apply_mv_to_v();
                     }
                     values.non_finite_to_nan();
@@ -1556,7 +1573,7 @@ fn decode_all_channels(
 
                 let mut timecodes = Vec::with_capacity(n_rows);
                 let mut values =
-                    ChannelValues::new(decoder_type, ch_info.chs.units(), is_manual, n_rows);
+                    ChannelValues::new(decoder_type, ch_info.chs.is_volts(), is_manual, n_rows);
 
                 for row in 0..n_rows {
                     let row_start = row * stride;
@@ -1586,7 +1603,7 @@ fn decode_all_channels(
                     }
                 }
 
-                if ch_info.chs.units() == "V" {
+                if ch_info.chs.is_volts() {
                     values.apply_mv_to_v();
                 }
                 values.non_finite_to_nan();
@@ -1602,7 +1619,7 @@ fn decode_all_channels(
 
                     let mut timecodes = Vec::with_capacity(n_rows);
                     let mut values =
-                        ChannelValues::new(decoder_type, ch_info.chs.units(), is_manual, n_rows);
+                        ChannelValues::new(decoder_type, ch_info.chs.is_volts(), is_manual, n_rows);
 
                     for (i, &tc) in acc.timecodes.iter().enumerate() {
                         timecodes.push(tc as i64 - time_offset);
@@ -1621,7 +1638,7 @@ fn decode_all_channels(
                         }
                     }
 
-                    if ch_info.chs.units() == "V" {
+                    if ch_info.chs.is_volts() {
                         values.apply_mv_to_v();
                     }
                     values.non_finite_to_nan();
@@ -2529,39 +2546,39 @@ mod tests {
     #[test]
     fn test_channel_values_type_selection() {
         // Normal int32 decoder
-        let v = ChannelValues::new(0, "rpm", false, 10);
+        let v = ChannelValues::new(0, false, false, 10);
         assert!(matches!(v, ChannelValues::Int32(_)));
 
         // uint16 decoder
-        let v = ChannelValues::new(1, "%", false, 10);
+        let v = ChannelValues::new(1, false, false, 10);
         assert!(matches!(v, ChannelValues::UInt16(_)));
 
         // float32 decoder
-        let v = ChannelValues::new(6, "C", false, 10);
+        let v = ChannelValues::new(6, false, false, 10);
         assert!(matches!(v, ChannelValues::Float32(_)));
 
         // uint8 decoder
-        let v = ChannelValues::new(13, "", false, 10);
+        let v = ChannelValues::new(13, false, false, 10);
         assert!(matches!(v, ChannelValues::UInt8(_)));
 
         // Manual gear → UInt32
-        let v = ChannelValues::new(0, "", true, 10);
+        let v = ChannelValues::new(0, false, true, 10);
         assert!(matches!(v, ChannelValues::UInt32(_)));
 
         // V unit + int decoder → Float64
-        let v = ChannelValues::new(0, "V", false, 10);
+        let v = ChannelValues::new(0, true, false, 10);
         assert!(matches!(v, ChannelValues::Float64(_)));
 
         // V unit + float decoder → Float32
-        let v = ChannelValues::new(6, "V", false, 10);
+        let v = ChannelValues::new(6, true, false, 10);
         assert!(matches!(v, ChannelValues::Float32(_)));
 
         // float16 decoder stays Float16 ...
-        let v = ChannelValues::new(20, "C", false, 10);
+        let v = ChannelValues::new(20, false, false, 10);
         assert!(matches!(v, ChannelValues::Float16(_)));
 
         // ... except in volts: mV/1000 is not a float16
-        let v = ChannelValues::new(20, "V", false, 10);
+        let v = ChannelValues::new(20, true, false, 10);
         assert!(matches!(v, ChannelValues::Float32(_)));
     }
 
@@ -2571,7 +2588,7 @@ mod tests {
         let sample = |bits: u16| decode_sample(20, &bits.to_le_bytes()).unwrap();
 
         // Kept as the stored float16; non-finite samples become NaN.
-        let mut v = ChannelValues::new(20, "C", false, 3);
+        let mut v = ChannelValues::new(20, false, false, 3);
         v.push(sample(0x3C00)); // 1.0
         v.push(sample(0x7C00)); // +inf
         v.push_default();
@@ -2587,7 +2604,7 @@ mod tests {
 
         // A sample of another variant is converted, not reinterpreted. The
         // parser never does this to a Float16 vector; `push` is public.
-        let mut v = ChannelValues::new(20, "C", false, 5);
+        let mut v = ChannelValues::new(20, false, false, 5);
         v.push(SampleValue::Int32(3));
         v.push(SampleValue::Float32(-2.5));
         v.push(SampleValue::Float32(1.0 + 2f32.powi(-11))); // halfway: ties to even
@@ -2605,7 +2622,7 @@ mod tests {
         }
 
         // Volts: the float16 millivolts are widened, then divided in float32.
-        let mut v = ChannelValues::new(20, "V", false, 1);
+        let mut v = ChannelValues::new(20, true, false, 1);
         v.push(sample(0x7180)); // 11264 mV
         v.apply_mv_to_v();
         match &v {
