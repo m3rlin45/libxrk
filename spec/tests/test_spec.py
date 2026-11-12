@@ -8,6 +8,7 @@ Tests in this module verify that:
 
 import functools
 import math
+import shutil
 import struct
 from types import SimpleNamespace
 
@@ -31,7 +32,14 @@ from spec.xrk_format import (
     ParseResult,
     parse_xrk_bytes,
 )
-from spec.tests.conftest import ALL_XRK_FILES, ISSUE84_XRZ, _BACKENDS
+from spec.tests.conftest import (
+    AIM_OFFICIAL_XRK,
+    ALL_XRK_FILES,
+    ISSUE84_XRZ,
+    _BACKENDS,
+    _dll_available,
+    _dll_extract,
+)
 from tests import end_of_stream, xrk_patch
 from libxrk._aim_xrk_rs import process_gps
 from libxrk import GPS_CHANNEL_NAMES
@@ -1338,6 +1346,46 @@ class TestDLLCrossValidation:
         assert [lap["start_time"] for lap in laps] == [l["start_ms"] for l in issue80_dll["laps"]]
         assert [lap["end_time"] for lap in laps] == [l["end_ms"] for l in issue80_dll["laps"]]
 
+    def test_non_ascii_path_matches_ascii_extraction(self, tmp_path, aim_official_dll):
+        """A file under a non-ASCII name (RaceStudio exports carry Japanese
+        session names) extracts exactly as the same bytes do under an ASCII
+        name, and the DLL writes nothing beside it. Handed the path as it is,
+        the DLL opens nothing: Wine mangles the name on the command line and
+        `open_file` takes an ANSI path (issue #124)."""
+        if not _dll_available():
+            pytest.skip("AIM DLL or Wine not available")
+        named = tmp_path / "一般テスト.xrk"
+        shutil.copyfile(AIM_OFFICIAL_XRK, named)
+        try:
+            dll_data = _dll_extract(named)
+            assert list(tmp_path.iterdir()) == [named]
+        finally:
+            named.unlink()
+
+        assert dll_data["file"] == str(named)
+        assert dll_data["channels"], "the DLL opened nothing"
+
+        def counts(data):
+            return [(ch["name"], ch["sample_count"]) for ch in data["channels"]]
+
+        assert counts(dll_data) == counts(aim_official_dll)
+        assert dll_data["channels"] == aim_official_dll["channels"]
+        assert dll_data["laps"] and dll_data["laps"] == aim_official_dll["laps"]
+        assert dll_data["metadata"] == aim_official_dll["metadata"]
+
+    def test_unopenable_file_raises(self, tmp_path):
+        """A file the DLL cannot open is an error naming the file, not an
+        empty result or a dict without 'channels' for a later KeyError."""
+        if not _dll_available():
+            pytest.skip("AIM DLL or Wine not available")
+        empty = tmp_path / "empty.xrk"
+        empty.touch()
+        try:
+            with pytest.raises(RuntimeError, match=r"empty\.xrk: Failed to open file"):
+                _dll_extract(empty)
+        finally:
+            empty.unlink()
+
     # Unit codes where libxrk deliberately spells the unit differently from
     # the DLL. Code 30 comes back from the DLL as the single byte 0xBB ("\xbb"
     # as the harness decodes it, latin-1); libxrk writes "lambda", a recorded
@@ -1489,45 +1537,15 @@ class TestIssue68CVariants:
         that we cannot replicate without its internal clock model; in
         practice we hit ≥99.9% on this fixture.
         """
-        import json
-        import shutil
-        import subprocess
-        import tempfile
-        from pathlib import Path
-
-        import filelock
         import numpy as np
         import pytest
 
-        from spec.tests.conftest import ISSUE68_XRZ, REFERENCE_DLL_DIR, _dll_available
+        from spec.tests.conftest import ISSUE68_XRZ, _dll_available, _dll_channel_samples
 
         # Pull full DLL LR_Shock_Pot samples (only if Wine/DLL available).
         if not _dll_available():
             pytest.skip("AIM DLL or Wine not available")
-        wine = "/usr/lib/wine/wine64"
-        py = str(REFERENCE_DLL_DIR / ".setup" / "python-embed" / "python.exe")
-        wine_all_script = "Z:" + str(REFERENCE_DLL_DIR / "wine_all_samples.py")
-        env = {
-            "WINELOADER": wine,
-            "WINEDEBUG": "-all",
-            "HOME": str(Path.home()),
-            "PATH": "/usr/bin:/bin",
-        }
-        # The DLL writes scratch files next to its input (an .xrz gets a
-        # sibling .xrk), so hand it a copy in a temp directory.
-        lock = filelock.FileLock(Path(__file__).parent / ".wine_extract.lock")
-        with tempfile.TemporaryDirectory(prefix="libxrk-dll-") as tmp:
-            scratch = Path(tmp) / ISSUE68_XRZ.name
-            shutil.copy2(ISSUE68_XRZ, scratch)
-            with lock:
-                proc = subprocess.run(
-                    [wine, py, wine_all_script, "Z:" + str(scratch), "LR_Shock_Pot"],
-                    capture_output=True,
-                    text=True,
-                    timeout=600,
-                    env=env,
-                )
-        dll = json.loads(proc.stdout)
+        dll = _dll_channel_samples(ISSUE68_XRZ, "LR_Shock_Pot")
         dll_map = {int(round(t)): v for t, v in zip(dll["t_ms"], dll["v"])}
 
         lr_idx = next(

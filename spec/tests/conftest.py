@@ -244,16 +244,10 @@ def issue80_backend(backend):
 
 @pytest.fixture(scope="session")
 def issue80_dll():
-    """Extract issue80 data from the official AIM DLL.
-
-    From a scratch copy: the DLL writes files beside its input.
-    """
+    """Extract issue80 data from the official AIM DLL."""
     if not _dll_available():
         pytest.skip("AIM DLL or Wine not available")
-    with tempfile.TemporaryDirectory(prefix="libxrk-dll-") as tmp:
-        scratch = Path(tmp) / "issue80.xrk"
-        shutil.copyfile(ISSUE80_XRK, scratch)
-        return _dll_extract(scratch)
+    return _dll_extract(ISSUE80_XRK)
 
 
 @pytest.fixture(scope="session")
@@ -296,39 +290,82 @@ def _dll_available():
     return dll_path.exists() and wine_path.exists() and python_path.exists()
 
 
-def _dll_extract(xrk_path):
-    """Extract channel data from the official AIM DLL via Wine.
+def _run_dll_script(script, xrk_path, *args, timeout=600):
+    """Run a `tests/reference_dll/wine_*.py` script on a scratch copy of a file.
 
-    Returns a dict with 'channels' (list of {name, units, sample_count, ...}),
-    'laps', and 'metadata'.
-    Uses a file lock to prevent concurrent Wine processes (xdist-safe).
+    Every call of the AIM DLL from the spec tests goes through here, because the
+    DLL cannot be handed the caller's file as it is:
+
+    - Its `open_file` takes an ANSI `char*`, and Wine converts the command line
+      with the process locale, so a non-ASCII path (a RaceStudio export with a
+      Japanese session name, say) never reaches it intact (issue #124).
+    - It WRITES next to its input: handed an .xrz it decompresses a sibling
+      .xrk, and it litters `<name>.NNN.tmp` scratch files.
+
+    So the DLL gets a copy named `input<suffix>` (it tells .xrk from .xrz by
+    the suffix) in a temporary directory that is removed afterwards, never a
+    path under `tests/test_data/`. A file lock keeps Wine processes from
+    running concurrently (xdist-safe).
+
+    Args:
+        script: File name of the script in `tests/reference_dll/`.
+        xrk_path: The XRK/XRZ file to read; it is only copied.
+        *args: Further command-line arguments for the script.
+        timeout: Seconds to allow the Wine process.
+
+    Returns:
+        The JSON object the script printed.
+
+    Raises:
+        RuntimeError: The script printed nothing, or printed `{"error": ...}`.
     """
+    import filelock
+
+    xrk_path = Path(xrk_path)
     wine_path = "/usr/lib/wine/wine64"
     python_path = str(REFERENCE_DLL_DIR / ".setup" / "python-embed" / "python.exe")
-    script_path = "Z:" + str(REFERENCE_DLL_DIR / "wine_full_extract.py").replace("/", "/")
-    xrk_wine_path = "Z:" + str(xrk_path)
-
+    script_path = "Z:" + str((REFERENCE_DLL_DIR / script).resolve())
     env = {
         "WINELOADER": wine_path,
         "WINEDEBUG": "-all",
         "HOME": str(Path.home()),
         "PATH": "/usr/bin:/bin",
     }
-    import filelock
-
     lock = filelock.FileLock(Path(__file__).parent / ".wine_extract.lock")
-    with lock:
-        result = subprocess.run(
-            [wine_path, python_path, script_path, xrk_wine_path],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env=env,
-        )
+    with tempfile.TemporaryDirectory(prefix="libxrk-dll-") as tmp:
+        scratch = Path(tmp) / f"input{xrk_path.suffix}"
+        if not str(scratch).isascii():
+            raise RuntimeError(
+                f"The AIM DLL needs an ASCII path and the scratch copy {str(scratch)!r} is not: "
+                "set TMPDIR to an ASCII directory, and keep the file's suffix ASCII"
+            )
+        shutil.copyfile(xrk_path, scratch)
+        with lock:
+            result = subprocess.run(
+                [wine_path, python_path, script_path, "Z:" + str(scratch), *args],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+            )
     # Wine may return nonzero exit even on success; check stdout for JSON
     if not result.stdout.strip():
-        raise RuntimeError(f"DLL extraction failed: {result.stderr}")
-    return json.loads(result.stdout)
+        raise RuntimeError(f"{script} printed nothing for {xrk_path}: {result.stderr[-2000:]}")
+    data = json.loads(result.stdout)
+    if isinstance(data, dict) and "error" in data:
+        raise RuntimeError(f"{script} failed for {xrk_path}: {data['error']}")
+    return data
+
+
+def _dll_extract(xrk_path):
+    """Extract channel data from the official AIM DLL via Wine.
+
+    Returns a dict with 'channels' (list of {name, units, sample_count, ...}),
+    'laps', 'metadata' and 'file' (`xrk_path`, not the scratch copy the DLL read).
+    """
+    data = _run_dll_script("wine_full_extract.py", xrk_path, timeout=120)
+    data["file"] = str(xrk_path)
+    return data
 
 
 def _dll_extract_gps(xrk_path):
@@ -337,39 +374,17 @@ def _dll_extract_gps(xrk_path):
     `_dll_extract` uses the DLL's normal channel API, which does not cover GPS;
     GPS lives behind get_GPS_channel_* / get_GPS_raw_channel_*. Returns
     {"gps": [...], "gps_raw": [...]} with times in seconds.
-
-    The DLL WRITES next to its input: handed an .xrz it decompresses a sibling
-    .xrk, and it litters `<name>.NNN.tmp` scratch files. So it is always pointed
-    at a copy in a temp directory, never at `tests/test_data/`.
     """
-    wine_path = "/usr/lib/wine/wine64"
-    python_path = str(REFERENCE_DLL_DIR / ".setup" / "python-embed" / "python.exe")
-    script_path = "Z:" + str((REFERENCE_DLL_DIR / "wine_gps_extract.py").resolve())
     dll_path = "Z:" + str((REFERENCE_DLL_DIR / "MatLabXRK-2017-64-ReleaseU.dll").resolve())
+    return _run_dll_script("wine_gps_extract.py", xrk_path, dll_path)
 
-    env = {
-        "WINELOADER": wine_path,
-        "WINEDEBUG": "-all",
-        "HOME": str(Path.home()),
-        "PATH": "/usr/bin:/bin",
-    }
-    import filelock
 
-    lock = filelock.FileLock(Path(__file__).parent / ".wine_extract.lock")
-    with tempfile.TemporaryDirectory(prefix="libxrk-dll-") as tmp:
-        scratch = Path(tmp) / Path(xrk_path).name
-        shutil.copy2(xrk_path, scratch)
-        with lock:
-            result = subprocess.run(
-                [wine_path, python_path, script_path, "Z:" + str(scratch), dll_path],
-                capture_output=True,
-                text=True,
-                timeout=600,
-                env=env,
-            )
-    if not result.stdout.strip():
-        raise RuntimeError(f"DLL GPS extraction failed: {result.stderr[-2000:]}")
-    return json.loads(result.stdout)
+def _dll_channel_samples(xrk_path, channel_name):
+    """Every sample of one channel from the AIM DLL.
+
+    Returns {"t_ms": [...], "v": [...]} with times in milliseconds.
+    """
+    return _run_dll_script("wine_all_samples.py", xrk_path, channel_name)
 
 
 @pytest.fixture(scope="session")
