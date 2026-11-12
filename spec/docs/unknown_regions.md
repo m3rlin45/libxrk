@@ -181,6 +181,22 @@ regions have known purpose but unknown exact semantics:
   warning. Full 36-byte dumps of GPSR records from loggers that emit values other
   than 410, with logger model, firmware and GPS module, would help.
 
+## GRP (Group, 4 + 2n bytes)
+
+### Member list longer than the channel table (MyChron 5S)
+
+Every field of a `GRP` is understood (`index`, `count`, `count` channel
+indices), but on MyChron 5S recordings (Logger Model ID 822, three files from
+one logger, 31 May 2025; issue #80) the content is not a usable member list:
+`index` 1, `count` 3945, members 16, 17, 18, ... 3960 in sequence, in a file
+whose `CNF` defines channels 0..71. The frame is intact (7894-byte payload,
+checksum valid) and no `(G` message in the file refers to the group. Why the
+logger writes it, and whether 16 and 3945 mean anything, is unknown; a
+MyChron 5S2T (model 813) from the same reporter is said not to do it. The
+members are carried as parsed (`GRPPayload.channel_indices`) and those
+without a `CHS` take no part in decoding (`companion.md` section 3, "A GRP no
+G message uses").
+
 ## idn (Logger Identity, 56 bytes)
 
 ### [2:6] Padding (4 bytes)

@@ -84,6 +84,23 @@ def patch(buf: bytearray, frame: dict, offset: int, new_bytes: bytes) -> None:
     fix_checksums(buf, frame)
 
 
+def replace_payload(data: bytes, frame: dict, payload: bytes) -> bytes:
+    """``data`` with the frame's payload replaced by one of any length.
+
+    The length and checksum of the frame and of every enclosing frame are
+    rewritten, innermost first (a frame's footer is part of its parent's
+    payload). Frames found in ``data`` before the call are stale afterwards.
+    """
+    buf = bytearray(data)
+    delta = len(payload) - (frame["pend"] - frame["pstart"])
+    buf[frame["pstart"] : frame["pend"]] = payload
+    for f in (frame,) + tuple(reversed(frame["parents"])):
+        pend = f["pend"] + delta
+        struct.pack_into("<i", buf, f["start"] + 6, pend - f["pstart"])
+        struct.pack_into("<H", buf, pend + 5, sum(buf[f["pstart"] : pend]) & 0xFFFF)
+    return bytes(buf)
+
+
 def chs_frames(data: bytes) -> dict[str, dict]:
     """Map channel long_name -> its first CHS frame (CHS long_name is bytes [32:56])."""
     out: dict[str, dict] = {}

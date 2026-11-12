@@ -51,6 +51,10 @@ dc_slots = {'slots': True} if sys.version_info.minor >= 10 else {}
 class Group:
     index: int
     channels: List[int]
+    # The channels entries that have a CHS, in GRP order: a G payload's
+    # layout. A GRP may list indices no CHS defines (issue #80); the spec
+    # calls this ParseResult.group_members.
+    members: List[int] = field(default_factory=list)
     # used during building:
     timecodes: Optional[array] = field(default=None, repr=False)
 
@@ -370,7 +374,7 @@ cdef class _SampleAccumulators:
                 g.timecodes = np.ndarray(buffer=samples, dtype=np.int32,
                                          shape=(rows,),
                                          strides=(data_p.add_helper-3,)) - self.time_offset
-        for ch in g.channels:
+        for ch in g.members:
             self.process_channel(self.channels[ch])
 
     def process_channel(self, c):
@@ -383,18 +387,20 @@ cdef class _SampleAccumulators:
             return
 
         c.interpolate = d.interpolate
-        if c.group:
-            grp = c.group.group
+        # A GRP only says how a G message would be laid out. A logger may
+        # declare one and never send a G message, writing each member's
+        # samples as S messages instead (MyChron 5S, issue #80), so a member
+        # of a group with no G rows is read like any other channel.
+        grp = c.group.group if c.group else None
+        if (grp is not None and grp.index < self.gc_data[0].size()
+                and self.gc_data[0][grp.index].data.size()):
             c.timecodes = grp.timecodes
-            if grp.index < self.gc_data[0].size() and self.gc_data[0][grp.index].data.size():
-                data_p = &self.gc_data[0][grp.index]
-                # TREAD LIGHTLY - borrowed view into data_p.data, copied out below
-                view = np.asarray(<cython.uchar[:data_p.data.size()]> &data_p.data[0])
-                c.sampledata = np.ndarray(buffer=view[c.group.offset:], dtype=d.stype,
-                                          shape=grp.timecodes.shape,
-                                          strides=(data_p.add_helper-3,)).copy()
-            else:
-                c.sampledata = np.empty(0, dtype=d.stype)
+            data_p = &self.gc_data[0][grp.index]
+            # TREAD LIGHTLY - borrowed view into data_p.data, copied out below
+            view = np.asarray(<cython.uchar[:data_p.data.size()]> &data_p.data[0])
+            c.sampledata = np.ndarray(buffer=view[c.group.offset:], dtype=d.stype,
+                                      shape=grp.timecodes.shape,
+                                      strides=(data_p.add_helper-3,)).copy()
         else:
             # check for S messages
             view_offset = 6
@@ -708,18 +714,27 @@ def _decode_sequence(s, progress=None):
                             for m in data.get(_tokdec('GRP'), []):
                                 groups += [None] * (m.content.index - len(groups) + 1)
                                 groups[m.content.index] = m.content
+                                # Members without a CHS contribute no bytes
+                                # to a G payload, as in the spec's
+                                # _register_grp and the Rust backend. A
+                                # MyChron 5S lists members 16..3960 with 72
+                                # channels defined (issue #80); indexing
+                                # channels[] with those raised here and
+                                # discarded the whole CNF.
+                                m.content.members = [
+                                    ch for ch in m.content.channels
+                                    if ch < len(channels) and channels[ch]]
                                 idx = 6
-                                for ch in m.content.channels:
+                                for ch in m.content.members:
                                     channels[ch].group = GroupRef(m.content, idx)
                                     idx += channels[ch].size
                                 if show_all:
                                     print('GROUP', m.content.index,
                                           [(ch, channels[ch].long_name, channels[ch].size)
-                                           for ch in m.content.channels])
+                                           for ch in m.content.members])
 
                                 _resize_vaccum(acc.gc_data[0], m.content.index)
-                                acc.gc_data[0][m.content.index].add_helper = 9 + sum(
-                                    channels[ch].size for ch in m.content.channels)
+                                acc.gc_data[0][m.content.index].add_helper = 3 + idx
                         elif tok == _tokdec('GRP'):
                             data = memoryview(data).cast('H')
                             if data[1] != len(data[2:]):

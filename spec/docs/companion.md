@@ -165,6 +165,25 @@ codec))`; `channel_values()` decodes every stream with its vectorised form,
 in the channel's value type, and `test_spec.py` compares them against both
 backends sample by sample: same type, identical values.
 
+**A GRP no G message uses:** a `GRP` is the layout of a `(G` payload, nothing
+more. It does not say that G messages exist, and its member list is not a list
+of channels. Two things follow, both seen on MyChron 5S recordings (Logger
+Model ID 822; issue #80, fixture `tests/test_data/issue80`):
+
+- A member with no `CHS` contributes no bytes to the payload and is otherwise
+  ignored (`_register_grp`; `ParseResult.group_members` is the list that
+  counts). That file's one `GRP` lists 3945 members, channels 16..3960, and
+  its `CNF` defines channels 0..71.
+- A member's samples are read from whichever messages carry them. The same
+  file has no `(G` message at all: all 17 listed channels that have samples
+  (`RPM`, `Water Temp`, `Internal Battery`, ...) send them as `(S` messages,
+  and the AIM DLL returns them. In the spec this needs no rule, since streams
+  are per channel whatever the family. A backend picks one source per
+  channel: the group's G rows when it has any, else the channel's own
+  `(S`, `(c` or `(M` rows. A file in which a channel has both G rows and rows
+  of its own has not been seen; the spec would merge the two in file order,
+  the backends would keep the G rows only.
+
 **Special fixups:**
 - Channels named `Calculated_Gear` or `PreCalcGear` use decoder `Q` (uint64)
   with bit extraction: `(value >> 16) & 7` (returns 0 if bit 19 is set).

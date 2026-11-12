@@ -27,6 +27,9 @@ ISSUE68_XRZ = TEST_DATA_DIR / "issue68" / "CMD_KK-SII_Tsukuba_Car_Generic testin
 # GPS timecode corruption fixture: one replayed 41-record block, which steps the
 # logger clock backwards by 1600ms and duplicates 41 iTOW epochs. See issue #84.
 ISSUE84_XRZ = TEST_DATA_DIR / "issue84" / "CMD_KK-SII_Tsukuba_Car_Qualifying testing_a_0159.xrz"
+# MyChron 5S: one GRP listing 3945 members (72 channels are defined) that no
+# G message ever uses; every sample is an S message. See issue #80.
+ISSUE80_XRK = TEST_DATA_DIR / "issue80" / "libxrk_issue80_5S_b.xrk"
 
 ALL_XRK_FILES = [
     SFJ_XRK,
@@ -35,6 +38,7 @@ ALL_XRK_FILES = [
     FILE_86_XRK,
     AIM_OFFICIAL_XRK,
     ISSUE49_XRK,
+    ISSUE80_XRK,
 ]
 ALL_XRZ_FILES = [SFJ_XRZ, SFJ_0101_XRZ, FILE_86_XRZ, ISSUE68_XRZ]
 ALL_FILES = ALL_XRK_FILES + ALL_XRZ_FILES
@@ -60,6 +64,7 @@ ALL_PARSED_FIXTURES = [
     "issue49_parsed",
     "issue68_parsed",
     "issue84_parsed",
+    "issue80_parsed",
 ]
 
 
@@ -74,6 +79,7 @@ def any_parsed(
     issue49_parsed,
     issue68_parsed,
     issue84_parsed,
+    issue80_parsed,
 ):
     """Each distinct fixture file's parse, for tests that run over all files."""
     return {
@@ -85,6 +91,7 @@ def any_parsed(
         "issue49_parsed": issue49_parsed,
         "issue68_parsed": issue68_parsed,
         "issue84_parsed": issue84_parsed,
+        "issue80_parsed": issue80_parsed,
     }[request.param]
 
 
@@ -221,6 +228,32 @@ def issue84_backend(backend):
 def issue84_rust():
     """Load the issue84 file via Rust parser once per session."""
     return rust_aim_xrk(str(ISSUE84_XRZ))
+
+
+@pytest.fixture(scope="session")
+def issue80_parsed():
+    """Parse the issue80 XRK file once per session (spec parser)."""
+    return _spec_parse(ISSUE80_XRK)
+
+
+@pytest.fixture(scope="session")
+def issue80_backend(backend):
+    """Load ISSUE80_XRK via each compiled backend once per session."""
+    return _load_backend(backend, ISSUE80_XRK)
+
+
+@pytest.fixture(scope="session")
+def issue80_dll():
+    """Extract issue80 data from the official AIM DLL.
+
+    From a scratch copy: the DLL writes files beside its input.
+    """
+    if not _dll_available():
+        pytest.skip("AIM DLL or Wine not available")
+    with tempfile.TemporaryDirectory(prefix="libxrk-dll-") as tmp:
+        scratch = Path(tmp) / "issue80.xrk"
+        shutil.copyfile(ISSUE80_XRK, scratch)
+        return _dll_extract(scratch)
 
 
 @pytest.fixture(scope="session")

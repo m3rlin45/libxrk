@@ -1457,7 +1457,17 @@ fn decode_all_channels(
 
         let is_manual = crate::decoders::is_manual_decoder(&ch_name);
 
-        if let Some(grp_idx) = ch_info.group_index {
+        // A GRP only says how a G message would be laid out. A logger may
+        // declare one and never send a G message, writing each member's
+        // samples as S messages instead (MyChron 5S, issue #80), so a member
+        // of a group with no G rows is read like any other channel.
+        let group_with_rows = ch_info.group_index.filter(|&grp_idx| {
+            gc_data[0]
+                .get(grp_idx as usize)
+                .is_some_and(|acc| !acc.data.is_empty())
+        });
+
+        if let Some(grp_idx) = group_with_rows {
             // Channel is part of a group — extract from G message data
             if let Some(grp_info) = groups.get(&grp_idx) {
                 let g_idx = grp_idx as usize;
@@ -2317,6 +2327,33 @@ mod tests {
         }
         match &result.channel_data[&1].values {
             ChannelValues::Int32(v) => assert_eq!(v[0], 50),
+            _ => panic!("expected Int32 for TPS"),
+        }
+    }
+
+    #[test]
+    fn test_group_without_g_messages_reads_members_from_s_messages() {
+        // Issue #80 (MyChron 5S): the one GRP lists channels no CHS defines
+        // and no G message is ever sent; every member's samples arrive as S
+        // messages. The members must not be dropped.
+        let chs0 = make_chs_bytes(0, "RPM", "Engine RPM", 0, 4, 15, 0);
+        let chs1 = make_chs_bytes(1, "TPS", "Throttle", 0, 4, 1, 0);
+        let f0 = make_header_frame("CHS", 0, &chs0);
+        let f1 = make_header_frame("CHS", 0, &chs1);
+        let f_grp = make_header_frame("GRP", 0, &make_grp_payload(1, &[0, 1, 2, 3, 4000]));
+        let s0 = make_s_message(1000, 0, &5000i32.to_le_bytes());
+        let s1 = make_s_message(1000, 1, &50i32.to_le_bytes());
+        let s2 = make_s_message(1020, 0, &5100i32.to_le_bytes());
+
+        let stream = build_xrk_stream(&[f0, f1, f_grp], &[s0, s1, s2]);
+        let result = parse_xrk(&stream, None).unwrap();
+        assert_eq!(result.channels[&0].group_index, Some(1));
+        match &result.channel_data[&0].values {
+            ChannelValues::Int32(v) => assert_eq!(v, &[5000, 5100]),
+            _ => panic!("expected Int32 for RPM"),
+        }
+        match &result.channel_data[&1].values {
+            ChannelValues::Int32(v) => assert_eq!(v, &[50]),
             _ => panic!("expected Int32 for TPS"),
         }
     }

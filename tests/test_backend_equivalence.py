@@ -39,6 +39,7 @@ FIXTURES = [
     TEST_DATA_DIR / "issue49/badGPSdata.xrk",
     TEST_DATA_DIR / "issue68/CMD_KK-SII_Tsukuba_Car_Generic testing_a_0101.xrz",
     TEST_DATA_DIR / "issue84/CMD_KK-SII_Tsukuba_Car_Qualifying testing_a_0159.xrz",
+    TEST_DATA_DIR / "issue80/libxrk_issue80_5S_b.xrk",
 ]
 
 
