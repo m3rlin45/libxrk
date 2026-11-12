@@ -29,10 +29,11 @@ test:
 spec-test:
     uv run pytest spec/tests/ -v
 
-# Rust unit and integration tests (core crate and the C ABI crate;
-# libxrk-python is an extension module and only links inside Python)
+# Rust unit and integration tests (the parser crate, the shared GPS crate and
+# the C ABI crate; libxrk-python is an extension module and only links inside
+# Python)
 rust-test:
-    cargo test -p libxrk -p libxrk-ffi
+    cargo test -p libxrk -p libxrk-gps -p libxrk-ffi
 
 # Run all checks (lint, clippy, typecheck, test, spec-test, rust-test)
 check: lint clippy typecheck test spec-test rust-test

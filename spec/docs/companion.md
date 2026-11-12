@@ -32,6 +32,11 @@ milliseconds since session start.
 If no LAP messages exist, `time_offset` is the minimum of the first timecodes
 across all channels.
 
+Precisely, both backends take the **minimum** of all three candidates: the first
+LAP message's start, the first timecode of every data stream (S/G/M/c, per
+channel or group), and the first GPS record's timecode. The spec implements
+this as `ParseResult.time_offset()`.
+
 Reference: `_aim_xrk_cy.pyx:530-533`, `_aim_xrk_cy.pyx:662-690`
 
 ## 3. Decoder Dispatch Table
@@ -190,13 +195,25 @@ GPS messages contain a 4-byte AIM timecode followed by a 52-byte u-blox NAV-SOL
 (Navigation Solution Information) payload. All GPS-derived channels are computed
 from these raw ECEF coordinates and velocities.
 
+**Where this lives.** Sections 5, 6 and the GPS parts of 7 are implemented
+once, in the Rust crate `crates/libxrk-gps` (`processing.rs`, `timing.rs`,
+`laps.rs`, `utils.rs`; `process()` runs the whole pipeline). The parsers only
+*collect* the material -- the raw GPS and GNFI records, the time offset, the
+lap table from LAP messages, the TRK start/finish -- and hand it over: the
+Rust backend links the crate (`libxrk::process_gps`), and the Cython backend
+and the spec call the same code through the Rust extension module
+(`libxrk._aim_xrk_rs.process_gps`; `ParseResult.gps_input()` gathers the
+spec's material). The pipeline is tested on
+its own in `tests/test_gps_processing.py`; `spec/tests/test_spec.py` checks
+that the spec's material and each backend's give identical results.
+
 ### ECEF to LLA Conversion
 
 The ECEF (Earth-Centered, Earth-Fixed) coordinates from NAV-SOL are converted
 to latitude/longitude/altitude using the **Vermeille 2003** algorithm, which
 provides high accuracy without iteration.
 
-Reference: `gps.py:230-255` (`ecef2lla_vermeille2003`, aliased as `ecef2lla` at line 383)
+Reference: `crates/libxrk-gps/src/utils.rs` (`ecef2lla_vermeille2003`)
 
 ### Computed GPS Channels
 
@@ -222,7 +239,7 @@ as a channel.
 - **GPS_Yaw_Rate** = `d(heading)/dt` [deg/s] (with ±180° wrap handling)
 - **GPS_LateralAcc** = `speed × yaw_rate × π/180 / 9.81` [g]
 
-Reference: `_aim_xrk_cy.pyx:910-1036`, `gps.py`
+Reference: `crates/libxrk-gps/src/processing.rs` (`decode_gps`)
 
 ## 6. GPS Timing Bug
 
@@ -265,9 +282,8 @@ Only applied when the raw stream is non-monotonic (the corruption signature).
 Clean streams are left untouched, which preserves legitimate forward gaps larger
 than the 32768 ms half-range.
 
-Reference implementation: `spec/xrk_format.py` → `reconstruct_gps_timecodes()`.
-Backends: `_aim_xrk_cy.pyx` `_decode_gps()`, `crates/libxrk/src/gps/processing.rs`
-`fix_timecodes()`.
+Reference: `crates/libxrk-gps/src/processing.rs` (`fix_timecodes`), exposed
+as `libxrk._aim_xrk_rs.reconstruct_gps_timecodes`; applied inside `decode_gps`.
 
 ### GNFI-Based Detection
 
@@ -276,7 +292,11 @@ truth. GNFI runs on the logger's internal clock, not GPS, so it's immune to
 the GPS timing bug. Large discrepancies between GNFI and GPS timecodes indicate
 the bug is present.
 
-Reference: `gps.py:513+` (`fix_gps_timing_gaps`)
+Reference: `crates/libxrk-gps/src/timing.rs` (`detect_gap_corrections`: GNFI,
+then a direct 60-70 s gap, then the GPS stream outliving the non-GPS channels
+by 60-70 s; `apply_corrections`). Laps detected from GPS (section 7) are
+computed on the repaired timecodes, so they never need a correction of their
+own; LAP-message laps run on the logger clock and are never shifted.
 
 ## 7. Lap Detection
 
@@ -288,6 +308,17 @@ When LAP messages exist, they define lap boundaries directly:
 - Compute `start_time = end_time - duration`
 - Normalize to 0-based indexing
 
+This much is the parsers' job (`_get_laps` in `_aim_xrk_cy.pyx`,
+`parse_lap_messages` in `crates/libxrk/src/parser.rs`, `ParseResult.lap_table()`
+in the spec), including the "out" lap. The table is then finished by the
+shared GPS pipeline (`libxrk-gps` `laps.rs`, `finish_laps`): the last lap
+becomes **"in"** when the GPS position at its end is more than 30 m from the
+TRK start/finish (an out-lap is never reclassified), and a file whose table is
+empty gets the GPS fallback below.
+
+`test_spec.py` runs the shared GPS pipeline over the spec's `lap_table()` and
+compares the result against both backends.
+
 ### Fallback: GPS Cross-Track
 
 When no LAP messages exist, laps are detected from GPS by computing the
@@ -298,7 +329,14 @@ cross-track distance to the start/finish line:
 3. Find positions closest to the S/F line (minimum cross-track distance)
 4. Use these crossing points as lap boundaries
 
-Reference: `_aim_xrk_cy.pyx:1064-1125` (`_get_laps`), `gps.py:309-380` (`find_laps`)
+The crossings are found in two passes: candidate crossings within 30 m of the
+line while moving at least 4 m/s, whose velocity-weighted normals are averaged
+into one line normal for a second pass with consistent crossing times. Each
+crossing starts a lap; the last lap ends at the final GPS sample and is typed
+"in". On the SFJ fixture every detected crossing lands within 1 ms of the
+beacon time the LAP messages recorded.
+
+Reference: `crates/libxrk-gps/src/utils.rs` (`find_laps`), `crates/libxrk-gps/src/laps.rs` (`finish_laps`)
 
 ## 8. Channel Merging
 
