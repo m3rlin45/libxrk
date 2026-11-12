@@ -402,6 +402,7 @@ class TestLAPCrossValidation:
         "issue49",
         "issue68",
         "issue84",
+        "issue80",
     ]
 
     @staticmethod
@@ -847,6 +848,28 @@ class TestSampleCodecs:
         assert list(msg.samples) == [b"xx", b"YYYY"]
         assert msg.data == b"xxYYYY"
 
+    def test_grp_without_g_messages_leaves_members_in_their_s_streams(self, issue80_parsed):
+        """A GRP describes a G payload; it does not say G messages exist.
+
+        The issue80 file (MyChron 5S) declares one GRP of 3945 members, 56 of
+        which have a CHS, and contains no G message. The members' samples are
+        S messages and are in their streams like any other channel's
+        (companion.md section 3, "A GRP no G message uses").
+        """
+        parsed = issue80_parsed
+        assert list(parsed.groups) == [1]
+        assert list(parsed.groups[1].channel_indices) == list(range(16, 3961))
+        assert sorted(parsed.channels) == list(range(72))
+        assert parsed.group_members[1] == list(range(16, 72))
+        assert parsed.group_sizes[1] == sum(parsed.channel_sizes[ch] for ch in range(16, 72))
+        kinds = {m.msg_type for m in parsed.messages if m.msg_type != "header"}
+        assert kinds == {"S"}
+
+        sampled_members = [ch for ch in parsed.group_members[1] if parsed.streams.get(ch)]
+        names = [parsed.channels[ch].name for ch in sampled_members]
+        assert len(sampled_members) == 17
+        assert {"Water Temp", "Internal Battery", "RPM"} <= set(names)
+
     def test_streams_match_the_backend_row_counts(self, parsed_and_backend):
         """The accumulation pass yields one sample per backend row, channel by channel."""
         parsed, log = parsed_and_backend
@@ -986,6 +1009,16 @@ class TestExhaustiveChannelValues:
         assert checked > 0, "No channels were cross-validated"
         assert not errors, f"Value mismatches:\n" + "\n".join(errors)
 
+    def test_issue80_every_value(self, issue80_parsed, issue80_backend):
+        """Every sample of every issue80 channel must match the backend.
+
+        All 25 of them: 17 are members of the file's GRP and arrive as S
+        messages, which both backends used to drop (issue #80).
+        """
+        checked, errors = self._compare_all_values(issue80_parsed, issue80_backend)
+        assert checked == 25, f"Only {checked} channels compared"
+        assert not errors, f"Value mismatches:\n" + "\n".join(errors)
+
 
 # ---------------------------------------------------------------------------
 # Value types: the type of every channel's value column
@@ -1009,6 +1042,7 @@ class TestChannelValueTypes:
         "issue49",
         "issue68",
         "issue84",
+        "issue80",
     ]
 
     @pytest.mark.parametrize(
@@ -1277,6 +1311,31 @@ class TestDLLCrossValidation:
             assert len(aim_official_backend.channels[name]) == dll_by_name[name]
         assert "Temperature 1" not in aim_official_backend.channels
         assert "Temperature 2" not in aim_official_backend.channels
+
+    def test_issue80_grp_members_match_dll(self, issue80_dll, issue80_parsed):
+        """The DLL exposes three channels of the issue80 file, all members of
+        the GRP that no G message uses: the spec's S streams for them have
+        the DLL's sample counts and values, and its lap table. (The sample
+        times are checked on both backends in tests/test_issue80_xrk.py.)"""
+        import numpy as np
+
+        parsed = issue80_parsed
+        dll_channels = self._dll_channels_by_name(issue80_dll)
+        assert sorted(dll_channels) == ["Internal Battery", "RPM", "Water Temp"]
+        index_by_name = {ch.name: idx for idx, ch in parsed.channels.items()}
+        values = parsed.channel_values()
+        for name, dll in dll_channels.items():
+            idx = index_by_name[name]
+            assert any(idx in members for members in parsed.group_members.values()), name
+            assert len(values[idx]) == dll["sample_count"], name
+            for end, pick in (("first_samples", slice(None, 5)), ("last_samples", slice(-5, None))):
+                np.testing.assert_allclose(
+                    values[idx][pick].astype(np.float64), dll[end]["values"], rtol=1e-6
+                )
+
+        _, laps = _run_gps_pipeline(parsed)
+        assert [lap["start_time"] for lap in laps] == [l["start_ms"] for l in issue80_dll["laps"]]
+        assert [lap["end_time"] for lap in laps] == [l["end_ms"] for l in issue80_dll["laps"]]
 
     # Unit codes where libxrk deliberately spells the unit differently from
     # the DLL. Code 30 comes back from the DLL as the single byte 0xBB, a

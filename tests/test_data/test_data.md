@@ -6,6 +6,45 @@ Contains AIM run sessions from multiple cars and tracks plus targeted fixtures f
 
 `CMD_KK-SII_Tsukuba_Car_Generic testing_a_0101.xrz` — KK-SII session at Tsukuba, recorded 2026-04-17. Selected because its logger emits the new `(c)` expansion-channel message variants (V2 long, V3 short) that weren't in the older corpus; referenced by tests verifying issue #68 shock-pot and accelerometer parsing.
 
+## issue80 — a GRP no G message uses (MyChron 5S)
+
+**File:** `issue80/libxrk_issue80_5S_b.xrk` (3.0 MB) — a MyChron 5S kart
+session, recorded 2025-05-31, Logger Model ID 822, 39 channels (25 from CHS,
+14 GPS), 9 laps. Contributed by the reporter of issue #80, who overwrote the
+driver, vehicle, series, device name and setup note with same-length
+placeholders and recomputed the checksums. It is the second of the three
+files attached to the issue (the one the reporter also opened in RaceStudio 3);
+the other two have the same structure and are not shipped.
+
+**Why this file:** its first CNF defines channels 0..71 and one GRP (index 1)
+listing 3945 members, channels 16..3960. No `(G` message exists in the file:
+every sample is an `(S` message, including those of the 17 listed channels
+that have any. Cython 0.12.0 segfaulted on it and the Rust backend returned
+it without `RPM`, `Water Temp`, `Internal Battery` and 14 more channels. It
+is also the only fixture that re-emits a CNF about twice a second (650 CNF
+frames; 648 of them hold ten identical copies of the `Water Temp` CHS).
+
+**Ground truth:** the AIM DLL exposes three channels and the same 9 laps
+(0, 17262, 60385, 102461, 144141, 185752, 227322, 269017, 311577 ms; the last
+ends at 328576):
+
+| Channel | Units | Rows | First | Last | First / last time (ms) |
+|---------|-------|------|-------|------|------------------------|
+| Water Temp | C | 6571 | 56.875 | 58.531 | 40 / 328540 |
+| Internal Battery | V | 328 | 3.968 | 3.978 | 805 / 327805 |
+| RPM | rpm | 6571 | 1490 | 0 | 63 / 328563 |
+
+RaceStudio 3 lists those three plus ten GPS channels. libxrk returns 22 more
+CHS channels the DLL hides (`Temp TC 1`, `Jackshaft`, `WheelSpeed`,
+`Luminosity`, ...).
+
+**Not understood:** unit code 37 on `MagnetomX/Y/Z` (no samples in this file,
+so the channels are not exposed; "Unknown units[37]" is printed).
+
+Tests: `tests/test_issue80_xrk.py`, `spec/tests/test_spec.py` (`issue80`).
+Format notes: `spec/docs/companion.md` section 3 ("A GRP no G message uses"),
+`spec/docs/unknown_regions.md` ("GRP").
+
 ## ek9
 
 `CMD_EK9_Motegi_Generic testing_a_0351.xrz` (1.1 MB) — Honda EK9 Civic at Motegi,
