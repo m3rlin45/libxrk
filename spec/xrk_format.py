@@ -45,6 +45,7 @@ from construct import (
     Int16ul,
     Int32sl,
     Int32ul,
+    Int64ul,
     LazyBound,
     Padded,
     PaddedString,
@@ -189,6 +190,23 @@ Gear = ExprAdapter(
     lambda g, _: {v: k for k, v in _GEARS.items()}.get(g, g),
 )
 
+# Calculated gear: a 64-bit word whose bits 16-18 are the gear; a word with
+# bit 19 set reads as gear 0, and every other bit is ignored. The rule is the
+# backends'; the AIM DLL does not expose such a channel (companion.md section 3).
+CalculatedGear = ExprAdapter(
+    Int64ul,
+    lambda x, _: np.where(x & 0x80000, 0, (x >> 16) & 7)[()],
+    lambda g, _: int(g) << 16,
+)
+
+# Sample codecs selected by CHS long name. They take precedence over the
+# decoder_type table: the official AIM sample defines Calculated_Gear with
+# decoder_type 15 (the ASCII gear) and data_size 8.
+NAMED_SAMPLE_CODECS = {
+    "Calculated_Gear": CalculatedGear,
+    "PreCalcGear": CalculatedGear,
+}
+
 # Sample codecs: decoder_type -> Construct that parses ONE raw sample into its
 # displayed value, the decoder definition both backends conform to
 # (test_spec.py compares every sample of every fixture).
@@ -219,7 +237,7 @@ SAMPLE_CODECS = {
 
 def channel_sample_codec(chs):
     """The Construct that decodes one raw sample of a CHS channel, or None."""
-    codec = SAMPLE_CODECS.get(chs.decoder_type)
+    codec = NAMED_SAMPLE_CODECS.get(chs.name, SAMPLE_CODECS.get(chs.decoder_type))
     if codec is not None and chs.units == "V":
         codec = Volts(codec)
     return codec
@@ -307,10 +325,12 @@ def decode_channel_values(stream, chs, width):
 
     The layers run in float64 and the result is stored as
     ``channel_value_dtype(chs)``. That is bit-identical to computing in the
-    value type: float64 holds every sample of every codec exactly, and the
-    one inexact step, the mV -> V division of a float32 (or of a float16
-    widened to float32, as both backends do it), rounds to the same float32
-    from its float64 quotient (53 bits >= 2 * 24 + 2).
+    value type: float64 holds every sample of every codec up to 32 bits
+    exactly, and the one inexact step, the mV -> V division of a float32 (or
+    of a float16 widened to float32, as both backends do it), rounds to the
+    same float32 from its float64 quotient (53 bits >= 2 * 24 + 2). A 64-bit
+    integer field does not fit in a float64, so it stays an integer for its
+    layers, which are bit operations (CalculatedGear).
     """
     if channel_stream(chs, width) is None or len(stream) % width:
         return None
@@ -319,10 +339,12 @@ def decode_channel_values(stream, chs, width):
         layers.insert(0, field)
         field = field.subcon
     slots = np.frombuffer(bytes(stream), dtype=np.uint8).reshape(-1, width)[:, : field.sizeof()]
-    values = slots.copy().view(sample_dtype(field)).reshape(-1).astype(np.float64)
+    values = slots.copy().view(sample_dtype(field)).reshape(-1)
+    if values.dtype.kind == "f" or values.itemsize < 8:  # float64 holds every value
+        values = values.astype(np.float64)
     for layer in layers:
         values = layer._decode(values, None, None)
-    return values.astype(channel_value_dtype(chs))
+    return np.asarray(values).astype(channel_value_dtype(chs))
 
 
 # Logger model ID to name mapping (from _aim_xrk_cy.pyx:141-144)
