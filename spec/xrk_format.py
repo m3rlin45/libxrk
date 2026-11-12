@@ -156,6 +156,9 @@ UNIT_MAP = {
     # RaceStudio3 displays it as "%"; Backlight and WiFi share the code.
     28: ("%", 2),
     29: ("rpm/s", 0),  # DLL
+    # RaceStudio3 displays the 86 fixture's Lambda channel in "lambda"; the
+    # AIM DLL returns the single byte 0xBB instead (issue #116, companion.md
+    # section 9).
     30: ("lambda", 2),
     31: ("gear", 0),
     # DLL. Volts as stored: unlike the "V" of code 21 with the calibrated flag
