@@ -29,9 +29,10 @@ from spec.xrk_format import (
     GMessageCompiled,
     MMessageCompiled,
     ParseResult,
+    parse_xrk_bytes,
 )
 from spec.tests.conftest import ALL_XRK_FILES, ISSUE84_XRZ, SFJ_XRK, _BACKENDS
-from tests import xrk_patch
+from tests import end_of_stream, xrk_patch
 from libxrk._aim_xrk_rs import process_gps
 from libxrk import GPS_CHANNEL_NAMES
 
@@ -1800,3 +1801,48 @@ class TestIssue68SpecVsBackends:
         """Every channel the Rust backend exposes on issue68 must match
         the spec's canonical decode byte-for-byte."""
         self._compare_all_channels(issue68_parsed, issue68_rust)
+
+
+class TestStreamEndingOnADataMessage:
+    """A 10-byte data message that is the last thing in the stream (issue #163).
+
+    The spec reads a message wherever its bytes are, the last ten of the
+    input included. Recordings end with header frames, so no fixture shows
+    it; the streams are built in memory (``tests/end_of_stream.py``). The
+    Cython backend used to drop that message.
+    """
+
+    @staticmethod
+    def _spec_samples(parsed, ch_idx):
+        """{logger timecode: value} of one channel, by the spec's rules."""
+        if ch_idx in parsed.expansion_channel_map.values():
+            return _decode_c_variant_samples(parsed, ch_idx)
+        timecodes = [
+            m.parsed["timecode"]
+            for m in parsed.data_messages()
+            if m.parsed["channel_index"] == ch_idx
+        ]
+        values = parsed.channel_values()[ch_idx].tolist()
+        return dict(zip(timecodes, values, strict=True))
+
+    @pytest.mark.parametrize("name", list(end_of_stream.STREAMS))
+    def test_last_message_is_parsed_and_the_backend_agrees(self, name, backend):
+        stream = end_of_stream.STREAMS[name]()
+        parsed = parse_xrk_bytes(stream.data)
+        assert parsed.leftover_bytes == 0
+        assert parsed.messages[-1].msg_type in ("S", "c"), "the stream must end on a data message"
+        ch_idx = end_of_stream.CHANNEL_INDEX
+        assert parsed.channel_display_names()[ch_idx] == stream.channel
+
+        spec = self._spec_samples(parsed, ch_idx)
+        assert spec == dict(zip(stream.timecodes, stream.values, strict=True))
+
+        table = _BACKENDS[backend](stream.data).channels[stream.channel]
+        # Aligned on the first sample, like TestIssue68SpecVsBackends, not
+        # with time_offset(): where a V2 (c opens the stream, the spec's
+        # candidate is its header timecode and the backends' its earliest
+        # sample, 4 ms before. That is not the subject here.
+        backend_tc = table.column("timecodes").to_numpy()
+        backend_tc = backend_tc - backend_tc[0] + min(spec)
+        backend_values = table.column(stream.channel).to_numpy().tolist()
+        assert dict(zip(backend_tc.tolist(), backend_values, strict=True)) == spec
