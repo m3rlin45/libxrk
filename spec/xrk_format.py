@@ -319,7 +319,7 @@ def channel_stream(chs, width):
 def decode_channel_values(stream, chs, width):
     """``channel_stream(chs, width).parse(stream)`` as a numpy array of the channel's value type.
 
-    Vectorised for the ~40M samples of the 86 fixture: the codec's base field
+    Vectorised for the ~7.1M samples of the 86 fixture: the codec's base field
     becomes a numpy dtype, then each ExprAdapter layer's own decoder runs on
     the whole array, innermost first. Returns None where channel_stream would.
 
