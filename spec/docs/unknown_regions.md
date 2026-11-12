@@ -124,6 +124,18 @@ regions have known purpose but unknown exact semantics:
 - **Hypothesis**: May contain additional calibration parameters
 - **Status**: Not decoded
 
+### [20:24] `type` (uint32)
+- **Observed**: 1 (two-point) and 20 (IMU bias) in every local file: 334 and
+  5868 records over an 812-file corpus
+- **Reported**: 33, twice in a MyChron 5S file that also has two unconfigured
+  inputs named `NONE_0` and `NONE_3` (issue #81). No file with it is
+  available; issue #176 asks for one.
+- **Status**: Types other than 1 and 20 are not decoded. Their `type` and the
+  two floats at [24:32] are reported in `metadata["Calibrations"]` as read, and
+  both backends print `unexpected CAL type`. Calibration records never change
+  sample values: patching a fixture's type-1 records to 33 leaves every
+  channel identical in both backends and in the AIM DLL.
+
 ## GNFI (32 bytes)
 
 ### [4:32] Unknown (28 bytes)

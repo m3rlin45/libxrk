@@ -19,17 +19,25 @@ impl RacmPayload {
         if data.len() > 1 {
             RacmPayload::Mode(nullterm_string(data))
         } else if !data.is_empty() {
-            let flag = data[0];
-            if flag != 0 {
+            RacmPayload::Flag(data[0])
+        } else {
+            RacmPayload::Flag(0)
+        }
+    }
+
+    /// Report a flag this parser has not seen before.
+    ///
+    /// Kept out of `parse`, which runs on every scan of the file (prescan,
+    /// main scan, metadata), so that a record is reported once.
+    pub fn warn_if_unexpected(&self) {
+        if let RacmPayload::Flag(flag) = self {
+            if *flag != 0 {
                 eprintln!(
                     "libxrk: unexpected RACM flag {} (expected 0). \
                      Please report at https://github.com/m3rlin45/libxrk/issues",
                     flag
                 );
             }
-            RacmPayload::Flag(flag)
-        } else {
-            RacmPayload::Flag(0)
         }
     }
 }

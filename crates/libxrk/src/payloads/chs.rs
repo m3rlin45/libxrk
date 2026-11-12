@@ -62,6 +62,11 @@ impl ChsPayload {
         tables::resolve_unit(self.unit_type_byte)
     }
 
+    /// True if the samples are millivolts to be divided by 1000 (shown as "V").
+    pub fn is_volts(&self) -> bool {
+        tables::is_volts(self.unit_type_byte)
+    }
+
     /// Get the decimal points for display.
     pub fn dec_pts(&self) -> u8 {
         tables::unit_map(self.unit_type_byte).1

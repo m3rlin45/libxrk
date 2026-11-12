@@ -356,10 +356,11 @@ pub fn extract_metadata(result: &ParseResult) -> Metadata {
     let mut race_mode = None;
     if let Some(msg_list) = msgs.get(&tokens::racm()) {
         for msg in msg_list {
-            if let Payload::Racm(crate::payloads::racm::RacmPayload::Mode(mode)) =
-                messages::dispatch_payload(msg)
-            {
-                race_mode = Some(mode);
+            if let Payload::Racm(racm) = messages::dispatch_payload(msg) {
+                racm.warn_if_unexpected();
+                if let crate::payloads::racm::RacmPayload::Mode(mode) = racm {
+                    race_mode = Some(mode);
+                }
             }
         }
     }
@@ -430,6 +431,7 @@ pub fn extract_metadata(result: &ParseResult) -> Metadata {
 
         for msg in msg_list {
             if let Payload::Cal(cal) = messages::dispatch_payload(msg) {
+                cal.warn_if_unexpected();
                 let channel =
                     cal_key(cal.raw_1, cal.raw_2).and_then(|key| cal_to_channel.get(&key).cloned());
                 calibrations.push(Calibration {
