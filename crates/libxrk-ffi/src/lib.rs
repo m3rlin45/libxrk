@@ -79,7 +79,7 @@ pub fn open_session(data: &[u8]) -> Result<XrkSession, String> {
         channels.push((ch.name, batch));
     }
     if let Some(gps) = file.gps.take() {
-        channels.extend(build_gps_channel_batches(gps, format_float).map_err(|e| e.to_string())?);
+        channels.extend(build_gps_channel_batches(gps).map_err(|e| e.to_string())?);
     }
 
     let laps = build_laps_batch(&file.laps).map_err(|e| e.to_string())?;

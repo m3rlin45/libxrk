@@ -1,6 +1,4 @@
-//! GPS utilities: coordinate conversion, lap detection, Web Mercator projection.
-//!
-//! Port of gps.py functions.
+//! GPS utilities: WGS-84 coordinate conversion and GPS lap detection.
 
 use std::f64::consts::PI;
 
@@ -12,15 +10,11 @@ use std::f64::consts::PI;
 /// Input: ECEF coordinates in meters.
 /// Returns (latitude_deg, longitude_deg, altitude_m).
 pub fn ecef2lla_vermeille2003(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
-    // This mirrors gps.py:ecef2lla_vermeille2003 operation for operation —
-    // the same reciprocal-multiply constants, the same left-to-right
-    // association, and pow for the e**n constants (matching CPython's `**`)
-    // — so the two backends agree to within a very few ulp. Bit-exactness
-    // is deliberately NOT a goal: Rust's f64::cbrt/powf come from the
-    // toolchain's vendored libm while numpy's kernels vary with platform,
-    // glibc version, and CPU SIMD dispatch, so the residual 1-ulp-scale
-    // differences (nanometers in position) are bounded by documented
-    // tolerances in tests/test_backend_equivalence.py instead.
+    // The operations follow the numpy implementation this replaced, one for
+    // one: the same reciprocal-multiply constants, the same left-to-right
+    // association, and powf for the e**n constants (CPython's `**`). The
+    // results therefore stay within a very few ulp (nanometers in position)
+    // of what releases with the numpy code gave.
     let a: f64 = 6378137.0;
     let e: f64 = 8.181919084261345e-2;
     let e2 = e.powf(2.0); // Python `e**2`

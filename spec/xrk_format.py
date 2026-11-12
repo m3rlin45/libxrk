@@ -508,53 +508,6 @@ GPSPayload = Struct(
 )
 
 
-def reconstruct_gps_timecodes(timecodes):
-    """Rebuild GPS timecodes whose upper 16 bits are unreliable.
-
-    Some AIM firmware periodically corrupts the upper 16 bits of the 4-byte
-    logger timecode in GPS records, leaving only the low 16 bits trustworthy.
-
-    Reconstruction is a **phase unwrap**: each sample is placed at the multiple
-    of 65536 that puts it closest to its predecessor, i.e. the low-16 delta is
-    folded into [-32768, +32767]. This is the general inverse of "the upper bits
-    are garbage" and assumes nothing about the stream being monotonic.
-
-    The distinction that matters: a backwards step only reads as a 16-bit
-    rollover when it is *close to 65536*. Smaller backwards steps have other
-    causes — out-of-order records, a replayed record block, an all-zero dropout
-    record — and are reproduced at their true time instead of being mistaken for
-    a wrap and inflating every later sample by 65536ms.
-
-    Only applied when the raw stream is non-monotonic (the corruption
-    signature). Clean streams are returned untouched, which preserves legitimate
-    forward gaps larger than the 32768ms half-range.
-
-    Args:
-        timecodes: Raw int32 logger timecodes, in file order.
-
-    Returns:
-        list[int]: Reconstructed timecodes, same length as the input.
-
-    Example:
-        >>> # a replayed 2-sample block: time steps back, but not by ~65536
-        >>> reconstruct_gps_timecodes([1000, 1040, 1000, 1040, 1080])
-        [1000, 1040, 1000, 1040, 1080]
-        >>> # a genuine 16-bit rollover
-        >>> reconstruct_gps_timecodes([65480, 65520, 24, 64])
-        [65480, 65520, 65560, 65600]
-
-    Reference: spec/docs/companion.md section 6.
-    """
-    tcs = list(timecodes)
-    if len(tcs) < 2 or all(a <= b for a, b in zip(tcs, tcs[1:])):
-        return tcs
-    out = [tcs[0]]
-    for raw in tcs[1:]:
-        delta = (((raw - out[-1]) & 0xFFFF) ^ 0x8000) - 0x8000
-        out.append(out[-1] + delta)
-    return out
-
-
 # GNFI — Logger Internal Clock (32 bytes)
 # Reference: _aim_xrk_cy.pyx:1012-1035
 GNFIPayload = Struct(
@@ -937,6 +890,7 @@ def _on_data(obj, ctx):
     result = ctx._params.result
     result.messages.append(ParsedMessage(obj.msg_type, parsed=_container_to_dict(obj)))
     _accumulate(obj, result)
+    _note_data_header(obj, result)
 
 
 def _samples(obj, channel_mms):
@@ -976,6 +930,24 @@ def _accumulate(obj, result):
         if t > last.get(key, -1):
             last[key] = t
             result.streams.setdefault(ch, bytearray()).extend(raw)
+
+
+def _note_data_header(obj, result):
+    """Record the first timecode seen per data stream, the inputs to time_offset().
+
+    V3 (c) messages have no timecode of their own and are skipped.
+    """
+    if obj.msg_type == "c" and obj.get("variant") == "V3":
+        return
+    key = (
+        obj.msg_type,
+        (
+            obj.group_index
+            if obj.msg_type == "G"
+            else obj.channel_field >> 3 if obj.msg_type == "c" else obj.channel_index
+        ),
+    )
+    result.first_timecodes.setdefault(key, obj.timecode)
 
 
 # ---------------------------------------------------------------------------
@@ -1452,6 +1424,115 @@ class ParseResult:
     # {channel_index: bytearray}, one CHS.data_size slot per sample.
     streams: dict = field(default_factory=dict)
     _last_accepted: dict = field(default_factory=dict)  # {accumulator: last kept time}
+    # The first timecode per data stream. See _note_data_header.
+    first_timecodes: dict = field(default_factory=dict)  # {(msg_type, index): timecode}
+
+    def time_offset(self):
+        """Session start in logger time (companion.md section 2).
+
+        The minimum of: the first LAP message's start (end_time - duration),
+        the first timecode of every data stream, and the first GPS record's
+        timecode. Subtracting it from a timecode gives milliseconds since
+        session start, the timebase both backends expose. 0 for a file with
+        none of those.
+        """
+        candidates = []
+        laps = self.get_laps()
+        if laps:
+            candidates.append(laps[0]["end_time"] - laps[0]["duration"])
+        candidates.extend(self.first_timecodes.values())
+        if self.gps_payloads:
+            candidates.append(Int32sl.parse(self.gps_payloads[0][:4]))
+        return min(candidates, default=0)
+
+    def lap_table(self):
+        """The lap table as both backends expose it (companion.md section 7).
+
+        Built from segment-0 LAP messages: deduplicated by lap number, a
+        single missing number inferred, times made session-relative, the
+        first lap typed "out" when it starts at or before 0. Lap numbers are
+        normalised to start at 0.
+
+        This is what the LAP messages say, nothing more. The GPS steps are
+        not wire format and live in the shared GPS pipeline
+        (``libxrk._aim_xrk_rs.process_gps``, crate ``libxrk-gps``): it types the last
+        lap "in" when GPS puts the car more than 30 m from the TRK
+        start/finish at its end, and detects laps from the GPS track when
+        this table is empty. ``gps_input()`` gathers what it needs.
+
+        Returns a list of dicts {num, start_time, end_time, lap_type}.
+        """
+        offset = self.time_offset()
+        nums, starts, ends, types = [], [], [], []
+        for lap in self.get_laps():
+            if lap["segment"] != 0:
+                continue
+            num, duration = lap["lap_num"], lap["duration"]
+            end = lap["end_time"] - offset
+            if nums:
+                if nums[-1] == num:
+                    continue
+                if nums[-1] + 2 == num:  # one lap number missing: infer it
+                    nums.append(num - 1)
+                    starts.append(ends[-1])
+                    ends.append(end - duration)
+                    types.append("full")
+                elif nums[-1] + 1 != num:
+                    raise ValueError(f"Lap gap from {nums[-1]} to {num}")
+            nums.append(num)
+            starts.append(end - duration)
+            ends.append(end)
+            types.append("full")
+        if not nums:
+            return []
+        if starts[0] <= 0:
+            types[0] = "out"
+        base = min(nums)
+        return [
+            {"num": n - base, "start_time": s, "end_time": e, "lap_type": t}
+            for n, s, e, t in zip(nums, starts, ends, types)
+        ]
+
+    def start_finish(self):
+        """TRK start/finish (latitude, longitude) in degrees, or None without a TRK message."""
+        trk = self.messages_by_token("TRK")
+        if not trk or trk[-1].payload is None:
+            return None
+        return (trk[-1].payload.sf_lat, trk[-1].payload.sf_long)
+
+    def gps_data(self):
+        """The raw GPS records (GPS/GPS1 payloads) concatenated in file order."""
+        return b"".join(self.gps_payloads)
+
+    def gnfi_data(self):
+        """The raw GNFI records concatenated in file order."""
+        return b"".join(self.gnfi_payloads)
+
+    def non_gps_end_time(self):
+        """Session-relative time of the last accepted sample over all data streams, or None.
+
+        What the GPS timing fix's indirect method compares the GPS end time
+        against (companion.md section 6); the backends take the same value
+        from their decoded channels.
+        """
+        if not self._last_accepted:
+            return None
+        return max(self._last_accepted.values()) - self.time_offset()
+
+    def gps_input(self):
+        """Keyword arguments for ``libxrk._aim_xrk_rs.process_gps``'s raw material.
+
+        Everything the shared GPS pipeline needs from a parse, so a test can
+        run it over the spec's parse and compare with a backend:
+        ``process_gps(laps=<lap_table() rows>, **gps_input())``.
+        """
+        return {
+            "gps_data": self.gps_data(),
+            "gnfi_data": self.gnfi_data(),
+            "time_offset": self.time_offset(),
+            "start_finish": self.start_finish(),
+            "non_gps_max_end_time": self.non_gps_end_time(),
+        }
 
     def header_messages(self):
         """Return only header messages."""
