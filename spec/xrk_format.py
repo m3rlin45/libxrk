@@ -142,6 +142,9 @@ UNIT_MAP = {
     # Luminosity on the official AIM sample (test.xrk) carries code 28 and
     # RaceStudio3 displays it as "%"; Backlight and WiFi share the code.
     28: ("%", 2),
+    # RaceStudio3 displays the 86 fixture's Lambda channel in "lambda"; the
+    # AIM DLL returns the single byte 0xBB instead (issue #116, companion.md
+    # section 9).
     30: ("lambda", 2),
     31: ("gear", 0),
     33: ("%", 2),

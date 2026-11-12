@@ -6,7 +6,8 @@
 /// From _aim_xrk_cy.pyx:144-169.
 ///
 /// Checked against the official AIM `MatLabXRK` DLL over the whole test
-/// corpus (`get_channel_units`, 253 channel observations): every entry the
+/// corpus (`get_channel_units`, 253 channel observations): apart from code
+/// 30, kept as "lambda" on purpose (companion.md section 9), every entry the
 /// DLL reports agrees. Code 11 was corrected to "#" on that evidence.
 pub fn unit_map(unit_type: u8) -> (&'static str, u8) {
     match unit_type & 0x7F {
