@@ -35,7 +35,7 @@ When you find data parsing differs from AIM's RaceStudio output, start by readin
 - `src/libxrk/_aim_xrk_cy.pyi` - Type stubs for Cython module
 - `crates/libxrk/`, `crates/libxrk-python/` - Rust parser (~2x faster, conforms to spec) and its PyO3 module `_aim_xrk_rs`
 - `src/libxrk/_aim_xrk_rs.pyi` - Type stubs for Rust module
-- `crates/libxrk-gps/` - **GPS processing shared by every implementation**: NAV-SOL decode to the 14 GPS channels, timecode reconstruction, the 65533 ms timing fix, GPS in-lap classification and GPS lap detection; exposed to Python as `_aim_xrk_rs.process_gps`
+- `crates/libxrk-gps/` - **GPS processing shared by every implementation**: NAV-SOL decode to the 14 GPS channels, timecode reconstruction, the 65533 ms timing fix and the lap table's finishing steps (final partial lap, GPS in-lap classification, GPS lap detection); exposed to Python as `_aim_xrk_rs.process_gps`
 - `crates/libxrk-ffi/` - C ABI over the Rust core for non-Python consumers (see "C ABI" below)
 - `src/libxrk/base.py` - LogFile dataclass, channel merging
 - `tests/` - pytest tests with real XRK data in `tests/test_data/`

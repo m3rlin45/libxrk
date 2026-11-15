@@ -183,9 +183,9 @@ pub fn gps_reserved_names(result: &ParseResult) -> Vec<&'static str> {
 /// Run the shared GPS pipeline (`libxrk_gps::process`) on a parse result.
 ///
 /// Hands over the raw GPS and GNFI records, the time offset, the last
-/// timecode of the non-GPS channels, the TRK start/finish marker and the
-/// lap table built from LAP messages, and gets back the GPS channels and the
-/// finished lap table. The parser's lap table is discarded (so laps are
+/// timecode of the non-GPS channels, the end of data, the TRK start/finish
+/// marker and the lap table built from LAP messages, and gets back the GPS
+/// channels and the finished lap table. The parser's lap table is discarded (so laps are
 /// detected from GPS instead) when it is inconsistent: a negative start or
 /// a lap that does not end after it starts.
 pub fn process_gps(result: &ParseResult) -> Result<gps::Output> {
@@ -208,6 +208,7 @@ pub fn process_gps(result: &ParseResult) -> Result<gps::Output> {
         gnfi_data: &result.gnfi_data,
         time_offset: result.time_offset,
         non_gps_max_end_time,
+        end_of_data: result.end_of_data,
         start_finish: start_finish(result),
         laps,
         expected_dt_ms: gps::DEFAULT_EXPECTED_DT_MS,

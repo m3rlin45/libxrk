@@ -8,6 +8,11 @@
 //!   the pits rather than at the line;
 //! - a file with **no LAP messages** gets its laps from the GPS track crossing
 //!   the start/finish line (`utils::find_laps`).
+//!
+//! One step needs no GPS but runs here too, because it decides the last lap's
+//! type together with the in-lap rule: when the recording continues past the
+//! last LAP message, the AIM DLL reports a **final partial lap** from there to
+//! the end of the data (companion.md section 7, "Final partial lap").
 
 use crate::processing::GpsDecodeResult;
 use crate::utils::{find_laps, lla2ecef};
@@ -48,19 +53,42 @@ fn distance_m(a: (f64, f64), b: (f64, f64)) -> f64 {
     ((ax - bx).powi(2) + (ay - by).powi(2) + (az - bz).powi(2)).sqrt()
 }
 
-/// Finish a parser's lap table with the GPS track.
+/// Finish a parser's lap table: the final partial lap and the GPS steps.
 ///
-/// With laps from LAP messages, the last lap becomes "in" when the GPS
-/// position at its end is more than [`MARKER_SIZE_M`] from `start_finish`;
-/// an out-lap is never reclassified. With no laps, they are detected from
-/// the GPS track instead, each crossing to the next, the last one ending at
-/// the final GPS sample and typed "in". Without GPS data or a start/finish
-/// marker the laps are returned unchanged.
+/// With laps from LAP messages:
+///
+/// - When at least one lap was completed (the table has two laps or more:
+///   the first one may be the out-lap) and `end_of_data` is later than the
+///   last lap's end, a final partial lap from that end to `end_of_data` is
+///   appended, typed "in", as the AIM DLL does. The lap before it ended at a
+///   LAP message, so it was completed and is "full"; the in-lap rule does not
+///   apply to it.
+/// - Otherwise the last lap becomes "in" when the GPS position at its end is
+///   more than [`MARKER_SIZE_M`] from `start_finish`; an out-lap is never
+///   reclassified.
+///
+/// With no laps, they are detected from the GPS track instead, each crossing
+/// to the next, the last one ending at the final GPS sample and typed "in";
+/// `end_of_data` plays no part. Without GPS data or a start/finish marker the
+/// GPS steps are skipped; the final partial lap does not need them.
+///
+/// `end_of_data` is the session-relative header timecode of the last data
+/// message in file order (not the latest sample of any channel), or None
+/// without data messages.
 pub fn finish_laps(
     mut laps: Vec<Lap>,
     gps: Option<&GpsDecodeResult>,
     start_finish: Option<(f64, f64)>,
+    end_of_data: Option<i64>,
 ) -> Vec<Lap> {
+    if laps.len() >= 2 {
+        let last = laps.last().expect("two laps or more");
+        if let Some(end) = end_of_data.filter(|&end| end > last.end_time) {
+            let partial = Lap::new(last.num + 1, last.end_time, end, "in");
+            laps.push(partial);
+            return laps;
+        }
+    }
     let (Some(gps), Some(marker)) = (gps, start_finish) else {
         return laps;
     };
@@ -122,6 +150,46 @@ mod tests {
     #[test]
     fn no_gps_or_no_marker_leaves_laps_alone() {
         let laps = vec![Lap::new(0, 0, 1000, "full")];
-        assert_eq!(finish_laps(laps.clone(), None, Some((0.0, 0.0))), laps);
+        assert_eq!(
+            finish_laps(laps.clone(), None, Some((0.0, 0.0)), None),
+            laps
+        );
+    }
+
+    fn two_laps() -> Vec<Lap> {
+        vec![
+            Lap::new(0, 0, 60_000, "out"),
+            Lap::new(1, 60_000, 120_000, "full"),
+        ]
+    }
+
+    #[test]
+    fn data_past_the_last_lap_adds_a_final_partial_lap() {
+        let laps = finish_laps(two_laps(), None, None, Some(150_000));
+        assert_eq!(
+            laps,
+            vec![
+                Lap::new(0, 0, 60_000, "out"),
+                Lap::new(1, 60_000, 120_000, "full"),
+                Lap::new(2, 120_000, 150_000, "in"),
+            ]
+        );
+    }
+
+    #[test]
+    fn no_partial_lap_when_data_ends_at_the_last_lap() {
+        for end in [None, Some(120_000), Some(110_000)] {
+            assert_eq!(
+                finish_laps(two_laps(), None, None, end),
+                two_laps(),
+                "{end:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_partial_lap_after_an_out_lap_alone() {
+        let laps = vec![Lap::new(0, 0, 60_000, "out")];
+        assert_eq!(finish_laps(laps.clone(), None, None, Some(150_000)), laps);
     }
 }
