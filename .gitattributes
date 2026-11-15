@@ -11,6 +11,8 @@ tests/test_data/**/*.csv -text
 # Binary fixtures and artifacts — never touch these.
 *.xrk  binary
 *.xrz  binary
+*.mp4  binary
+*.MP4  binary
 *.dll  binary
 *.exe  binary
 *.so   binary
