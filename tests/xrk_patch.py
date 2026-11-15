@@ -12,6 +12,9 @@ the checksum of the patched frame and of every enclosing frame. ``frames()``
 locates frames with their absolute offsets and parent chain; ``patch()``
 applies a replacement and fixes the checksums. The frame layout is the
 ``HeaderMessage`` struct in ``spec/xrk_format.py``.
+
+For a stream no fixture resembles (one that ends on a data message, say),
+``build_frame()`` and the message builders at the end make one from scratch.
 """
 
 from __future__ import annotations
@@ -68,6 +71,27 @@ def frames(data: bytes, lo: int = 0, hi: int | None = None, parents: tuple = ())
         if frame["tok"] in ("CNF", "ENF"):
             yield from frames(data, pstart, pend, parents + (frame,))
         pos = pend + 8
+
+
+def build_frame(tok: str, payload: bytes, ver: int = 0) -> bytes:
+    """A complete ``<h`` frame around ``payload``, for a stream built from scratch.
+
+    A three-character token is padded with a space, as on the wire. Nest
+    frames by passing the inner frames' bytes as the payload of a CNF.
+    """
+    raw_tok = tok.encode("latin1")
+    wire_tok = raw_tok + b" " if len(raw_tok) == 3 else raw_tok.ljust(4, b"\0")
+    return (
+        b"<h"
+        + wire_tok
+        + struct.pack("<iB", len(payload), ver)
+        + b">"
+        + payload
+        + b"<"
+        + wire_tok
+        + struct.pack("<H", sum(payload) & 0xFFFF)
+        + b">"
+    )
 
 
 def fix_checksums(buf: bytearray, frame: dict) -> None:
@@ -129,3 +153,25 @@ def s_message_offsets(data: bytes, channel_index: int, size: int) -> list[int]:
         ] == ord(")"):
             out.append(pos)
         pos += 1
+
+
+def s_message(timecode: int, channel_index: int, sample: bytes) -> bytes:
+    """An ``(S`` message: one sample of ``channel_index`` (``CHS.data_size`` bytes)."""
+    return b"(S" + struct.pack("<iH", timecode, channel_index) + sample + b")"
+
+
+def c_v2_message(channel_field: int, timecode: int, samples: tuple[float, float]) -> bytes:
+    """A 16-byte V2 ``(c`` message: two float16 samples under one timecode."""
+    return (
+        b"(c"
+        + struct.pack("<BHBBi", 0, channel_field, 0x84, 8, timecode)
+        + struct.pack("<ee", *samples)
+        + b")"
+    )
+
+
+def c_v3_message(channel_field: int, sample: float) -> bytes:
+    """A 10-byte V3 ``(c`` message: one float16 sample and no timecode."""
+    return (
+        b"(c" + struct.pack("<BHBB", 1, channel_field, 0x84, 2) + struct.pack("<e", sample) + b")"
+    )
