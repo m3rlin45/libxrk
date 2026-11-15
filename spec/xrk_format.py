@@ -52,6 +52,7 @@ from construct import (
     Rebuild,
     RestreamData,
     Select,
+    Sequence,
     Struct,
     Switch,
     len_,
@@ -921,6 +922,7 @@ def _on_data(obj, ctx):
     result.messages.append(ParsedMessage(obj.msg_type, parsed=_container_to_dict(obj)))
     _accumulate(obj, result)
     _note_data_header(obj, result)
+    _note_end_of_data(obj, result)
 
 
 def _samples(obj, channel_mms):
@@ -986,6 +988,84 @@ def _note_data_header(obj, result):
     result.first_timecodes.setdefault(key, obj.timecode)
 
 
+def _note_end_of_data(obj, result):
+    """Record the header timecode of the latest data message in FILE ORDER.
+
+    ``last_data_timecode`` is not a maximum: the AIM DLL ends the session's
+    final partial lap at the header timecode of the last data message in the
+    file (companion.md section 7, "Final partial lap"), and loggers buffer
+    per channel, so the latest sample of some channel is often later. Called
+    for whole messages and for bare headers (_on_data_header), so a message
+    whose body is truncated still counts. V3 (c) messages have no timecode of
+    their own, and an (M of a channel without a sample period is rejected by
+    both backends, so neither counts.
+    """
+    if obj.msg_type == "c" and obj.get("variant") == "V3":
+        return
+    if obj.msg_type == "M" and not result.channel_mms.get(obj.channel_index, 0):
+        return
+    result.last_data_timecode = obj.timecode
+
+
+def _on_data_header(obj, ctx):
+    """Post-parse hook for a data message header whose body did not parse."""
+    _note_end_of_data(obj, ctx._params.result)
+
+
+# Data message headers. When a data message's body does not parse (cut off by
+# the trailing header frames, as Suzuka 0090's final (S is, or mis-framed),
+# its header still carries a timecode, and the AIM DLL still counts it for the
+# end of data. These structs parse just the header, with the checks the
+# backends apply before they record it, and are Peeked in the fallback branch
+# of XRKMessage, so the one-byte bad-byte resync is unchanged. A bare header
+# only moves the end of data: it adds no sample and no first timecode.
+_SMessageHeader = Struct(
+    Const(b"\x28\x53"),
+    "msg_type" / Computed("S"),
+    "timecode" / Int32sl,
+    "channel_index" / Int16ul,
+    Check(lambda ctx: ctx.channel_index in ctx._params.channel_sizes),
+)
+_GMessageHeader = Struct(
+    Const(b"\x28\x47"),
+    "msg_type" / Computed("G"),
+    "timecode" / Int32sl,
+    "group_index" / Int16ul,
+    Check(lambda ctx: ctx.group_index in ctx._params.group_sizes),
+)
+_MMessageHeader = Struct(
+    Const(b"\x28\x4d"),
+    "msg_type" / Computed("M"),
+    "timecode" / Int32sl,
+    "channel_index" / Int16ul,
+    Check(lambda ctx: ctx.channel_index in ctx._params.channel_sizes),
+)
+_cMessageHeader = Struct(
+    Const(b"\x28\x63"),
+    "msg_type" / Computed("c"),
+    "unk1" / Int8ul,
+    "channel_field" / Int16ul,
+    "unk3" / Const(b"\x84"),
+    "unk4" / Int8ul,
+    "timecode" / Int32sl,
+    # V1 with a known channel, or V2 (whose channel is resolved post-parse).
+    Check(
+        lambda ctx: (
+            ctx.unk1 == 0
+            and ctx.unk4 == 6
+            and (ctx.channel_field & 7) == 4
+            and (ctx.channel_field >> 3) in ctx._params.channel_sizes
+        )
+        or (ctx.unk1 == 0 and ctx.unk4 == 8)
+    ),
+)
+
+
+def _header_fallback(header_struct):
+    """Note a bare data-message header's timecode, then resync by one byte."""
+    return Sequence(Peek(header_struct * _on_data_header), Bytes(1))
+
+
 # ---------------------------------------------------------------------------
 # Declarative protocol: opcode-dispatched Switch with side-effect hooks
 # ---------------------------------------------------------------------------
@@ -997,14 +1077,21 @@ XRKMessage = Struct(
         this._opcode,
         {
             b"\x3c\x68": Select(HeaderMessage * _on_header, Bytes(1)),
-            b"\x28\x53": Select(SMessageCompiled * _on_data, Bytes(1)),
-            b"\x28\x47": Select(GMessageCompiled * _on_data, Bytes(1)),
-            b"\x28\x4d": Select(MMessageCompiled * _on_data, Bytes(1)),
-            # (c — try V1, then V2, then V3, then fall through to bad-byte recovery.
+            b"\x28\x53": Select(
+                SMessageCompiled * _on_data, _header_fallback(_SMessageHeader), Bytes(1)
+            ),
+            b"\x28\x47": Select(
+                GMessageCompiled * _on_data, _header_fallback(_GMessageHeader), Bytes(1)
+            ),
+            b"\x28\x4d": Select(
+                MMessageCompiled * _on_data, _header_fallback(_MMessageHeader), Bytes(1)
+            ),
+            # (c — try V1, then V2, then V3, then a bare header, then bad-byte recovery.
             b"\x28\x63": Select(
                 cMessageV1Compiled * _on_data,
                 cMessageV2Compiled * _on_data,
                 cMessageV3Compiled * _on_data,
+                _header_fallback(_cMessageHeader),
                 Bytes(1),
             ),
         },
@@ -1466,6 +1553,9 @@ class ParseResult:
     _last_accepted: dict = field(default_factory=dict)  # {accumulator: last kept time}
     # The first timecode per data stream. See _note_data_header.
     first_timecodes: dict = field(default_factory=dict)  # {(msg_type, index): timecode}
+    # Header timecode of the last data message in file order, whole or a bare
+    # header. See _note_end_of_data.
+    last_data_timecode: int | None = None
 
     def time_offset(self):
         """Session start in logger time (companion.md section 2).
@@ -1493,12 +1583,14 @@ class ParseResult:
         first lap typed "out" when it starts at or before 0. Lap numbers are
         normalised to start at 0.
 
-        This is what the LAP messages say, nothing more. The GPS steps are
-        not wire format and live in the shared GPS pipeline
-        (``libxrk._aim_xrk_rs.process_gps``, crate ``libxrk-gps``): it types the last
-        lap "in" when GPS puts the car more than 30 m from the TRK
-        start/finish at its end, and detects laps from the GPS track when
-        this table is empty. ``gps_input()`` gathers what it needs.
+        This is what the LAP messages say, nothing more. The rest is not wire
+        format and lives in the shared GPS pipeline
+        (``libxrk._aim_xrk_rs.process_gps``, crate ``libxrk-gps``): it appends
+        a final partial lap up to end_of_data() when the data runs past the
+        last lap, else types the last lap "in" when GPS puts the car more
+        than 30 m from the TRK start/finish at its end, and detects laps from
+        the GPS track when this table is empty. ``gps_input()`` gathers what
+        it needs.
 
         Returns a list of dicts {num, start_time, end_time, lap_type}.
         """
@@ -1532,6 +1624,18 @@ class ParseResult:
             {"num": n - base, "start_time": s, "end_time": e, "lap_type": t}
             for n, s, e, t in zip(nums, starts, ends, types)
         ]
+
+    def end_of_data(self):
+        """Session-relative time of the last data message in file order, or None.
+
+        Where the AIM DLL ends the final partial lap (companion.md section 7):
+        the header timecode of the last (S/(G/(M/(c message in the file,
+        counted even when its body is truncated, minus time_offset(). Not
+        the latest sample of any channel: loggers buffer per channel.
+        """
+        if self.last_data_timecode is None:
+            return None
+        return self.last_data_timecode - self.time_offset()
 
     def start_finish(self):
         """TRK start/finish (latitude, longitude) in degrees, or None without a TRK message."""
@@ -1572,6 +1676,7 @@ class ParseResult:
             "time_offset": self.time_offset(),
             "start_finish": self.start_finish(),
             "non_gps_max_end_time": self.non_gps_end_time(),
+            "end_of_data": self.end_of_data(),
         }
 
     def header_messages(self):

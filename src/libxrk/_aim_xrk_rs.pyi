@@ -48,6 +48,7 @@ def process_gps(
     gnfi_data: bytes,
     time_offset: int,
     non_gps_max_end_time: Optional[int],
+    end_of_data: Optional[int],
     start_finish: Optional[tuple[float, float]],
     laps: list[LapRow],
     expected_dt_ms: float = 40.0,
@@ -57,9 +58,13 @@ def process_gps(
     Decodes the 56-byte GPS records into the 14 GPS channels, applies the
     65533 ms timing fix (GNFI reference clock, else a direct 60-70 s gap,
     else GPS outliving the non-GPS channels, whose last timecode is
-    ``non_gps_max_end_time``) and finishes the lap table: the last lap is
-    typed "in" when the car is more than 30 m from ``start_finish`` at its
-    end; with no laps, they are detected from the GPS track.
+    ``non_gps_max_end_time``) and finishes the lap table: when there are
+    two laps or more and ``end_of_data`` (the session-relative header
+    timecode of the last data message in file order) is later than the last
+    lap's end, a final partial lap up to it is appended, typed "in";
+    otherwise the last lap is typed "in" when the car is more than 30 m from
+    ``start_finish`` at its end. With no laps, they are detected from the
+    GPS track.
 
     Returns:
         ``({name: pyarrow.Table}, laps pyarrow.Table)`` with the laps table

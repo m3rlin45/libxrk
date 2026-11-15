@@ -71,6 +71,12 @@ The laps table has columns:
     always `"in"`, because its end is synthesized at session end rather than at a
     detected crossing.
 
+When the recording continues past the last beacon crossing, a final partial lap
+is added from that crossing to the end of data (the header timecode of the last
+data message in the file), typed `"in"`, matching the official AIM DLL; the lap
+before it stays `"full"`. It is added only when at least one lap was completed:
+a session whose only lap is the out-lap gets none.
+
 Out and in laps are not comparable to full laps — exclude them when computing best
 lap, lap-time distributions, or lap-over-lap deltas.
 

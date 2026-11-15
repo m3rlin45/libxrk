@@ -101,6 +101,9 @@ class DataStream:
     time_offset: Optional[int]
     gps_data: bytes = b""  # raw 56-byte GPS records (GPS/GPS1), file order
     gnfi_data: bytes = b""  # raw 32-byte GNFI records, file order
+    # Header timecode of the last data message in file order, minus time_offset;
+    # where the final partial lap ends (companion.md section 7). None without data.
+    end_of_data: Optional[int] = None
 
 @dataclass(**dc_slots)
 class Decoder:
@@ -528,6 +531,11 @@ def _decode_sequence(s, progress=None):
     last_v2_base_tc = {}   # base_cf -> (tc, file_pos)
     last_v2_plus4_tc = {}  # plus4_cf -> (tc, file_pos)
     c_var_pos: cython.int = 0
+    # Header timecode of the last data message in file order (S/G/M/c). The AIM
+    # DLL ends its final, partial lap here -- not at the max timecode over
+    # channels. See spec/docs/companion.md section 7.
+    last_data_tc: cython.int = 0
+    has_last_data_tc: cython.bint = False
     while pos < len_s:
         try:
             while True:
@@ -541,6 +549,12 @@ def _decode_sequence(s, progress=None):
                     data_p = &dereference(data_cat)[msg.s.index]
                     if data_p >= &dereference(data_cat.end()):
                         raise IndexError
+                    # End of data is noted before the size/framing check on
+                    # purpose: the AIM DLL takes the header timecode of the
+                    # final message in the file even when that message is
+                    # truncated (the Suzuka 0090 fixture ends mid-sample).
+                    last_data_tc = msg.s.timecode
+                    has_last_data_tc = True
                     pos += data_p.add_helper
                     last = &sv[pos-1]
                     if last[0] != ord_cp:
@@ -558,6 +572,8 @@ def _decode_sequence(s, progress=None):
                     if data_p.Mms == 0:
                         raise ValueError('No ms understood for channel %s' %
                                          channels[msg.s.index].long_name)
+                    last_data_tc = msg.s.timecode  # header tc; see the S/G note above
+                    has_last_data_tc = True
                     pos += data_p.add_helper * msg.s.count + 10
                     if sv[pos] != ord_cp:
                         raise ValueError("%s at %x" % (chr(s[pos]), pos))
@@ -588,6 +604,8 @@ def _decode_sequence(s, progress=None):
                         data_p = &dereference(data_cat)[msg.c.channel >> 3]
                         if data_p >= &dereference(data_cat.end()):
                             raise IndexError
+                        last_data_tc = msg.c.timecode  # see the S/G note above
+                        has_last_data_tc = True
                         pos += data_p.add_helper
                         last = &sv[pos-1]
                         if last[0] != ord_cp:
@@ -603,6 +621,8 @@ def _decode_sequence(s, progress=None):
                         # for base ch_field (low nibble 0/8), or (tc-2, tc-4)
                         # for +4 ch_field (low nibble 4/c). See
                         # spec/docs/unknown_regions.md for the derivation.
+                        last_data_tc = msg.c.timecode  # see the S/G note above
+                        has_last_data_tc = True
                         if pos + 16 > len_s:
                             raise IndexError
                         if sv[pos+15] != ord_cp:
@@ -1103,6 +1123,8 @@ def _decode_sequence(s, progress=None):
             tc_ptr = <cython.int *>&gpsmsg[0]
             tc_min_candidates.append(tc_ptr[0])
         time_offset = int(min(tc_min_candidates, default=0))
+    end_of_data = (int(last_data_tc) - time_offset
+                   if has_last_data_tc and time_offset is not None else None)
     acc.channels = channels
     acc.time_offset = time_offset
     process_group = acc.process_group
@@ -1165,6 +1187,7 @@ def _decode_sequence(s, progress=None):
         messages=messages,
         laps=laps,
         time_offset=time_offset,
+        end_of_data=end_of_data,
         gps_data=bytes(<cython.uchar[:gpsmsg.size()]> &gpsmsg[0]) if gpsmsg.size() else b"",
         gnfi_data=bytes(<cython.uchar[:gnfimsg.size()]> &gnfimsg[0]) if gnfimsg.size() else b"")
 
@@ -1479,7 +1502,7 @@ def aim_xrk(fname, progress=None):
         gps_tables, laps = _aim_xrk_rs.process_gps(
             data.gps_data, data.gnfi_data, data.time_offset,
             max(non_gps_end) if non_gps_end else None,
-            _start_finish(data.messages), laps)
+            data.end_of_data, _start_finish(data.messages), laps)
         channels.update(gps_tables)
 
     return base.LogFile(

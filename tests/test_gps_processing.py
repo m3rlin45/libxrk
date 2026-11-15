@@ -52,11 +52,18 @@ def _process(
     gnfi_data=b"",
     time_offset=0,
     non_gps_max_end_time=None,
+    end_of_data=None,
     start_finish=None,
 ):
     """process_gps with the lap table returned as (num, start, end, type) rows."""
     channels, table = process_gps(
-        gps_data, gnfi_data, time_offset, non_gps_max_end_time, start_finish, list(laps)
+        gps_data,
+        gnfi_data,
+        time_offset,
+        non_gps_max_end_time,
+        end_of_data,
+        start_finish,
+        list(laps),
     )
     return channels, _lap_rows(table)
 
@@ -437,10 +444,36 @@ class TestLapsOnSfj:
         _, laps = _process(**material, laps=unfinished)
         assert laps == rows
 
+    def test_data_past_the_last_lap_adds_a_final_partial_lap(self, sfj):
+        """When the data runs past the last lap, a lap up to end_of_data is
+        appended, typed "in", and the lap before it stays "full" although GPS
+        puts the car 799 m from the line there: it ended at a LAP message
+        (companion.md section 7, "Final partial lap")."""
+        material, log = sfj
+        rows = _lap_rows(log.laps)
+        unfinished = [(n, s, e, "full" if t == "in" else t) for n, s, e, t in rows]
+        n, _, e, _ = unfinished[-1]
+        _, laps = _process(**material, laps=unfinished, end_of_data=e + 30_000)
+        assert laps == unfinished + [(n + 1, e, e + 30_000, "in")]
+        # Without GPS material the rule is the same: it needs no position.
+        _, laps = _process(b"", laps=unfinished, end_of_data=e + 30_000)
+        assert laps == unfinished + [(n + 1, e, e + 30_000, "in")]
+
+    def test_data_ending_at_the_last_lap_adds_nothing(self, sfj):
+        material, log = sfj
+        rows = _lap_rows(log.laps)
+        unfinished = [(n, s, e, "full" if t == "in" else t) for n, s, e, t in rows]
+        for end in (None, rows[-1][2], rows[-1][2] - 5):
+            _, laps = _process(**material, laps=unfinished, end_of_data=end)
+            assert laps == rows, end
+
     def test_an_out_lap_alone_is_never_reclassified(self, sfj):
         material, log = sfj
         n, s, e, _ = _lap_rows(log.laps)[-1]
         _, laps = _process(**material, laps=[(0, 0, e, "out")])
+        assert laps == [(0, 0, e, "out")]
+        # Nor does data past it add a partial lap: no lap was completed.
+        _, laps = _process(**material, laps=[(0, 0, e, "out")], end_of_data=e + 30_000)
         assert laps == [(0, 0, e, "out")]
 
     def test_no_start_finish_marker_leaves_laps_alone(self, sfj):

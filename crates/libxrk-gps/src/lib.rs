@@ -9,7 +9,8 @@
 //! - [`processing`]: decode the u-blox NAV-SOL records into the 14 GPS
 //!   channels, including the reconstruction of corrupted timecodes;
 //! - [`timing`]: detect and remove the 65533 ms firmware gap;
-//! - [`laps`]: classify the last lap as an in-lap from the GPS position, and
+//! - [`laps`]: append the final partial lap when data runs past the last LAP
+//!   message, classify the last lap as an in-lap from the GPS position, and
 //!   detect laps from GPS alone when a file has no LAP messages;
 //! - [`utils`]: the WGS-84 conversions and the crossing detection the above
 //!   are built on.
@@ -65,6 +66,10 @@ pub struct Input<'a> {
     /// Last timecode (session-relative) over the non-GPS channels, if any.
     /// Used by the indirect gap detection (companion.md section 6).
     pub non_gps_max_end_time: Option<i64>,
+    /// Header timecode (session-relative) of the last data message in file
+    /// order, counted even when its body is truncated; None without data
+    /// messages. Where the final partial lap ends (companion.md section 7).
+    pub end_of_data: Option<i64>,
     /// Start/finish (latitude, longitude) in degrees from the TRK message.
     pub start_finish: Option<(f64, f64)>,
     /// Lap table built from LAP messages, session-relative, 0-based, typed
@@ -91,10 +96,12 @@ pub struct Output {
 ///    timecodes and applying `time_offset`).
 /// 2. Detect the 65533 ms firmware gap (GNFI, direct, then indirect method)
 ///    and shift the GPS timecodes after it.
-/// 3. Finish the lap table: mark the last lap "in" when the car is more than
-///    30 m from start/finish at its end, or detect laps from the GPS track
-///    when the parser found no LAP messages. Detection runs on the repaired
-///    timecodes, so GPS-detected laps never need a correction of their own.
+/// 3. Finish the lap table: append the final partial lap when data runs past
+///    the last LAP message, else mark the last lap "in" when the car is more
+///    than 30 m from start/finish at its end; or detect laps from the GPS
+///    track when the parser found no LAP messages. Detection runs on the
+///    repaired timecodes, so GPS-detected laps never need a correction of
+///    their own.
 pub fn process(input: Input<'_>) -> Result<Output, Error> {
     let mut channels = decode_gps(input.gps_data, input.time_offset)?;
     if let Some(ch) = channels.as_mut() {
@@ -107,7 +114,12 @@ pub fn process(input: Input<'_>) -> Result<Output, Error> {
         );
         apply_corrections(&mut ch.timecodes, &corrections);
     }
-    let laps = finish_laps(input.laps, channels.as_ref(), input.start_finish);
+    let laps = finish_laps(
+        input.laps,
+        channels.as_ref(),
+        input.start_finish,
+        input.end_of_data,
+    );
     Ok(Output { channels, laps })
 }
 
@@ -130,6 +142,7 @@ mod tests {
             gnfi_data: &[],
             time_offset: 0,
             non_gps_max_end_time: None,
+            end_of_data: None,
             start_finish: None,
             laps,
             expected_dt_ms: DEFAULT_EXPECTED_DT_MS,

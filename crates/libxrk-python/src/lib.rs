@@ -84,7 +84,7 @@ type LapRow = (i32, i64, i64, String);
 /// channels (none without GPS data) and the finished lap table. See
 /// `libxrk_gps::process`.
 #[pyfunction]
-#[pyo3(signature = (gps_data, gnfi_data, time_offset, non_gps_max_end_time, start_finish, laps, expected_dt_ms=libxrk::gps::DEFAULT_EXPECTED_DT_MS))]
+#[pyo3(signature = (gps_data, gnfi_data, time_offset, non_gps_max_end_time, end_of_data, start_finish, laps, expected_dt_ms=libxrk::gps::DEFAULT_EXPECTED_DT_MS))]
 #[allow(clippy::too_many_arguments)]
 fn process_gps<'py>(
     py: Python<'py>,
@@ -92,6 +92,7 @@ fn process_gps<'py>(
     gnfi_data: &[u8],
     time_offset: i64,
     non_gps_max_end_time: Option<i64>,
+    end_of_data: Option<i64>,
     start_finish: Option<(f64, f64)>,
     laps: Vec<LapRow>,
     expected_dt_ms: f64,
@@ -112,6 +113,7 @@ fn process_gps<'py>(
         gnfi_data,
         time_offset,
         non_gps_max_end_time,
+        end_of_data,
         start_finish,
         laps,
         expected_dt_ms,
