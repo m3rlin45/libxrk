@@ -10,6 +10,13 @@ Output is JSON to stdout containing:
 - channels: list of {name, units, sample_count, samples_hash, first_samples, last_samples}
 - laps: list of {lap_num, start_ms, duration_ms, end_ms}
 - metadata: {vehicle, track, racer, championship, venue_type}
+
+or {"error": ...} when the DLL cannot be loaded or cannot open the file.
+
+NOTE: give the DLL an ASCII-named copy of the file in a temp directory. It
+cannot open a non-ASCII path, and it writes scratch files next to its input
+(an .xrz input gets a sibling .xrk). `_run_dll_script` in
+spec/tests/conftest.py does that for the spec tests.
 """
 
 import ctypes
@@ -28,6 +35,27 @@ def compute_samples_hash(times, values):
     for t, v in zip(times, values):
         h.update(struct.pack("<dd", t, v))
     return h.hexdigest()[:16]  # Truncate for readability
+
+
+def open_failure_hint(xrk_path):
+    """Say why the DLL could not open a path, when a non-ASCII name explains it.
+
+    open_file takes an ANSI char*, so it cannot be given a name outside the
+    ANSI code page; and before that, Wine converts the command line with the
+    process locale, which outside a UTF-8 locale mangles such a name into one
+    that does not exist.
+    """
+    if not xrk_path.isascii():
+        return (
+            " (the path is not ASCII and the DLL takes an ANSI path:"
+            " copy the file to an ASCII path)"
+        )
+    if not os.path.exists(xrk_path):
+        return (
+            " (no such file as Wine sees it; if the name has non-ASCII characters, Wine's command"
+            " line mangles them outside a UTF-8 locale: copy the file to an ASCII path)"
+        )
+    return ""
 
 
 def main():
@@ -100,11 +128,14 @@ def main():
     dll.get_venue_type_name.argtypes = [c_int]
     dll.get_venue_type_name.restype = c_char_p
 
-    # Open file
+    # Open file. A handle is positive: open_file returns 0 for a path it cannot
+    # open (and for an empty or unreadable file), a negative number for a path
+    # without an .xrk/.xrz suffix.
     xrk_path_bytes = os.path.abspath(xrk_path).encode("utf-8")
     idx = dll.open_file(xrk_path_bytes)
-    if idx < 0:
-        print(json.dumps({"error": f"Failed to open file: {xrk_path}"}))
+    if idx <= 0:
+        error = f"Failed to open file: {xrk_path}{open_failure_hint(xrk_path)}"
+        print(json.dumps({"error": error}))
         sys.exit(1)
 
     result = {

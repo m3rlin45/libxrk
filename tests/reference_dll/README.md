@@ -69,8 +69,22 @@ python3 -c "import zipfile; zipfile.ZipFile('python-3.12.0-embed-amd64.zip').ext
 ```bash
 WINEDEBUG=-all wine /tmp/python-embed/python.exe \
   Z:/path/to/libxrk/tests/reference_dll/wine_compare.py \
-  Z:/path/to/libxrk/tests/test_data/aim_official/test.xrk
+  Z:/tmp/dll-scratch/test.xrk
 ```
+
+Give the DLL a copy of the file under an ASCII path in a scratch directory
+(here `cp tests/test_data/aim_official/test.xrk /tmp/dll-scratch/`), not the
+original:
+
+- The DLL cannot open a non-ASCII path, such as a RaceStudio export with a
+  Japanese session name. Its `open_file` takes an ANSI string, and Wine mangles
+  non-ASCII command-line arguments outside a UTF-8 locale.
+- The DLL writes next to its input: an `.xrz` gets a decompressed sibling
+  `.xrk`, and `<name>.NNN.tmp` scratch files are left behind.
+
+The spec tests do this for every DLL call (`_run_dll_script` in
+`spec/tests/conftest.py`). The comparison scripts in this directory pass the
+path they are given straight to Wine.
 
 ## Files
 
@@ -88,6 +102,10 @@ WINEDEBUG=-all wine /tmp/python-embed/python.exe \
 
 ### "wine: failed to open" error
 The Wine Python setup may be missing. Re-run the setup script.
+
+### "Failed to open file", or a result with no channels
+The DLL could not open the path. Check that it exists and is ASCII; see "Run
+Comparison Manually" above.
 
 ### DLL not loading
 Make sure you're using 64-bit Wine (`wine64` or `wine` on 64-bit systems).
