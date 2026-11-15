@@ -509,13 +509,54 @@ When LAP messages exist, they define lap boundaries directly:
 This much is the parsers' job (`_get_laps` in `_aim_xrk_cy.pyx`,
 `parse_lap_messages` in `crates/libxrk/src/parser.rs`, `ParseResult.lap_table()`
 in the spec), including the "out" lap. The table is then finished by the
-shared GPS pipeline (`libxrk-gps` `laps.rs`, `finish_laps`): the last lap
-becomes **"in"** when the GPS position at its end is more than 30 m from the
-TRK start/finish (an out-lap is never reclassified), and a file whose table is
-empty gets the GPS fallback below.
+shared GPS pipeline (`libxrk-gps` `laps.rs`, `finish_laps`):
+
+- when the data runs past the last lap, a **final partial lap** is appended
+  (below);
+- otherwise the last lap becomes **"in"** when the GPS position at its end is
+  more than 30 m from the TRK start/finish (an out-lap is never reclassified);
+- a file whose table is empty gets the GPS fallback below.
 
 `test_spec.py` runs the shared GPS pipeline over the spec's `lap_table()` and
-compares the result against both backends.
+compares the result against both backends, and against the official AIM DLL's
+lap table on five fixtures.
+
+#### Final partial lap
+
+When the recording runs past the last beacon crossing, the official AIM DLL
+reports one more lap, from the last LAP message's end to the **end of data**.
+Observed on 9 corpus files plus the SFJ 0101 and Suzuka 0090 fixtures:
+
+- it is added whenever at least one lap was completed (7 of 7 files with two
+  or more laps), and never when the out-lap is the only lap (2 of 2);
+- its end is the **header timecode of the last data message in file order**
+  (`(S`/`(G`/`(M`/`(c`), taken even when that message is truncated. Suzuka
+  0090 ends with an `(S` whose payload is cut off by the trailing RCR/VEH
+  frames; both backends discard the sample, but its header timecode is still
+  where the DLL ends the lap. This is not the maximum timecode over channels:
+  loggers buffer per channel, so a channel's final sample can sit earlier in
+  the file than another's and be up to tens of milliseconds later in time
+  (58 ms on Suzuka 0090). Only the file-order rule matches the DLL to the
+  millisecond. For an `(M` burst the header (first-sample) timecode is used;
+  no file in hand ends with one, so that detail is unverified.
+
+The synthesized lap is typed `"in"`. The lap before it ended at a LAP message,
+so it was completed and stays `"full"`: the GPS in-lap rule is not applied
+when a partial lap is added. The rule needs no GPS data and also applies to a
+file without any.
+
+Each parser only records the end of data: the header timecode of the last
+data message it reads, taken after the message's channel (or group) index is
+known to be valid and before its body is checked, minus `time_offset`. V3 `(c`
+messages carry no timecode and are not counted, nor is an `(M` of a channel
+without a sample period, which both backends reject. The pipeline gets it as
+`end_of_data` (`Input::end_of_data` in `libxrk-gps`, the `end_of_data`
+argument of `_aim_xrk_rs.process_gps`). In the spec, `XRKMessage` falls back
+to a header-only parse (`_SMessageHeader` and friends, `Peek`ed so bad-byte
+recovery still advances one byte) when a data message's body does not parse;
+whole messages and bare headers both set `ParseResult.last_data_timecode`,
+and `ParseResult.end_of_data()` makes it session-relative for `gps_input()`.
+A bare header adds no sample and no first timecode (section 2).
 
 ### Fallback: GPS Cross-Track
 

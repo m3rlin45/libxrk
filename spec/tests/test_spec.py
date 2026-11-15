@@ -440,15 +440,41 @@ class TestLAPCrossValidation:
         # `backend` is requested directly so its session params are defined
         # for this test; getfixturevalue alone cannot parametrize.
         """ParseResult.lap_table() (what the LAP messages say, companion.md
-        section 7) finished by the shared GPS pipeline (the in-lap
-        classification, or GPS lap detection for a file without LAP
-        messages) is the lap table both backends expose: numbers,
-        session-relative times and out/full/in types. Runs once per backend
-        via the session `backend` param."""
+        section 7) finished by the shared GPS pipeline (the final partial
+        lap on SFJ 0101 and Suzuka 0090, the in-lap classification, or GPS
+        lap detection for a file without LAP messages) is the lap table both
+        backends expose: numbers, session-relative times and out/full/in
+        types. Runs once per backend via the session `backend` param."""
         parsed = request.getfixturevalue(f"{name}_parsed")
         log = request.getfixturevalue(f"{name}_backend")
         _, laps = _run_gps_pipeline(parsed)
         assert laps == self._backend_lap_table(log)
+
+    @pytest.mark.parametrize("name", ["sfj", "file_86", "aim_official", "sfj_0101", "sfj_suzuka"])
+    def test_lap_table_matches_dll(self, name, request):
+        """The finished lap table reproduces the official DLL's to the
+        millisecond, including the final partial lap the DLL adds on SFJ
+        0101 and Suzuka 0090 and omits on files whose data ends at a
+        crossing (companion.md section 7, "Final partial lap")."""
+        parsed = request.getfixturevalue(f"{name}_parsed")
+        dll = request.getfixturevalue(f"{name}_dll")
+        _, laps = _run_gps_pipeline(parsed)
+        spec = [(lap["start_time"], lap["end_time"]) for lap in laps]
+        assert spec == [(lap["start_ms"], lap["end_ms"]) for lap in dll["laps"]]
+
+    def test_end_of_data_counts_a_truncated_trailing_header(self, sfj_suzuka_parsed):
+        """Suzuka 0090 ends with an (S whose body is cut off by the trailing
+        RCR/VEH frames. No whole message carries that timecode (the last
+        whole data message is 58 ms later in time but earlier in the file),
+        yet the DLL ends the final lap exactly there. The header-only
+        fallback in XRKMessage makes the spec agree, without counting the
+        bare header as a sample or as a stream's first timecode."""
+        parsed = sfj_suzuka_parsed
+        assert parsed.end_of_data() == 1823303
+        whole = [m.parsed["timecode"] for m in parsed.messages if m.msg_type in "SGMc"]
+        assert whole[-1] - parsed.time_offset() == 1823361
+        assert max(whole) - parsed.time_offset() > parsed.end_of_data()
+        assert parsed.gps_input()["end_of_data"] == parsed.end_of_data()
 
     def test_sfj_lap_times(self, sfj_parsed, sfj_backend):
         """SFJ lap end_time and duration should produce matching start/end times."""

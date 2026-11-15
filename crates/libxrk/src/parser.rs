@@ -61,6 +61,10 @@ pub struct ParseResult {
     pub gnfi_data: Vec<u8>,
     pub time_offset: i64,
     pub last_time: i64,
+    /// Header timecode of the last data message in file order, relative to
+    /// time_offset; where the final partial lap ends (companion.md section
+    /// 7). None without data messages.
+    pub end_of_data: Option<i64>,
     /// Decoded channel data: channel_index -> (timecodes, sample_values)
     pub channel_data: HashMap<u16, ChannelData>,
     /// Lap info from LAP messages
@@ -313,6 +317,9 @@ struct ParserState {
     group_sizes: HashMap<u16, usize>,
     time_offset: Option<i64>,
     last_time: Option<i64>,
+    /// Header timecode of the last data message (S/G/M/c) in file order. The
+    /// AIM DLL ends its final, partial lap here. See companion.md section 7.
+    last_data_tc: Option<i32>,
     /// ENF sub-messages: each entry is the sub-parsed messages from one ENF message
     enf_sub_messages: Vec<HashMap<u32, Vec<HeaderMessage>>>,
     /// Buffer for V2/V3 (c)-message variants — see spec/xrk_format.py
@@ -392,6 +399,7 @@ impl ParserState {
             group_sizes: HashMap::new(),
             time_offset: None,
             last_time: None,
+            last_data_tc: None,
             enf_sub_messages: Vec::new(),
             v2v3_by_cf: HashMap::new(),
             last_v2_base_tc: HashMap::new(),
@@ -639,6 +647,7 @@ impl ParserState {
 
         // Extract and process lap info from LAP messages
         let laps = process_laps(&self.header_messages, time_offset);
+        let end_of_data = self.last_data_tc.map(|tc| tc as i64 - time_offset);
 
         Ok(ParseResult {
             channels: self.channels,
@@ -648,6 +657,7 @@ impl ParserState {
             gnfi_data: self.gnfi_data,
             time_offset,
             last_time,
+            end_of_data,
             channel_data,
             laps,
             enf_sub_messages: self.enf_sub_messages,
@@ -1119,6 +1129,11 @@ fn try_parse_g_message(data: &[u8], pos: usize, state: &mut ParserState) -> Opti
     if index >= state.gc_data[0].len() {
         return None;
     }
+    // End of data is noted before the size/framing check on purpose: the AIM
+    // DLL takes the header timecode of the final message in the file even
+    // when that message is truncated (the Suzuka 0090 fixture ends
+    // mid-sample). See companion.md section 7.
+    state.last_data_tc = Some(timecode);
 
     let total_size = state.gc_data[0][index].add_helper;
     if pos + total_size > data.len() {
@@ -1151,6 +1166,7 @@ fn try_parse_s_message(data: &[u8], pos: usize, state: &mut ParserState) -> Opti
     if index >= state.gc_data[1].len() {
         return None;
     }
+    state.last_data_tc = Some(timecode); // before validation; see try_parse_g_message
 
     let total_size = state.gc_data[1][index].add_helper;
     if pos + total_size > data.len() {
@@ -1196,6 +1212,7 @@ fn try_parse_m_message(data: &[u8], pos: usize, state: &mut ParserState) -> Opti
         eprintln!("No ms understood for channel {}", ch_name);
         return None;
     }
+    state.last_data_tc = Some(timecode); // before validation; see try_parse_g_message
 
     let total_size = 10 + sample_size * count + 1; // header + data + ')'
     if pos + total_size > data.len() {
@@ -1265,6 +1282,7 @@ fn try_parse_c_message(data: &[u8], pos: usize, state: &mut ParserState) -> Opti
             if index >= state.gc_data[2].len() {
                 return None;
             }
+            state.last_data_tc = Some(timecode); // before validation; see try_parse_g_message
             let total_size = state.gc_data[2][index].add_helper;
             if pos + total_size > data.len() {
                 return None;
@@ -1284,11 +1302,15 @@ fn try_parse_c_message(data: &[u8], pos: usize, state: &mut ParserState) -> Opti
         //   base ch_field (low nibble 0/8): samples at (tc, tc-4)
         //   +4 ch_field   (low nibble 4/c): samples at (tc-2, tc-4)
         (0, 8) => {
-            if pos + 16 > data.len() || data[pos + 15] != b')' {
+            if pos + 11 > data.len() {
                 return None;
             }
             let timecode =
                 i32::from_le_bytes([data[pos + 7], data[pos + 8], data[pos + 9], data[pos + 10]]);
+            state.last_data_tc = Some(timecode); // before validation; see try_parse_g_message
+            if pos + 16 > data.len() || data[pos + 15] != b')' {
+                return None;
+            }
             let b0 = data[pos + 11..pos + 13].to_vec();
             let b1 = data[pos + 13..pos + 15].to_vec();
             let low = channel_field & 0xF;
