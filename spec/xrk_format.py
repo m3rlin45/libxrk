@@ -106,7 +106,11 @@ class _Parse(NamedTuple):
 
 
 class _Recurse(NamedTuple):
-    """Recursive _parse_sequence for CNF/ENF containers."""
+    """Recursive _parse_sequence for CNF/ENF containers.
+
+    ``merge`` is True for a CNF: its CHS/GRP definitions merge into the
+    enclosing result, whose sample accumulators it resets.
+    """
 
     merge: bool
 
@@ -955,10 +959,14 @@ def _accumulate(obj, result):
 
     Data messages interleave channels and may repeat (companion.md section 3,
     "Sample streams"). The rule: a sample is kept iff its time is strictly
-    later than the last kept sample of its accumulator, one accumulator per
-    message family and channel (per group member for G). Streams are
-    contiguous bytes, one CHS.data_size slot per sample; a kept sample's
-    time goes to stream_times at the same position.
+    later than the last kept sample of its accumulator since the last CNF,
+    one accumulator per message family and channel (per group member for G).
+    A CNF header starts every accumulator afresh (_reset_accumulators): the
+    next sample of each is kept whatever came before, so a stream's times
+    may step back there. A fresh accumulator's threshold is -1, so a sample
+    at a negative time is never kept. Streams are contiguous bytes, one
+    CHS.data_size slot per sample; a kept sample's time goes to
+    stream_times at the same position.
     """
     last = result._last_accepted
     for key, ch, t, raw in _samples(obj, result.channel_mms):
@@ -966,6 +974,25 @@ def _accumulate(obj, result):
             last[key] = t
             result.streams.setdefault(ch, bytearray()).extend(raw)
             result.stream_times[ch].append(t)
+
+
+def _reset_accumulators(result):
+    """A CNF header forgets every accumulator's last kept time.
+
+    All four families (G, S, c, M) of the sequence the CNF frame sits in,
+    and only those: the CNF's own payload is parsed into a separate result
+    with its own accumulators, and an ENF resets nothing. This is what both
+    backends do, on the reasoning that timecodes may restart or overlap
+    after a new configuration block. No shipped fixture has timecodes that
+    step back across a CNF, and the AIM DLL does not reset: it drops such
+    samples (issue #158; companion.md section 3, "CNF resets the
+    accumulators").
+
+    The forgotten times move to ``_last_kept_before_cnf``, so a stream with
+    no sample after the CNF still has its end time (stream_end_times).
+    """
+    result._last_kept_before_cnf.update(result._last_accepted)
+    result._last_accepted.clear()
 
 
 def _note_data_header(obj, result):
@@ -1178,6 +1205,8 @@ def _dispatch_payload(token, raw_payload, result, _depth):
                 return getattr(parsed, result_attr)
             return parsed
         case _Recurse(merge):
+            if merge:
+                _reset_accumulators(result)
             sub = _parse_sequence(raw_payload, _depth=_depth + 1)
             if merge:
                 _merge_cnf_result(sub, result)
@@ -1463,7 +1492,11 @@ class ParseResult:
     # the wire timecode): {channel_index: array('i')}, one item per slot. A
     # defaultdict, so the per-sample append in _accumulate allocates nothing.
     stream_times: dict = field(default_factory=lambda: defaultdict(lambda: array("i")))
-    _last_accepted: dict = field(default_factory=dict)  # {accumulator: last kept time}
+    # {accumulator: last kept time} since the last CNF, the threshold of the
+    # acceptance rule; and the same for accumulators as they stood at the
+    # last CNF, which cleared the former (_reset_accumulators).
+    _last_accepted: dict = field(default_factory=dict)
+    _last_kept_before_cnf: dict = field(default_factory=dict)
     # The first timecode per data stream. See _note_data_header.
     first_timecodes: dict = field(default_factory=dict)  # {(msg_type, index): timecode}
 
@@ -1548,16 +1581,33 @@ class ParseResult:
         """The raw GNFI records concatenated in file order."""
         return b"".join(self.gnfi_payloads)
 
+    def stream_end_times(self):
+        """Session-relative time of each channel's last kept sample: {channel_index: ms}.
+
+        The last sample kept, not the latest one: a stream whose times step
+        back across a CNF ends on the lower time, and a channel with no
+        sample after a CNF ends where it ended before it. Both backends have
+        the same time on the last row of the channel.
+        """
+        offset = self.time_offset()
+        ends = {}
+        for key, t in {**self._last_kept_before_cnf, **self._last_accepted}.items():
+            ch = key[-1]  # every accumulator key ends with its channel index
+            ends[ch] = max(t - offset, ends.get(ch, t - offset))
+        return ends
+
     def non_gps_end_time(self):
         """Session-relative time of the last accepted sample over all data streams, or None.
 
+        The latest of stream_end_times(). A CNF resetting the accumulators
+        does not lower it by itself: only samples kept after the CNF move a
+        stream's end.
+
         What the GPS timing fix's indirect method compares the GPS end time
         against (companion.md section 6); the backends take the same value
-        from their decoded channels.
+        from their decoded channels, the last row of each.
         """
-        if not self._last_accepted:
-            return None
-        return max(self._last_accepted.values()) - self.time_offset()
+        return max(self.stream_end_times().values(), default=None)
 
     def gps_input(self):
         """Keyword arguments for ``libxrk._aim_xrk_rs.process_gps``'s raw material.
