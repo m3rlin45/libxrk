@@ -532,7 +532,13 @@ def _decode_sequence(s, progress=None):
         try:
             while True:
                 oldpos = pos
-                if pos + 10 >= len_s: # smallest message is 3 (frame) + 4 (tc) + 2 (idx) + 1 (data)
+                # Ten bytes must remain: msg's fields are read through a
+                # pointer, which is not bounds-checked, and the S/G/M fields
+                # span 10 bytes (op, timecode, index, count). A 10-byte
+                # message may end exactly at the end of the input (a V3 c
+                # message, or an S with a 1-byte sample; issue #163). A branch
+                # that reads further into msg checks for it first.
+                if pos + 10 > len_s:
                     raise IndexError
                 msg = <msg_hdr *>&sv[pos]
                 typ: cython.int = msg.s.op
@@ -582,6 +588,8 @@ def _decode_sequence(s, progress=None):
                         raise ValueError('Unexpected c.unk3: %x' % msg.c.unk3)
                     if msg.c.unk1 == 0 and msg.c.unk4 == 6:
                         # V1 — existing format, channel_index = channel_field >> 3
+                        if pos + 12 > len_s:  # 11 bytes up to the end of msg.c.timecode, then ')'
+                            raise IndexError
                         if (msg.c.channel & 7) != 4:
                             raise ValueError('Unexpected c.channel low bits: %x' % (msg.c.channel & 7))
                         data_cat = &acc.gc_data[2]
@@ -660,7 +668,12 @@ def _decode_sequence(s, progress=None):
                             progress(pos, len(s))
                     tok: cython.uint = msg.h.tok
                     hlen: cython.Py_ssize_t = msg.h.hlen
-                    if hlen >= len_s:
+                    # The whole frame must fit before anything after hlen is
+                    # read: 12-byte header, payload, 8-byte footer. ver, cl
+                    # and the footer are read through pointers, which are not
+                    # bounds-checked, and a negative hlen would run the
+                    # checksum loop backwards.
+                    if hlen < 0 or hlen > len_s - pos - 20:
                         raise IndexError
                     ver = msg.h.ver
                     if msg.h.cl != ord_gt:
