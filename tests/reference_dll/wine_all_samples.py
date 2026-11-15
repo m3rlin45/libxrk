@@ -53,8 +53,9 @@ def main():
     dll.get_channel_samples.argtypes = [c_int, c_int, POINTER(c_double), POINTER(c_double), c_int]
     dll.get_channel_samples.restype = c_int
 
+    # A handle is positive; 0 is a path the DLL could not open.
     idx = dll.open_file(os.path.abspath(xrk_path).encode("utf-8"))
-    if idx < 0:
+    if idx <= 0:
         print(json.dumps({"error": "Failed to open file: %s" % xrk_path}))
         sys.exit(1)
 
